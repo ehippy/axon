@@ -5,7 +5,10 @@ monochrome status display — inspired by [Pamir AI's Lapis One](https://www.pam
 built from parts on hand: a Raspberry Pi 4 as the brain, an Adafruit Feather RP2040
 as a peripheral controller.
 
-See [docs/SPEC.md](docs/SPEC.md) for the full hardware/software spec.
+See [docs/SPEC.md](docs/SPEC.md) for the full hardware/software spec, and
+[docs/PROTOTYPE-PWNAGOTCHI.md](docs/PROTOTYPE-PWNAGOTCHI.md) for a faster-to-bring-up
+parallel track that repurposes a spare pwnagotchi (Pi Zero W + e-Paper + PiSugar) as
+a remote networking-connected status display while the Pi4 build comes together.
 
 ## Layout
 
