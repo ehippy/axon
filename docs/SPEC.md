@@ -28,23 +28,19 @@ not a port of anything of theirs.
 
 ## Display
 
-Pamir uses a Sharp memory-in-pixel monochrome LCD (240×400, ultra-low-power,
-always-on-capable). Two-phase plan so we're not blocked on sourcing the exact panel:
+Going straight for the real thing: **Adafruit SHARP Memory Display Breakout — 2.7"
+400×240 Monochrome** (product 4694, ~$45) — the same panel family Pamir uses, already
+broken out to a solder-friendly header (`VIN, GND, SCLK, MOSI, CS, EXTMODE, EXTCOMIN,
+DISP`) rather than bare FPC. Currently out of stock at Adafruit; check Pimoroni,
+Mouser, or DigiKey for the bare LS027B7DH01 panel as a fallback source, or wait for a
+restock. Possibly already own one — if so, check whether it's actually the smaller
+1.3" 168×144 variant (product 3502); silkscreen on the board will say which.
 
-1. **Prototype phase**: whatever small SPI display is on hand or quick to get
-   (ST7789 TFT, small e-paper HAT, etc.) — just to validate the tilt-mount geometry
-   and get the display-service software (status face, agent hookup) working
-   end-to-end. Doesn't need to look right yet.
-2. **Target phase**: swap in a **Sharp memory LCD** — Adafruit sells the exact panel
-   family Pamir uses, "SHARP Memory Display Breakout, 2.7" 400×240 Monochrome"
-   (product 4694, ~$45), pre-broken-out to header pins rather than bare FPC. It and
-   Adafruit's smaller 1.3" 168×144 version (3502) are both currently **out of
-   stock** — check Pimoroni/Mouser/DigiKey for the bare LS027B7DH01 panel as a
-   fallback source if that doesn't change. Same SPI interface family either way, so
-   swapping in later is a wiring change, not a software rewrite.
-- Sharp memory LCDs need a GPIO toggling EXTCOMIN at ~1Hz (or a PWM/timer trick) in
-  addition to the SPI link — factor that into the display-service design regardless
-  of which phase.
+- SPI interface (SCLK/MOSI/CS) straight to Pi5 SPI0, plus a GPIO toggling EXTCOMIN at
+  ~1Hz (software PWM/timer) to keep the panel refreshed — factor this into the
+  display-service design.
+- Enclosure bezel cutout sized for whichever variant we end up with (400×240 vs
+  168×144 changes the puck's screen footprint significantly).
 
 Mounted in a 3D-printed bezel tilted ~30-40° off the base's rear edge, matching the
 photo reference.
