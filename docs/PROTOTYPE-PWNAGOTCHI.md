@@ -61,16 +61,24 @@ pushing status to this box over the network.
   small HTTP service PiSugar themselves provide) reports battery level — worth
   wiring into the status display regardless of which role this box ends up playing.
 
+## PiSugar3 software
+
+Installed via the official installer (`wget https://cdn.pisugar.com/release/pisugar-power-manager.sh && sudo bash pisugar-power-manager.sh -c release`):
+`pisugar-server` (a systemd service) exposes a web UI on `:8421` and a plain-text
+line-based query protocol on `:8423` (no REST/JSON despite some docs implying
+otherwise — it's `get battery`, `get battery_charging`, etc. over a raw TCP socket,
+newline-terminated). Confirmed working: model reports `PiSugar 3`, battery 100%,
+charging, 4.2V. Wrapped in `software/display-service/pisugar_client.py` — the
+prototype UI now shows real battery % instead of a placeholder.
+
 ## Open items
 
-1. Wire real PiSugar3 battery % and remote networking status into the UI (currently
-   placeholders in `software/display-service/prototype_ui.py`).
-2. Install Node/Claude Code and watch real memory usage under load — that result
+1. Install Node/Claude Code and watch real memory usage under load — that result
    decides whether this is a self-contained mini agent box or a status-display
    satellite for the Pi4 puck.
-3. Turn the one-off prototype script into the real display service (a daemon
+2. Turn the one-off prototype script into the real display service (a daemon
    listening for status pushes, per the design in SPEC.md, rather than a
-   run-once script).
+   run-once script) — wire in remote networking connection status alongside battery.
 
 ## Status
 
@@ -78,6 +86,7 @@ pushing status to this box over the network.
 - [x] remote networking installed and connected (device.example, hostname `display-device`)
 - [x] Header soldered, e-Paper HAT + PiSugar moved over and confirmed working
       (SPI + I2C enabled, `epd2in13_V3` demo verified visually on the panel)
+- [x] PiSugar3 power manager installed and confirmed reading real battery data
 - [ ] Node/Claude Code installed and memory-tested under real usage
 - [ ] Display service written (replacing the one-off Waveshare demo script)
 - [ ] NOPASSWD sudo enabled for `pi` on this box (done — flagged here since it's a

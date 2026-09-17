@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """One-off prototype UI for the Waveshare 2.13" e-Paper HAT (V3) on display-device.
-Not the real display service yet — just a static status-face mockup to prove
-out the look before wiring it to live agent/battery state.
+Not the real display service yet - a vertical, dark HUD-styled status mockup
+(black field, chamfered frame, inverted header slab, corner-bracket readout,
+tick-mark ruler) to prove out the look before wiring it to live agent/battery
+state.
 """
 import os
 import sys
@@ -9,41 +11,76 @@ import time
 from datetime import datetime
 
 sys.path.append(os.path.expanduser("~/e-Paper/RaspberryPi_JetsonNano/python/lib"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from waveshare_epd import epd2in13_V3
 from PIL import Image, ImageDraw, ImageFont
+from pisugar_client import get_status as get_battery_status
 
 FONT_PATH = os.path.expanduser("~/e-Paper/RaspberryPi_JetsonNano/python/pic/Font.ttc")
-font_title = ImageFont.truetype(FONT_PATH, 22)
-font_body = ImageFont.truetype(FONT_PATH, 14)
-font_small = ImageFont.truetype(FONT_PATH, 11)
+font_title = ImageFont.truetype(FONT_PATH, 20)
+font_tiny = ImageFont.truetype(FONT_PATH, 9)
+font_body = ImageFont.truetype(FONT_PATH, 13)
+font_small = ImageFont.truetype(FONT_PATH, 10)
 
-W, H = 250, 122
-
-
-def draw_sleepy_face(draw, cx, cy):
-    # two closed/sleepy eyes as downward arcs
-    draw.arc((cx - 20, cy - 8, cx, cy + 12), start=200, end=340, fill=0, width=3)
-    draw.arc((cx + 16, cy - 8, cx + 36, cy + 12), start=200, end=340, fill=0, width=3)
-    # curved smile
-    draw.arc((cx - 10, cy + 4, cx + 26, cy + 24), start=20, end=160, fill=0, width=2)
-    # drifting zzz's
-    draw.text((cx + 42, cy - 28), "z", font=font_small, fill=0)
-    draw.text((cx + 54, cy - 38), "z", font=font_small, fill=0)
-    draw.text((cx + 65, cy - 47), "z", font=font_small, fill=0)
+# Native panel size, portrait - no rotation needed by the driver this way.
+W, H = 122, 250
+BLACK = 0
+WHITE = 255
+BG = BLACK
+FG = WHITE
+CHAMFER = 10
 
 
-def draw_wifi_icon(draw, x, y):
-    for i, r in enumerate((10, 7, 4)):
-        draw.arc((x - r, y - r, x + r, y + r), start=225, end=315, fill=0, width=2)
-    draw.ellipse((x - 1, y + 3, x + 1, y + 5), fill=0)
+def outer_frame(draw):
+    # chamfered (corner-cut) outer border - top-left and bottom-right corners cut
+    pts = [
+        (CHAMFER, 0), (W - 1, 0), (W - 1, H - 1 - CHAMFER),
+        (W - 1 - CHAMFER, H - 1), (0, H - 1), (0, CHAMFER),
+    ]
+    draw.polygon(pts, outline=FG)
+    # echo the chamfer with a short second line just inside it
+    draw.line((CHAMFER, 3, W - 1 - 3, 3), fill=FG)
 
 
-def draw_battery_icon(draw, x, y, pct):
-    w, h = 26, 12
-    draw.rectangle((x, y, x + w, y + h), outline=0)
-    draw.rectangle((x + w, y + 3, x + w + 3, y + h - 3), outline=0, fill=0)
-    fill_w = int((w - 4) * (pct / 100.0))
-    draw.rectangle((x + 2, y + 2, x + 2 + fill_w, y + h - 2), fill=0)
+def header_block(draw):
+    # bright slab across the top (accent against the dark field), inverted text
+    top, bottom = 4, 62
+    pts = [
+        (CHAMFER, top), (W - 5, top), (W - 5, bottom),
+        (5, bottom), (5, top + CHAMFER),
+    ]
+    draw.polygon(pts, fill=FG)
+    draw.text((13, top + 8), "BOXEN", font=font_title, fill=BG)
+    draw.text((13, top + 32), "AGENT UNIT // 01", font=font_tiny, fill=BG)
+    return bottom
+
+
+def double_rule(draw, y):
+    draw.line((0, y, W, y), fill=FG)
+    draw.line((0, y + 3, W, y + 3), fill=FG)
+
+
+def bracket_box(draw, x0, y0, x1, y1, arm=8):
+    for (cx, cy, dx, dy) in ((x0, y0, 1, 1), (x1, y0, -1, 1), (x0, y1, 1, -1), (x1, y1, -1, -1)):
+        draw.line((cx, cy, cx + arm * dx, cy), fill=FG)
+        draw.line((cx, cy, cx, cy + arm * dy), fill=FG)
+
+
+def tick_ruler(draw, x, y0, y1):
+    y = y0
+    i = 0
+    while y <= y1:
+        length = 6 if i % 4 == 0 else 3
+        draw.line((x, y, x + length, y), fill=FG)
+        y += 7
+        i += 1
+
+
+def signal_bars(draw, x, y):
+    heights = (4, 7, 10, 13, 16)
+    for i, h in enumerate(heights):
+        bx = x + i * 6
+        draw.rectangle((bx, y + 16 - h, bx + 3, y + 16), fill=FG)
 
 
 def main():
@@ -51,26 +88,33 @@ def main():
     epd.init()
     epd.Clear(0xFF)
 
-    image = Image.new("1", (W, H), 255)
+    image = Image.new("1", (W, H), BG)
     draw = ImageDraw.Draw(image)
 
-    draw.rectangle((0, 0, W - 1, H - 1), outline=0)
+    outer_frame(draw)
+    y = header_block(draw)
+    double_rule(draw, y + 6)
 
-    draw.text((8, 4), "boxen", font=font_title, fill=0)
-    draw.line((0, 30, W, 30), fill=0)
+    box_top, box_bottom = y + 16, 190
+    bracket_box(draw, 10, box_top, W - 10, box_bottom)
+    tick_ruler(draw, W - 14, box_top + 4, box_bottom - 4)
 
-    draw_sleepy_face(draw, 40, 75)
+    draw.text((18, box_top + 10), "STATUS", font=font_small, fill=FG)
+    draw.text((18, box_top + 24), "IDLE", font=font_title, fill=FG)
+    signal_bars(draw, 18, box_top + 58)
 
-    draw.text((110, 38), "status: idle", font=font_body, fill=0)
+    double_rule(draw, box_bottom + 12)
+
     hostname = os.uname()[1]
-    draw.text((110, 56), f"host: {hostname}", font=font_body, fill=0)
-    draw.text((110, 74), "battery: --%  (not wired yet)", font=font_small, fill=0)
-
-    draw.line((0, H - 20, W, H - 20), fill=0)
     now = datetime.now().strftime("%H:%M:%S")
-    draw.text((6, H - 17), now, font=font_small, fill=0)
-    draw_wifi_icon(draw, W - 55, H - 13)
-    draw_battery_icon(draw, W - 40, H - 16, 75)
+    try:
+        batt = get_battery_status()
+        batt_str = f"BATT {batt['percent']}%{' CHG' if batt['charging'] else ''}"
+    except OSError:
+        batt_str = "BATT --%  (pisugar-server unreachable)"
+    draw.text((8, box_bottom + 20), f"HOST {hostname}", font=font_small, fill=FG)
+    draw.text((8, box_bottom + 34), f"TIME {now}", font=font_small, fill=FG)
+    draw.text((8, box_bottom + 48), batt_str, font=font_small, fill=FG)
 
     epd.display(epd.getbuffer(image))
     time.sleep(2)
