@@ -4,6 +4,10 @@ Own-build alternative to Pamir AI's Lapis One (https://www.pamir.ai/), wrapped a
 Raspberry Pi 5 instead of a custom Rockchip board. Same "puck with a tilted-up mono
 screen" form factor; scoped-down feature set (no Agent KVM, no fingerprint sensor).
 
+Pamir's hardware/OS/SDK is closed — no GitHub, SDK repo, or license published on their
+site — so this is a clean-room build off the publicly visible form factor and specs,
+not a port of anything of theirs.
+
 ## Goals (from initial scoping)
 
 - **Form factor**: puck — low flat base, monochrome display tilted back ~100-110°
@@ -25,16 +29,22 @@ screen" form factor; scoped-down feature set (no Agent KVM, no fingerprint senso
 ## Display
 
 Pamir uses a Sharp memory-in-pixel monochrome LCD (240×400, ultra-low-power,
-always-on-capable). Closest easily-sourceable equivalent for a Pi5 build:
+always-on-capable). Two-phase plan so we're not blocked on sourcing the exact panel:
 
-- **Sharp LS013B7DH03** (128×128) or **LS027B7DH01** (400×240, matches Pamir's spec)
-  memory LCD, SPI interface — near-zero power when static, good sunlight readability,
-  matches the "always-visible status face" aesthetic.
-- Driven directly off Pi5 SPI0, plus a GPIO for the display EXTCOMIN toggle (can be
-  done in software via PWM or a small always-on 555/timer if we don't want to burn a
-  CPU thread on it).
-- Fallback if sourcing the Sharp panel is a pain: a small round or rectangular
-  transflective/e-paper panel — worse animation, but even lower power and cheaper.
+1. **Prototype phase**: whatever small SPI display is on hand or quick to get
+   (ST7789 TFT, small e-paper HAT, etc.) — just to validate the tilt-mount geometry
+   and get the display-service software (status face, agent hookup) working
+   end-to-end. Doesn't need to look right yet.
+2. **Target phase**: swap in a **Sharp memory LCD** — Adafruit sells the exact panel
+   family Pamir uses, "SHARP Memory Display Breakout, 2.7" 400×240 Monochrome"
+   (product 4694, ~$45), pre-broken-out to header pins rather than bare FPC. It and
+   Adafruit's smaller 1.3" 168×144 version (3502) are both currently **out of
+   stock** — check Pimoroni/Mouser/DigiKey for the bare LS027B7DH01 panel as a
+   fallback source if that doesn't change. Same SPI interface family either way, so
+   swapping in later is a wiring change, not a software rewrite.
+- Sharp memory LCDs need a GPIO toggling EXTCOMIN at ~1Hz (or a PWM/timer trick) in
+  addition to the SPI link — factor that into the display-service design regardless
+  of which phase.
 
 Mounted in a 3D-printed bezel tilted ~30-40° off the base's rear edge, matching the
 photo reference.
@@ -55,12 +65,13 @@ independent of what's on the screen.
 
 ## Power
 
-- Primary: USB-C PD input to the Pi5 (5V/5A via official Pi5 PSU, or a PD trigger
-  board if we want 9V/3A like Pamir for thinner cabling).
-- Small UPS: a Pi5 UPS HAT (e.g. PiSugar or Geekworm UPS) with a modest single-cell
+- v1: **wall power only** — USB-C PD straight into the Pi5 (official Pi5 PSU, 5V/5A).
+  No battery/UPS in v1: it adds charge-management and enclosure complexity for zero
+  validation value while we're still proving out the mechanical/software design.
+- Later, optional: a Pi5 UPS HAT (PiSugar, Geekworm, etc.) with a modest single-cell
   Li-ion (~2000mAh) — enough for graceful shutdown on unplug and a few minutes of
-  "pick it up and walk to another room" portability, not all-day battery life. This
-  matches "mobile but happily lives on a desk" rather than Pamir's 3300mAh target.
+  "pick it up and walk to another room" portability. (For reference, Pamir's spec
+  lists a 3,300mAh battery — it is not a wall-only device like our v1.)
 
 ## Software stack
 
@@ -80,23 +91,25 @@ independent of what's on the screen.
 
 ## Enclosure
 
-3D-printed, two main parts:
-1. **Base shell** — houses Pi5 + HAT stack + UPS + battery, front light-bar slot,
-   side/back cutouts for USB-C, GPIO breakout, and airflow for the active cooler.
+3D-printed (own printer, own filament — no print-service constraints), two main parts:
+1. **Base shell** — houses Pi5 + HAT stack, front light-bar slot, side/back cutouts
+   for USB-C, GPIO breakout, and airflow for the active cooler. Leave room to retrofit
+   a UPS HAT later without redesigning the shell.
 2. **Screen bezel** — tilted ~30-40°, hinge-free (fixed angle, printed as one piece
-   with the base or as a screwed-on wedge), holds the SPI display + diffuser.
+   with the base or as a screwed-on wedge), holds the prototype display first, sized
+   to also fit the 2.7" Sharp panel's cutout for the later swap.
 
 v1 target: FDM-printable (PETG or ABS) in white + an orange accent bezel to echo
 the reference photos, no injection-molding-only geometry.
 
 ## Open decisions (need your input before BOM lock)
 
-1. **Budget ballpark** — rough total you're comfortable with for parts (Pi5 alone
-   is ~$80, NVMe HAT + drive another ~$40-70, display + UPS + LEDs + printed parts
-   likely $60-100 more).
-2. **Do you already have a Pi5**, or should the BOM start from zero?
-3. **Display sourcing** — comfortable hand-soldering/wiring a bare Sharp memory LCD
-   breakout, or would you rather use an easier-to-source small SPI LCD/e-paper even
-   if it's visually a bit different from Pamir's panel?
-4. **3D printing** — do you have access to a printer, or does this need to go out
-   to a print service (affects tolerances/material choices)?
+1. **Budget ballpark** — rough total for parts (Pi5 you may already have; NVMe HAT +
+   drive ~$40-70; prototype display + LEDs + filament likely $20-40 more; the real
+   Sharp panel adds ~$45 later).
+2. **Which Pi5 you're using** — which one of the Pis you have on hand is it (RAM size,
+   and whether it's already got an NVMe HAT/case on it), so the enclosure and BOM fit
+   the actual board instead of a generic spec.
+3. **Prototype display** — what do you actually have sitting around (ST7789? an
+   e-paper HAT? something else?) so I can wire the display-service software to the
+   real part instead of a generic placeholder.
