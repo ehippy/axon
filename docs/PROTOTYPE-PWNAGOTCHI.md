@@ -71,6 +71,29 @@ newline-terminated). Confirmed working: model reports `PiSugar 3`, battery 100%,
 charging, 4.2V. Wrapped in `software/display-service/pisugar_client.py` — the
 prototype UI now shows real battery % instead of a placeholder.
 
+### RTC fix (firmware update required)
+
+The onboard RTC was stuck at a 2020 default date. Two dead ends before the real
+fix:
+- PiSugar's documented kernel-overlay approach (`dtoverlay=i2c-rtc,ds3231` in
+  `/boot/firmware/config.txt`) bound a driver but then spammed continuous I2C
+  write errors in `dmesg` without ever producing a readable time — reverted.
+- `pisugar-server`'s own `rtc_pi2rtc` sync command reported `done` but silently
+  did nothing; `rtc_addr` read back as `0x00` (unset) despite the RTC actually
+  living at `0x68` on the I2C bus.
+
+**Actual fix: update the PiSugar3 MCU firmware.** It shipped on v1.0.5; updated
+via the official installer:
+```
+curl -fsSL https://cdn.pisugar.com/release/PiSugarUpdate.sh | sudo bash
+```
+Landed on v1.3.8 (not quite the v1.4.0 PiSugar's docs mention — likely just a
+stale doc page, not a problem). After the update, `rtc_addr` correctly
+self-reports `0x68` and `rtc_pi2rtc` actually works — RTC time now tracks
+system time within a second. This is a real MCU flash (the script pauses for a
+"battery must be charged / stop pisugar-server first" confirmation, then
+reflashes over I2C) — worth knowing before re-running it, not a config change.
+
 ## PiSugar3 button gestures
 
 The PiSugar3's single physical button supports three independently configurable
