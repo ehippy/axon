@@ -14,9 +14,9 @@ Pi4+Feather build (see [SPEC.md](SPEC.md)). No SD card yet — needs a fresh ima
 |---|---|---|
 | SBC | Raspberry Pi Zero 2 W Rev 1.0, confirmed via `/proc/cpuinfo` | Hostname `display-device` (`device.example`), `pi` user, SSH key access set up |
 | OS | Debian 13 "trixie", 64-bit (`aarch64`) | Raspberry Pi OS default for Zero 2 W. Earlier note in this doc suggesting 32-bit to save memory was likely backwards — Claude Code's CLI and its native Node deps increasingly ship arm64-only prebuilt binaries (same trend that dropped ARMv6), so 64-bit may be required, not just heavier. Good that it's already set up this way. |
-| Display | Waveshare 2.13" e-Paper HAT (~250×122 monochrome, SPI) | Moved over from the pwnagotchi |
+| Display | Waveshare 2.13" e-Paper HAT (~250×122 monochrome, SPI) | Moved over from the pwnagotchi. Driver confirmed: **V3** (`epd2in13_V3` from the [waveshareteam/e-Paper](https://github.com/waveshareteam/e-Paper) repo) — V2 ran with no errors but no visible change (classic driver-mismatch symptom: wrong init sequence, panel silently ignores it); V3's demo produced real busy/refresh cycling and a visible update. |
 | Battery | PiSugar (model TBD) | Check silkscreen or I2C address (PiSugar2 ≈ 0x57, PiSugar3 ≈ 0x2d) when convenient — not blocking. Confirm it's electrically fine on Zero 2 W, not just mechanically — most Zero-form PiSugars are, but worth a quick check against PiSugar's compatibility list. |
-| GPIO header | Needs soldering | Zero 2 W ships without a populated header |
+| GPIO header | Soldered, HAT + PiSugar seated | Both physically installed |
 
 **Measured at idle right after first boot** (`free -h`): 415Mi total RAM (of the
 512MB physical — rest reserved for GPU/firmware), 134Mi already used by the base OS
@@ -63,16 +63,22 @@ pushing status to this box over the network.
 
 ## Open items
 
-1. Solder a 40-pin header onto the Zero 2 W.
-2. Confirm PiSugar model and its Zero 2 W compatibility.
-3. Install remote networking + Node/Claude Code and watch real memory usage under load —
-   that result decides whether this is a self-contained mini agent box or a
-   status-display satellite for the Pi4 puck.
+1. Confirm PiSugar model and its Zero 2 W compatibility.
+2. Install Node/Claude Code and watch real memory usage under load — that result
+   decides whether this is a self-contained mini agent box or a status-display
+   satellite for the Pi4 puck.
+3. Write the actual display service (status face) using the confirmed V3 driver,
+   rather than the one-off demo script.
 
 ## Status
 
 - [x] Fresh OS flashed, SSH key access working (`ssh pi@device.example`)
-- [ ] remote networking installed
+- [x] remote networking installed and connected (device.example, hostname `display-device`)
+- [x] Header soldered, e-Paper HAT + PiSugar moved over and confirmed working
+      (SPI + I2C enabled, `epd2in13_V3` demo verified visually on the panel)
 - [ ] Node/Claude Code installed and memory-tested under real usage
-- [ ] Header soldered, e-Paper HAT + PiSugar moved over
-- [ ] Display service written
+- [ ] Display service written (replacing the one-off Waveshare demo script)
+- [ ] NOPASSWD sudo enabled for `pi` on this box (done — flagged here since it's a
+      real security tradeoff: anyone with SSH key access gets root with no friction.
+      Reasonable given remote networking-only reachability and single-user, but worth
+      remembering if this box's threat model ever changes.)
