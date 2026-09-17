@@ -31,10 +31,9 @@ not a port of anything of theirs.
 Going straight for the real thing: **Adafruit SHARP Memory Display Breakout — 2.7"
 400×240 Monochrome** (product 4694, ~$45) — the same panel family Pamir uses, already
 broken out to a solder-friendly header (`VIN, GND, SCLK, MOSI, CS, EXTMODE, EXTCOMIN,
-DISP`) rather than bare FPC. Currently out of stock at Adafruit; check Pimoroni,
-Mouser, or DigiKey for the bare LS027B7DH01 panel as a fallback source, or wait for a
-restock. Possibly already own one — if so, check whether it's actually the smaller
-1.3" 168×144 variant (product 3502); silkscreen on the board will say which.
+DISP`) rather than bare FPC. Out of stock direct from Adafruit, but in stock via
+DigiKey ([DigiKey 4694, part 13157994](https://www.digikey.com/en/products/detail/adafruit-industries-llc/4694/13157994))
+— that's the source to order from.
 
 - SPI interface (SCLK/MOSI/CS) straight to Pi5 SPI0, plus a GPIO toggling EXTCOMIN at
   ~1Hz (software PWM/timer) to keep the panel refreshed — factor this into the
