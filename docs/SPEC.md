@@ -51,12 +51,38 @@ Pi5's 40-pin header is broken out to a small panel on the **back edge of the bas
 mini-breakout, since that's dramatically simpler to build and service). Enclosure
 has a cutout so a ribbon cable or HAT can attach without disassembly.
 
+Since the voice HAT below (also a 40-pin board) sits on the same header, it needs to
+be one with a pass-through/stacking header so the external breakout still exposes the
+pins the HAT doesn't use.
+
+## Add-ons (in scope for v1)
+
+Pamir's spec sheet has a few things worth pulling in beyond the core puck:
+
+- **Voice I/O**: Seeed **ReSpeaker 2-Mics Pi HAT** — dual-mic array + WM8960 codec,
+  JST speaker output (pairs with a small 3W 8Ω speaker), and it happens to also
+  include 2 onboard push buttons and 3 APA102 RGB LEDs for free. Gives the puck an
+  actual voice interface (wake word / talk to the agent) instead of typing only.
+- **IMU**: a cheap I2C breakout (MPU6050 or BNO055) sharing the same I2C bus as the
+  voice HAT — cheap "picked up / moved" motion sensing, could drive a display-state
+  change (e.g. wake from the sleeping-robot idle screen).
+- **Power button**: the ReSpeaker HAT's onboard buttons are soft/GPIO buttons, not a
+  true power switch. For a real physical on/off, add a small power-control board
+  (e.g. Pimoroni **On/Off SHIM**) wired to a front/side momentary button — clean
+  shutdown on press-and-hold, hard cutoff on press-and-hold-longer.
+
+Explicitly still out of scope: fingerprint sensor, NFC, dedicated NPU accelerator,
+Agent KVM — all deferred as later stretch goals, not v1.
+
 ## Status light bar
 
 Front-edge LED light bar (matches the photo) — an addressable strip (WS2812B/SK6812,
 a handful of LEDs) diffused behind a frosted acrylic/PETG light pipe, driven off a
 Pi5 GPIO pin (PWM or one-wire). Used for at-a-glance agent state (idle/working/error)
-independent of what's on the screen.
+independent of what's on the screen. Separate from — not replaced by — the voice
+HAT's 3 onboard APA102 LEDs, which are small/on-board and not positioned for a
+diffused front-edge bar; those are free to repurpose for something else (mic
+level/mute indicator, say).
 
 ## Power
 
