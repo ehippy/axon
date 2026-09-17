@@ -71,14 +71,39 @@ newline-terminated). Confirmed working: model reports `PiSugar 3`, battery 100%,
 charging, 4.2V. Wrapped in `software/display-service/pisugar_client.py` — the
 prototype UI now shows real battery % instead of a placeholder.
 
+## PiSugar3 button gestures
+
+The PiSugar3's single physical button supports three independently configurable
+gestures (`set_button_enable <mode> true` + `set_button_shell <mode> <command>`
+over the same `:8423` protocol, mode = `single`/`double`/`long`). Wired up:
+
+| Gesture | Action | Script |
+|---|---|---|
+| Single tap | Refresh the status screen (host, battery, time) | `prototype_ui.py` |
+| Double tap | Show a diagnostics screen (remote networking IP, uptime, load) | `button_diagnostics.py` |
+| Long press | Draw a "POWERING DOWN" screen, then `shutdown -h now` | `button_shutdown.py` |
+
+All three share drawing primitives from `hud.py` (extracted from the original
+one-off `prototype_ui.py`) so the chamfered-frame/bracket/tick-ruler look stays
+consistent across screens. Important detail: `pisugar-server` runs as root with
+no `HOME` set the way an interactive `pi` login would have it, so these scripts
+use hardcoded `/home/pi/...` paths rather than `~` expansion, and the button_shell
+commands are invoked with absolute binary paths (`/usr/bin/python3 /home/pi/...`).
+
+Single-tap and double-tap scripts were tested directly (as root, to match the
+real invocation context) before wiring. The shutdown script's drawing code
+follows the identical already-confirmed pattern but wasn't live-tested end to
+end — running it for real powers the box off, so that's a deliberate one you
+trigger yourself via a real long-press rather than something tested for you.
+
 ## Open items
 
 1. Install Node/Claude Code and watch real memory usage under load — that result
    decides whether this is a self-contained mini agent box or a status-display
    satellite for the Pi4 puck.
-2. Turn the one-off prototype script into the real display service (a daemon
-   listening for status pushes, per the design in SPEC.md, rather than a
-   run-once script) — wire in remote networking connection status alongside battery.
+2. Turn the idle-screen script into the real display service (a daemon listening
+   for status pushes, per the design in SPEC.md, rather than a run-once script) —
+   wire in remote networking connection status alongside battery.
 
 ## Status
 
