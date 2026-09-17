@@ -85,13 +85,8 @@ def outer_frame(draw):
 
 def header_block(draw, title, subtitle):
     top, bottom = 4, 62
-    pts = [
-        (CHAMFER, top), (W - 5, top), (W - 5, bottom),
-        (5, bottom), (5, top + CHAMFER),
-    ]
-    draw.polygon(pts, outline=FG)
-    draw.text((13, top + 8), title, font=font_title, fill=FG)
-    draw.text((13, top + 32), subtitle, font=font_tiny, fill=FG)
+    draw.text((8, top + 8), title, font=font_title, fill=FG)
+    draw.text((8, top + 32), subtitle, font=font_tiny, fill=FG)
     return bottom
 
 

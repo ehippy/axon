@@ -45,7 +45,6 @@ def set_screen_index(idx, total):
 
 
 def render_boot(draw, state):
-    hud.outer_frame(draw)
     y = hud.header_block(draw, "AXON", "SYSTEM BOOT")
     hud.double_rule(draw, y + 6)
     box_top, box_bottom = y + 16, 190
@@ -57,7 +56,6 @@ def render_boot(draw, state):
 
 
 def render_idle(draw, state):
-    hud.outer_frame(draw)
     y = hud.header_block(draw, "AXON", "AGENT UNIT // 01")
     hud.double_rule(draw, y + 6)
 
@@ -88,7 +86,6 @@ def render_idle(draw, state):
 
 
 def render_diagnostics(draw, state):
-    hud.outer_frame(draw)
     y = hud.header_block(draw, "AXON", "DIAGNOSTICS // 02")
     hud.double_rule(draw, y + 6)
 
@@ -112,7 +109,6 @@ def render_diagnostics(draw, state):
 
 
 def render_battery(draw, state):
-    hud.outer_frame(draw)
     y = hud.header_block(draw, "AXON", "POWER // 03")
     hud.double_rule(draw, y + 6)
 
@@ -138,7 +134,6 @@ def render_battery(draw, state):
 
 
 def render_network(draw, state):
-    hud.outer_frame(draw)
     y = hud.header_block(draw, "AXON", "NETWORK // 04")
     hud.double_rule(draw, y + 6)
 
@@ -162,7 +157,6 @@ def render_network(draw, state):
 
 
 def render_shutdown(draw, state):
-    hud.outer_frame(draw)
     y = hud.header_block(draw, "AXON", "SHUTDOWN // 00")
     hud.double_rule(draw, y + 6)
     box_top, box_bottom = y + 16, 190
