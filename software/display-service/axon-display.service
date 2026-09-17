@@ -1,10 +1,10 @@
 [Unit]
-Description=boxen e-Paper display daemon
+Description=Axon e-Paper display daemon
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /home/pi/display-service/daemon.py
+ExecStart=/usr/bin/python3 /home/pi/axon-display/daemon.py
 Restart=on-failure
 RestartSec=2
 User=root

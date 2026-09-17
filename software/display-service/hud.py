@@ -36,7 +36,7 @@ CHAMFER = 10
 # extension; .png tried first, then .bmp. Missing files are just skipped by
 # callers (screens fall back to vector-drawn primitives), so this directory
 # can stay empty/partially filled while art gets sourced.
-ASSETS_DIR = "/home/pi/boxen-assets"
+ASSETS_DIR = "/home/pi/axon-assets"
 
 
 def new_canvas():

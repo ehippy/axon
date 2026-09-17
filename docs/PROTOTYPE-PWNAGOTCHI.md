@@ -99,8 +99,8 @@ reflashes over I2C) — worth knowing before re-running it, not a config change.
 The original single/double/long-press scripts each re-init'd the e-Paper panel
 from scratch on every call (slow, full-flash every time) and had no way to
 receive a pushed status update. Replaced with a persistent systemd service,
-`boxen-display` (`software/display-service/daemon.py`), installed at
-`/home/pi/display-service/` on display-device:
+`axon-display` (`software/display-service/daemon.py`), installed at
+`/home/pi/axon-display/` on display-device:
 
 - Owns the panel for the life of the service — uses `displayPartial` /
   `displayPartBaseImage` for fast, low-flicker updates instead of a full
@@ -123,7 +123,7 @@ receive a pushed status update. Replaced with a persistent systemd service,
     the idle screen immediately if it's the one currently shown.
   - `GET /health`
 - Art hook: `hud.load_art(name, max_size=...)` looks in
-  `/home/pi/boxen-assets/<name>.png` (or `.bmp`) and dithers it to 1-bit;
+  `/home/pi/axon-assets/<name>.png` (or `.bmp`) and dithers it to 1-bit;
   currently wired up for `idle.png` in the status box. Falls back to the
   plain vector text/signal-bars treatment when no art file exists yet - see
   `software/display-service/assets/README.md`.
@@ -136,7 +136,7 @@ are gone, superseded by the daemon.
 1. Install Node/Claude Code and watch real memory usage under load — that result
    decides whether this is a self-contained mini agent box or a status-display
    satellite for the Pi4 puck.
-2. Source art for `/home/pi/boxen-assets/idle.png` (or wire up more named art
+2. Source art for `/home/pi/axon-assets/idle.png` (or wire up more named art
    hooks in `screens.py` as it shows up).
 3. Once Claude Code is running (here or on the Pi4), wire it up to actually
    POST to `/status` instead of that only being curl-tested so far.
@@ -149,7 +149,7 @@ are gone, superseded by the daemon.
       (SPI + I2C enabled, `epd2in13_V3` demo verified visually on the panel)
 - [x] PiSugar3 power manager installed and confirmed reading real battery data
 - [x] PiSugar3 RTC fixed via firmware update (v1.0.5 → v1.3.8)
-- [x] Real `boxen-display` daemon running as a systemd service, partial-refresh
+- [x] Real `axon-display` daemon running as a systemd service, partial-refresh
       screens, button-triggered via a local HTTP API, `/status` push endpoint
       ready for an agent to use
 - [ ] Node/Claude Code installed and memory-tested under real usage

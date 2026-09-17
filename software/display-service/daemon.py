@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""boxen display daemon - owns the e-Paper panel, keeps it awake for partial
+"""Axon display daemon - owns the e-Paper panel, keeps it awake for partial
 refresh, and serves a tiny local HTTP API for button gestures and agent
 status pushes. Replaces the old one-off prototype_ui.py / button_*.py
 scripts, which each re-init'd the panel (slow, full-flash) on every call.
@@ -24,7 +24,7 @@ import hud
 import screens
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("boxen-display")
+log = logging.getLogger("axon-display")
 
 HOST, PORT = "127.0.0.1", 8500
 FULL_REFRESH_EVERY = 12  # partial updates between full refreshes, to limit ghosting

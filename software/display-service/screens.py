@@ -1,4 +1,4 @@
-"""Screen renderers for the boxen display daemon. Each function draws onto a
+"""Screen renderers for the Axon display daemon. Each function draws onto a
 canvas made by hud.new_canvas() given the daemon's shared state dict. Screens
 that show up in the double-tap cycle are listed in CYCLE, in display order.
 """
@@ -46,19 +46,19 @@ def set_screen_index(idx, total):
 
 def render_boot(draw, state):
     hud.outer_frame(draw)
-    y = hud.header_block(draw, "BOXEN", "SYSTEM BOOT")
+    y = hud.header_block(draw, "AXON", "SYSTEM BOOT")
     hud.double_rule(draw, y + 6)
     box_top, box_bottom = y + 16, 190
     hud.bracket_box(draw, 10, box_top, hud.W - 10, box_bottom)
     draw.text((18, box_top + 40), "ONLINE", font=hud.font_title, fill=hud.FG)
     hud.double_rule(draw, box_bottom + 12)
-    draw.text((8, box_bottom + 20), "boxen display", font=hud.font_small, fill=hud.FG)
+    draw.text((8, box_bottom + 20), "axon display", font=hud.font_small, fill=hud.FG)
     draw.text((8, box_bottom + 34), "daemon started", font=hud.font_small, fill=hud.FG)
 
 
 def render_idle(draw, state):
     hud.outer_frame(draw)
-    y = hud.header_block(draw, "BOXEN", "AGENT UNIT // 01")
+    y = hud.header_block(draw, "AXON", "AGENT UNIT // 01")
     hud.double_rule(draw, y + 6)
 
     box_top, box_bottom = y + 16, 190
@@ -89,7 +89,7 @@ def render_idle(draw, state):
 
 def render_diagnostics(draw, state):
     hud.outer_frame(draw)
-    y = hud.header_block(draw, "BOXEN", "DIAGNOSTICS // 02")
+    y = hud.header_block(draw, "AXON", "DIAGNOSTICS // 02")
     hud.double_rule(draw, y + 6)
 
     box_top, box_bottom = y + 16, 190
@@ -113,7 +113,7 @@ def render_diagnostics(draw, state):
 
 def render_battery(draw, state):
     hud.outer_frame(draw)
-    y = hud.header_block(draw, "BOXEN", "POWER // 03")
+    y = hud.header_block(draw, "AXON", "POWER // 03")
     hud.double_rule(draw, y + 6)
 
     box_top, box_bottom = y + 16, 190
@@ -139,7 +139,7 @@ def render_battery(draw, state):
 
 def render_network(draw, state):
     hud.outer_frame(draw)
-    y = hud.header_block(draw, "BOXEN", "NETWORK // 04")
+    y = hud.header_block(draw, "AXON", "NETWORK // 04")
     hud.double_rule(draw, y + 6)
 
     box_top, box_bottom = y + 16, 190
@@ -163,7 +163,7 @@ def render_network(draw, state):
 
 def render_shutdown(draw, state):
     hud.outer_frame(draw)
-    y = hud.header_block(draw, "BOXEN", "SHUTDOWN // 00")
+    y = hud.header_block(draw, "AXON", "SHUTDOWN // 00")
     hud.double_rule(draw, y + 6)
     box_top, box_bottom = y + 16, 190
     hud.bracket_box(draw, 10, box_top, hud.W - 10, box_bottom)

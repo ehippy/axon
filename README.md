@@ -1,4 +1,4 @@
-# boxen
+# Axon
 
 A dedicated computer for running agents, in a puck-shaped enclosure with a tilted
 monochrome status display — inspired by [Pamir AI's Lapis One](https://www.pamir.ai/),

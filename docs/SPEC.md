@@ -1,4 +1,4 @@
-# boxen — a Pi4 + RP2040 agent puck
+# Axon — a Pi4 + RP2040 agent puck
 
 Own-build alternative to Pamir AI's Lapis One (https://www.pamir.ai/), built from parts
 already on hand: a Raspberry Pi 4 as the brain, an Adafruit Feather RP2040 as a
