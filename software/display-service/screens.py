@@ -48,7 +48,6 @@ def render_boot(draw, state):
     y = hud.header_block(draw, "AXON", "SYSTEM BOOT")
     hud.double_rule(draw, y + 6)
     box_top, box_bottom = y + 16, 190
-    hud.bracket_box(draw, 10, box_top, hud.W - 10, box_bottom)
     draw.text((18, box_top + 40), "ONLINE", font=hud.font_title, fill=hud.FG)
     hud.double_rule(draw, box_bottom + 12)
     draw.text((8, box_bottom + 20), "axon display", font=hud.font_small, fill=hud.FG)
@@ -60,7 +59,6 @@ def render_idle(draw, state):
     hud.double_rule(draw, y + 6)
 
     box_top, box_bottom = y + 16, 190
-    hud.bracket_box(draw, 10, box_top, hud.W - 10, box_bottom)
     hud.tick_ruler(draw, hud.W - 14, box_top + 4, box_bottom - 4)
 
     agent_state = state.get("agent_state", "idle").upper()
@@ -90,7 +88,6 @@ def render_diagnostics(draw, state):
     hud.double_rule(draw, y + 6)
 
     box_top, box_bottom = y + 16, 190
-    hud.bracket_box(draw, 10, box_top, hud.W - 10, box_bottom)
 
     ts_ip = _run(["/usr/bin/remote-networking", "ip", "-4"])
     uptime = _run(["uptime", "-p"]).replace("up ", "")
@@ -113,7 +110,6 @@ def render_battery(draw, state):
     hud.double_rule(draw, y + 6)
 
     box_top, box_bottom = y + 16, 190
-    hud.bracket_box(draw, 10, box_top, hud.W - 10, box_bottom)
 
     _, batt = _battery_line()
     if batt:
@@ -138,7 +134,6 @@ def render_network(draw, state):
     hud.double_rule(draw, y + 6)
 
     box_top, box_bottom = y + 16, 190
-    hud.bracket_box(draw, 10, box_top, hud.W - 10, box_bottom)
 
     ssid = _run(["/usr/bin/nmcli", "-t", "-f", "active,ssid", "dev", "wifi"])
     ssid = next((l.split(":", 1)[1] for l in ssid.splitlines() if l.startswith("yes:")), "?")
@@ -160,7 +155,6 @@ def render_shutdown(draw, state):
     y = hud.header_block(draw, "AXON", "SHUTDOWN // 00")
     hud.double_rule(draw, y + 6)
     box_top, box_bottom = y + 16, 190
-    hud.bracket_box(draw, 10, box_top, hud.W - 10, box_bottom)
     draw.text((18, box_top + 30), "POWERING", font=hud.font_title, fill=hud.FG)
     draw.text((18, box_top + 56), "DOWN", font=hud.font_title, fill=hud.FG)
     hud.double_rule(draw, box_bottom + 12)
