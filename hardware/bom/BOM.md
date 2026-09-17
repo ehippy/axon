@@ -17,7 +17,7 @@ for the reasoning behind each choice.
 | Part | Choice | Source | Status |
 |---|---|---|---|
 | Display | Adafruit SHARP Memory Display Breakout, 2.7" 400×240 Monochrome (product 4694) | [DigiKey, part 13157994](https://www.digikey.com/en/products/detail/adafruit-industries-llc/4694/13157994) | Confirmed in stock, not yet ordered |
-| Boot storage | USB3 SSD (any reputable small SATA/NVMe-in-enclosure or dedicated USB SSD) | Not yet chosen | Not yet sourced |
+| Boot storage | High-endurance microSD card (e.g. SanDisk High Endurance/Industrial), 32-64GB | Any | Not yet sourced |
 | Voice HAT | Seeed ReSpeaker 2-Mics Pi HAT | Seeed / distributors (Mouser, DigiKey, Seeed direct) | Not yet sourced |
 | Speaker | Small 3W 8Ω speaker w/ JST-PH 2.0 connector (matches ReSpeaker HAT's speaker port) | Any (Adafruit/Seeed both sell matching ones) | Not yet sourced |
 | IMU | STEMMA QT IMU breakout (MPU6050 or BNO055) | Adafruit | Not yet sourced |

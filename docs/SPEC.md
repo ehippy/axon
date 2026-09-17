@@ -24,7 +24,7 @@ not a port of anything of theirs.
 | Part | Choice | Notes |
 |---|---|---|
 | SBC | Raspberry Pi 4B (already owned) | RAM size unknown — no silkscreen marking. Check with `cat /proc/cpuinfo \| grep Revision` and look up the revision code, or `vcgencmd get_config total_mem`. Doesn't block starting — the software stack (remote networking + Claude Code + lightweight display/voice services) should fit even on a 2GB unit; revisit only if it turns out to be 1GB. |
-| Storage | Boot from a USB3 SSD (no PCIe/NVMe on Pi4) | Pi4 fully supports USB-SSD boot; far more durable than SD under agent workloads (frequent writes, logs, git) without needing exotic PCIe mods |
+| Storage | microSD for v1 prototype | Skipping USB-SSD/NVMe for now to keep the prototype simple and free up a USB port for the Feather; get a high-endurance card (e.g. SanDisk High Endurance / Industrial) given agent workloads write a lot (logs, git). Revisit USB-SSD boot later if card wear or reliability becomes a real problem. |
 | Cooling | Pi4-specific heatsink+fan case or fan shim (not Pi5's Active Cooler, which is a different mount) | Puck is short (~30-35mm) — cooler height is the tightest constraint in the enclosure |
 
 The Pi Zero 2 W and the spare bare RP2040 board stay out of the core build for now —
