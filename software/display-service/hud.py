@@ -32,10 +32,37 @@ BG = BLACK
 FG = WHITE
 CHAMFER = 10
 
+# Drop custom art here - see assets/README.md. Looked up by name with no
+# extension; .png tried first, then .bmp. Missing files are just skipped by
+# callers (screens fall back to vector-drawn primitives), so this directory
+# can stay empty/partially filled while art gets sourced.
+ASSETS_DIR = "/home/pi/boxen-assets"
+
 
 def new_canvas():
     image = Image.new("1", (W, H), BG)
     return image, ImageDraw.Draw(image)
+
+
+def load_art(name, max_size=None):
+    """Load assets/<name>.(png|bmp), dithered to 1-bit. None if not found."""
+    for ext in (".png", ".bmp"):
+        path = os.path.join(ASSETS_DIR, name + ext)
+        if os.path.exists(path):
+            img = Image.open(path).convert("L")
+            if max_size:
+                img.thumbnail(max_size)
+            return img.convert("1")
+    return None
+
+
+def page_dots(draw, x, y, count, current):
+    for i in range(count):
+        cx = x + i * 10
+        if i == current:
+            draw.ellipse((cx, y, cx + 5, y + 5), fill=FG)
+        else:
+            draw.ellipse((cx, y, cx + 5, y + 5), outline=FG)
 
 
 def outer_frame(draw):

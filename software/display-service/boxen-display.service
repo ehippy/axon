@@ -1,0 +1,13 @@
+[Unit]
+Description=boxen e-Paper display daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/pi/display-service/daemon.py
+Restart=on-failure
+RestartSec=2
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -94,39 +94,52 @@ system time within a second. This is a real MCU flash (the script pauses for a
 "battery must be charged / stop pisugar-server first" confirmation, then
 reflashes over I2C) — worth knowing before re-running it, not a config change.
 
-## PiSugar3 button gestures
+## Display daemon (replaces the one-off button scripts)
 
-The PiSugar3's single physical button supports three independently configurable
-gestures (`set_button_enable <mode> true` + `set_button_shell <mode> <command>`
-over the same `:8423` protocol, mode = `single`/`double`/`long`). Wired up:
+The original single/double/long-press scripts each re-init'd the e-Paper panel
+from scratch on every call (slow, full-flash every time) and had no way to
+receive a pushed status update. Replaced with a persistent systemd service,
+`boxen-display` (`software/display-service/daemon.py`), installed at
+`/home/pi/display-service/` on display-device:
 
-| Gesture | Action | Script |
-|---|---|---|
-| Single tap | Refresh the status screen (host, battery, time) | `prototype_ui.py` |
-| Double tap | Show a diagnostics screen (remote networking IP, uptime, load) | `button_diagnostics.py` |
-| Long press | Draw a "POWERING DOWN" screen, then `shutdown -h now` | `button_shutdown.py` |
+- Owns the panel for the life of the service — uses `displayPartial` /
+  `displayPartBaseImage` for fast, low-flicker updates instead of a full
+  refresh every time, with a full refresh every 12 partial updates to bound
+  e-ink ghosting.
+- Screen registry in `screens.py`: `idle` (home screen, single-tap always
+  returns here), plus a double-tap cycle through `diagnostics` → `battery` →
+  `network`, each showing page-dot position indicators. `boot` and `shutdown`
+  are one-off screens outside the cycle.
+- A tiny local HTTP API on `127.0.0.1:8500`:
+  - `GET /event/<single|double|long>` — what PiSugar's `button_shell` actually
+    calls now (a cheap `curl`, not a whole new Python+PIL+driver process per
+    press). Note: this had to be GET+path-segment, not a POST with a JSON
+    body — `pisugar-server`'s `button_shell` strips quote characters from the
+    command string it stores, so a JSON body doesn't survive round-tripping
+    through it.
+  - `POST /status` `{"state": "idle"|"running"|"error", "task": "..."}` — the
+    actual hook for pushing live agent status, from wherever Claude Code ends
+    up running (this box itself, or the Pi4 puck over remote networking). Re-renders
+    the idle screen immediately if it's the one currently shown.
+  - `GET /health`
+- Art hook: `hud.load_art(name, max_size=...)` looks in
+  `/home/pi/boxen-assets/<name>.png` (or `.bmp`) and dithers it to 1-bit;
+  currently wired up for `idle.png` in the status box. Falls back to the
+  plain vector text/signal-bars treatment when no art file exists yet - see
+  `software/display-service/assets/README.md`.
 
-All three share drawing primitives from `hud.py` (extracted from the original
-one-off `prototype_ui.py`) so the chamfered-frame/bracket/tick-ruler look stays
-consistent across screens. Important detail: `pisugar-server` runs as root with
-no `HOME` set the way an interactive `pi` login would have it, so these scripts
-use hardcoded `/home/pi/...` paths rather than `~` expansion, and the button_shell
-commands are invoked with absolute binary paths (`/usr/bin/python3 /home/pi/...`).
-
-Single-tap and double-tap scripts were tested directly (as root, to match the
-real invocation context) before wiring. The shutdown script's drawing code
-follows the identical already-confirmed pattern but wasn't live-tested end to
-end — running it for real powers the box off, so that's a deliberate one you
-trigger yourself via a real long-press rather than something tested for you.
+Old scripts (`prototype_ui.py`, `button_diagnostics.py`, `button_shutdown.py`)
+are gone, superseded by the daemon.
 
 ## Open items
 
 1. Install Node/Claude Code and watch real memory usage under load — that result
    decides whether this is a self-contained mini agent box or a status-display
    satellite for the Pi4 puck.
-2. Turn the idle-screen script into the real display service (a daemon listening
-   for status pushes, per the design in SPEC.md, rather than a run-once script) —
-   wire in remote networking connection status alongside battery.
+2. Source art for `/home/pi/boxen-assets/idle.png` (or wire up more named art
+   hooks in `screens.py` as it shows up).
+3. Once Claude Code is running (here or on the Pi4), wire it up to actually
+   POST to `/status` instead of that only being curl-tested so far.
 
 ## Status
 
@@ -135,9 +148,13 @@ trigger yourself via a real long-press rather than something tested for you.
 - [x] Header soldered, e-Paper HAT + PiSugar moved over and confirmed working
       (SPI + I2C enabled, `epd2in13_V3` demo verified visually on the panel)
 - [x] PiSugar3 power manager installed and confirmed reading real battery data
+- [x] PiSugar3 RTC fixed via firmware update (v1.0.5 → v1.3.8)
+- [x] Real `boxen-display` daemon running as a systemd service, partial-refresh
+      screens, button-triggered via a local HTTP API, `/status` push endpoint
+      ready for an agent to use
 - [ ] Node/Claude Code installed and memory-tested under real usage
-- [ ] Display service written (replacing the one-off Waveshare demo script)
-- [ ] NOPASSWD sudo enabled for `pi` on this box (done — flagged here since it's a
+- [ ] Art sourced for the idle screen
+- [x] NOPASSWD sudo enabled for `pi` on this box (flagged here since it's a
       real security tradeoff: anyone with SSH key access gets root with no friction.
       Reasonable given remote networking-only reachability and single-user, but worth
       remembering if this box's threat model ever changes.)

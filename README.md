@@ -15,6 +15,9 @@ a remote networking-connected status display while the Pi4 build comes together.
 - `docs/` — spec and design notes
 - `hardware/bom/` — bill of materials
 - `hardware/enclosure/` — 3D-printable enclosure design files
-- `software/display-service/` — Pi4-side daemon that talks to the Feather over USB-serial
+- `software/display-service/` — the e-Paper display daemon. Currently holds the
+  working version built for the display-device (Zero 2 W) prototype; the Pi4 build will
+  need a variant that talks to the Feather over USB-serial instead of driving
+  the panel directly.
 - `software/feather-firmware/` — CircuitPython firmware for the Feather RP2040 (display, LED bar, IMU, button)
 - `software/provisioning/` — first-boot setup scripts (remote networking, agent runtime, display service)
