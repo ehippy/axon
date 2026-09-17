@@ -43,15 +43,15 @@ def outer_frame(draw):
 
 
 def header_block(draw):
-    # bright slab across the top (accent against the dark field), inverted text
+    # outlined slab across the top - no fill, stays part of the black field
     top, bottom = 4, 62
     pts = [
         (CHAMFER, top), (W - 5, top), (W - 5, bottom),
         (5, bottom), (5, top + CHAMFER),
     ]
-    draw.polygon(pts, fill=FG)
-    draw.text((13, top + 8), "BOXEN", font=font_title, fill=BG)
-    draw.text((13, top + 32), "AGENT UNIT // 01", font=font_tiny, fill=BG)
+    draw.polygon(pts, outline=FG)
+    draw.text((13, top + 8), "BOXEN", font=font_title, fill=FG)
+    draw.text((13, top + 32), "AGENT UNIT // 01", font=font_tiny, fill=FG)
     return bottom
 
 
