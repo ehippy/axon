@@ -1,22 +1,29 @@
-"""Shared drawing primitives for display-device's e-Paper HUD screens (dark field,
-chamfered frame, corner brackets, tick-mark ruler). Pulled out of the original
+"""Shared drawing primitives for the Axon HUD screens (dark field, chamfered
+frame, corner brackets, tick-mark ruler). Pulled out of the original
 prototype_ui.py so the PiSugar button-action screens don't each reimplement
 the same layout code.
 
-Uses absolute paths, not ~expansion - these scripts get invoked by
-pisugar-server's button_shell, which runs as root, so "~" would resolve to
-/root rather than /home/pi.
+Deliberately does NOT import the Waveshare hardware driver at module level -
+only show() needs it, and it's only importable on the Pi itself (the driver
+lib lives under ~/e-Paper there). Everything else - canvas setup, all the
+drawing primitives, load_art()'s dithering - is plain PIL and runs anywhere,
+which is what preview.py relies on to let you iterate on art on a regular
+dev machine, no eink hardware or even an SSH connection to the Pi required.
+
+On the Pi, button_shell-invoked scripts run as root, so paths below are
+absolute rather than ~-relative (root's HOME isn't /home/pi).
 """
 import os
 import sys
 import time
 
 E_PAPER_LIB = "/home/pi/e-Paper/RaspberryPi_JetsonNano/python/lib"
-FONT_PATH = "/home/pi/e-Paper/RaspberryPi_JetsonNano/python/pic/Font.ttc"
+# Bundled in the repo (fonts/Font.ttc) so this works off the Pi too, not just
+# the copy that happens to live inside the cloned e-Paper repo on-device.
+FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", "Font.ttc")
 sys.path.append(E_PAPER_LIB)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from waveshare_epd import epd2in13_V3
 from PIL import Image, ImageDraw, ImageFont
 
 font_title = ImageFont.truetype(FONT_PATH, 20)
@@ -36,7 +43,9 @@ CHAMFER = 10
 # extension; .png tried first, then .bmp. Missing files are just skipped by
 # callers (screens fall back to vector-drawn primitives), so this directory
 # can stay empty/partially filled while art gets sourced.
-ASSETS_DIR = "/home/pi/axon-assets"
+# Overridable via AXON_ASSETS_DIR - preview.py points this at a local staging
+# folder so draft art can be iterated on without touching the Pi at all.
+ASSETS_DIR = os.environ.get("AXON_ASSETS_DIR", "/home/pi/axon-assets")
 
 
 def new_canvas():
@@ -115,6 +124,7 @@ def signal_bars(draw, x, y):
 
 
 def show(image, hold=2):
+    from waveshare_epd import epd2in13_V3  # only importable/needed on the Pi
     epd = epd2in13_V3.EPD()
     epd.init()
     epd.Clear(0xFF)
