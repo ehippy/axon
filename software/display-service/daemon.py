@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Axon display daemon - owns the e-Paper panel, keeps it awake for partial
-refresh, and serves a tiny local HTTP API for button gestures and agent
-status pushes. Replaces the old one-off prototype_ui.py / button_*.py
-scripts, which each re-init'd the panel (slow, full-flash) on every call.
+"""Axon display daemon - owns the Whisplay color LCD + RGB LED, and serves
+a tiny local HTTP API for button gestures and agent status pushes.
+
+No partial-refresh dance here unlike the old e-ink version: this is a
+normal LCD, so every render is just "build the frame, push the whole
+thing" - much simpler than e-ink's base-image/partial/full-refresh-every-
+N-updates juggling.
 
 Endpoints (127.0.0.1:8500):
   GET  /event/<single|double|long>  (used by PiSugar's button_shell - see
@@ -28,7 +31,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("axon-display")
 
 HOST, PORT = "127.0.0.1", 8500
-FULL_REFRESH_EVERY = 12  # partial updates between full refreshes, to limit ghosting
 
 # broker-host is the "brain" - a stationary, wall-powered Pi 5 - vs. display-device which is
 # meant to be picked up and carried, so it's not a reliable place to host the
@@ -37,11 +39,20 @@ MQTT_BROKER = "localhost"
 MQTT_PORT = 1883
 MQTT_TOPIC = "axon/agents/+/status"
 
+# RGB LED colors reflecting aggregate agent state - a glance-without-looking
+# indicator, since the LED is visible even when you're not reading the
+# screen. Checked in priority order: any error beats any running beats idle.
+LED_ERROR = (255, 0, 0)
+LED_RUNNING = (0, 120, 255)
+LED_IDLE = (0, 40, 0)
+LED_EMPTY = (20, 20, 20)
+
 
 class DisplayDaemon:
     def __init__(self):
-        from waveshare_epd import epd2in13_V3
-        self.epd = epd2in13_V3.EPD()
+        from whisplay import WhisplayBoard
+        self.board = WhisplayBoard()
+        self.board.set_backlight(70)
         self.lock = threading.RLock()
         self.state = {
             "screen": "idle",
@@ -50,7 +61,6 @@ class DisplayDaemon:
             "hostname": os.uname()[1],
             "agents": {},  # source (hostname/session id) -> {state, task, ts}
         }
-        self.partial_count = 0
         self._stop = threading.Event()
         self.mqtt = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self.mqtt.on_connect = self._mqtt_on_connect
@@ -58,23 +68,21 @@ class DisplayDaemon:
 
     def start(self):
         with self.lock:
-            self.epd.init()
-            self.epd.Clear(0xFF)
             image, draw = hud.new_canvas()
             screens.render_boot(image, draw, self.state)
-            buf = self.epd.getbuffer(image)
-            self.epd.display(buf)
+            self.board.draw_image(0, 0, hud.W, hud.H, hud.to_rgb565(image))
             log.info("boot screen shown")
-        time.sleep(1.5)
+        time.sleep(1.2)
         with self.lock:
-            self._render(force_full=True)
+            self._render()
         self._start_mqtt()
 
     def stop(self):
         self._stop.set()
         self.mqtt.loop_stop()
         with self.lock:
-            self.epd.sleep()
+            self.board.set_rgb(0, 0, 0)
+            self.board.cleanup()
 
     def _start_mqtt(self):
         try:
@@ -109,22 +117,26 @@ class DisplayDaemon:
             if self.state["screen"] == "idle":
                 self._render()
 
-    def _render(self, force_full=False):
+    def _update_led(self):
+        agents = self.state["agents"]
+        if not agents:
+            color = LED_EMPTY
+        elif any(a["state"] == "error" for a in agents.values()):
+            color = LED_ERROR
+        elif any(a["state"] == "running" for a in agents.values()):
+            color = LED_RUNNING
+        else:
+            color = LED_IDLE
+        self.board.set_rgb(*color)
+
+    def _render(self):
         screen = self.state["screen"]
         image, draw = hud.new_canvas()
         screens.RENDERERS[screen](image, draw, self.state)
-        buf = self.epd.getbuffer(image)
-
-        if force_full or self.partial_count == 0:
-            self.epd.display(buf)
-            self.epd.displayPartBaseImage(buf)
-            self.partial_count = 1
-        else:
-            self.epd.displayPartial(buf)
-            self.partial_count += 1
-            if self.partial_count >= FULL_REFRESH_EVERY:
-                self.partial_count = 0
-        log.info("rendered %s (partial_count=%d)", screen, self.partial_count)
+        self.board.draw_image(0, 0, hud.W, hud.H, hud.to_rgb565(image))
+        if screen == "idle":
+            self._update_led()
+        log.info("rendered %s", screen)
 
     def handle_button(self, mode):
         with self.lock:
@@ -141,7 +153,8 @@ class DisplayDaemon:
                 self._render()
             elif mode == "long":
                 self.state["screen"] = "shutdown"
-                self._render(force_full=True)
+                self.board.set_rgb(255, 80, 0)
+                self._render()
                 time.sleep(1)
                 log.info("shutdown triggered via long-press")
                 os.system("/sbin/shutdown -h now")

@@ -1,5 +1,5 @@
 [Unit]
-Description=Axon e-Paper display daemon
+Description=Axon Whisplay display daemon
 After=network.target
 
 [Service]

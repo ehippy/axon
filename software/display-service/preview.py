@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Render any Axon HUD screen to a PNG, without touching display-device or the eink
-hardware at all - same drawing code and the same 1-bit dithering load_art()
-does, just saved to a file instead of pushed to the panel. For iterating on
-art while away from the device.
+"""Render any Axon HUD screen to a PNG, without touching display-device or the
+Whisplay hardware at all - same drawing code, just saved to a file instead
+of pushed to the panel. For iterating on art while away from the device.
 
 Usage:
     python3 preview.py idle
@@ -11,8 +10,8 @@ Usage:
 
 --art-dir points hud.load_art() at a local folder instead of the on-device
 /home/pi/axon-assets - drop candidate idle.png there and this renders it in
-full screen context (frame, header, status text and all), dithered exactly
-as it'll look on the real panel.
+full screen context (title, status text and all), real color now (the
+Whisplay LCD isn't 1-bit like the old e-ink panel was).
 """
 import argparse
 import os
@@ -26,7 +25,7 @@ def main():
     parser.add_argument("screen", nargs="?", help="screen name (idle, boot, shutdown)")
     parser.add_argument("--art-dir", default=None, help="local folder to load art from instead of /home/pi/axon-assets")
     parser.add_argument("--out", default=None, help="output PNG path (default: <screen>_preview.png)")
-    parser.add_argument("--scale", type=int, default=4, help="upscale factor for visibility (panel is only 122x250px)")
+    parser.add_argument("--scale", type=int, default=4, help="upscale factor for visibility (panel is 240x280px)")
     parser.add_argument("--battery", type=int, default=72, metavar="PCT", help="fake battery percent (no real PiSugar off-device) - default 72")
     parser.add_argument("--charging", action="store_true", help="show the fake battery as charging")
     parser.add_argument("--list", action="store_true", help="list available screen names and exit")
