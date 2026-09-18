@@ -123,7 +123,53 @@ system time within a second. This is a real MCU flash (the script pauses for a
 "battery must be charged / stop pisugar-server first" confirmation, then
 reflashes over I2C) — worth knowing before re-running it, not a config change.
 
-## Display daemon (replaces the one-off button scripts)
+## Hardware swap: PiSugar Whisplay HAT replaces the e-Paper panel
+
+The Waveshare e-Paper HAT this section originally describes is gone,
+replaced by a **PiSugar Whisplay HAT**: 240×280 color LCD (ST7789P3),
+RGB LED, speaker, mic. PiSugar3 (battery/RTC/button) is untouched -
+confirmed no I2C conflicts (Whisplay's own controller sits at `0x10`,
+separate from PiSugar3's `0x57`/`0x68`).
+
+Driver: [github.com/PiSugar/Whisplay](https://github.com/PiSugar/Whisplay),
+cloned to `~/Whisplay` on display-device. Read `runtime/whisplay.py` directly rather
+than trust an incomplete web-doc summary of its Python API. Deliberately
+skipped their optional `whisplay-daemon` (a full app-switching framework
+with its own WiFi/Bluetooth/Power-menu pages) since it wants exclusive
+hardware ownership and would fight with the PiSugar3 button wiring already
+in place - used the raw `WhisplayBoard` class directly instead, same
+own-lightweight-daemon pattern as everything else here.
+
+Gotcha: `install_driver.sh` has an interactive `[y/N]` prompt that silently
+defaults to No over SSH with no TTY - first attempt failed quietly for
+exactly that reason (`echo y |` on retry fixed it). Verified the actual
+driver with a non-interactive smoke test (fill screen, draw text, flash
+the RGB LED) before writing any of our own code against it, and confirmed
+PiSugar3 still worked afterward (battery/RTC reads unaffected).
+
+What changed in `hud.py`/`screens.py`/`daemon.py`:
+- Canvas is real RGB now, not 1-bit - FG/BG are RGB tuples, `load_art()`
+  no longer dithers, text renders anti-aliased instead of blocky.
+- Back to **portrait** (240×280) rather than the e-ink's landscape flip -
+  240px alone is already roomier than the old e-ink's full 122px width, so
+  the constraint that motivated going landscape doesn't apply here.
+- Dropped e-ink's partial-refresh/base-image/full-refresh-every-12-updates
+  machinery entirely - a normal LCD just gets the whole frame pushed each
+  time. Simpler *and* much faster: boot-to-idle dropped from ~16-18s to ~4s.
+- New capability the e-ink never had: the **RGB LED reflects aggregate
+  agent state** at a glance (red = any error, blue = any running, dim
+  green = all idle, off = nothing reporting) - checked on every idle render.
+
+Unchanged: the whole MQTT agents pipeline, PiSugar3's own button wiring
+(still single/double/long-tap via `button_shell` → `curl` to `/event`),
+and the daemon's HTTP API shape.
+
+Not yet done: Whisplay's own physical button (raw GPIO, press/release
+only, no built-in gesture detection - unlike PiSugar3's I2C button) isn't
+wired to anything. Also haven't touched the mic/speaker at all yet - real
+audio I/O is a distinct, unstarted piece of work.
+
+### Display daemon (original e-Paper version - history, superseded above)
 
 The original single/double/long-press scripts each re-init'd the e-Paper panel
 from scratch on every call (slow, full-flash every time) and had no way to
@@ -249,12 +295,15 @@ for real.
 ## Open items
 
 1. Source art for `/home/pi/axon-assets/idle.png` (or wire up more named art
-   hooks in `screens.py` as it shows up).
+   hooks in `screens.py` as it shows up) - now real color, not dithered 1-bit.
 2. Wire up Claude Code hooks on the *other* network machines (only workstation
    is done - see `software/claude-hooks/README.md`).
 3. Consider a `reaction:added`/`command:*` gateway hook too, or richer
    `agent:end` context (Hermes's `response` field) for the task text -
    current Hermes hook only reports coarse state, not as rich as it could be.
+4. Wire up Whisplay's own physical button (currently unused - PiSugar3's
+   button handles everything).
+5. Mic/speaker are untouched - no audio I/O built yet at all.
 
 ## Status
 
@@ -284,3 +333,8 @@ for real.
       real security tradeoff: anyone with SSH key access gets root with no friction.
       Reasonable given remote networking-only reachability and single-user, but worth
       remembering if this box's threat model ever changes.)
+- [x] PiSugar Whisplay HAT installed and driving the display (240×280 color
+      LCD + RGB LED reflecting agent state), e-Paper HAT fully retired.
+      Confirmed no PiSugar3 conflicts, boot-to-idle now ~4s (was ~16-18s)
+- [ ] Whisplay's own physical button - unused
+- [ ] Whisplay mic/speaker - unused, no audio I/O built yet
