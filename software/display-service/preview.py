@@ -53,13 +53,12 @@ def main():
         "agent_state": "running",
         "agent_task": "reviewing pull request",
         "hostname": "display-device",
-        "clock": "14:32:07",
     }
     if args.screen in screens.CYCLE:
         screens.set_screen_index(screens.CYCLE.index(args.screen), len(screens.CYCLE))
 
     image, draw = hud.new_canvas()
-    screens.RENDERERS[args.screen](draw, fake_state)
+    screens.RENDERERS[args.screen](image, draw, fake_state)
 
     out_path = args.out or f"{args.screen}_preview.png"
     scaled = image.resize((hud.W * args.scale, hud.H * args.scale), resample=0)  # NEAREST - keep hard pixel edges

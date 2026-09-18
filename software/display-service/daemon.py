@@ -17,7 +17,6 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import hud
@@ -28,7 +27,6 @@ log = logging.getLogger("axon-display")
 
 HOST, PORT = "127.0.0.1", 8500
 FULL_REFRESH_EVERY = 12  # partial updates between full refreshes, to limit ghosting
-CLOCK_TICK_SECONDS = 5
 
 
 class DisplayDaemon:
@@ -41,7 +39,6 @@ class DisplayDaemon:
             "agent_state": "idle",
             "agent_task": "",
             "hostname": os.uname()[1],
-            "clock": datetime.now().strftime("%H:%M:%S"),
         }
         self.partial_count = 0
         self._stop = threading.Event()
@@ -51,14 +48,13 @@ class DisplayDaemon:
             self.epd.init()
             self.epd.Clear(0xFF)
             image, draw = hud.new_canvas()
-            screens.render_boot(draw, self.state)
+            screens.render_boot(image, draw, self.state)
             buf = self.epd.getbuffer(image)
             self.epd.display(buf)
             log.info("boot screen shown")
         time.sleep(1.5)
         with self.lock:
             self._render(force_full=True)
-        threading.Thread(target=self._clock_loop, daemon=True).start()
 
     def stop(self):
         self._stop.set()
@@ -73,7 +69,7 @@ class DisplayDaemon:
             screens.set_screen_index(None, None)
 
         image, draw = hud.new_canvas()
-        screens.RENDERERS[screen](draw, self.state)
+        screens.RENDERERS[screen](image, draw, self.state)
         buf = self.epd.getbuffer(image)
 
         if force_full or self.partial_count == 0:
@@ -113,14 +109,6 @@ class DisplayDaemon:
             self.state["agent_task"] = agent_task
             if self.state["screen"] == "idle":
                 self._render()
-
-    def _clock_loop(self):
-        while not self._stop.is_set():
-            time.sleep(CLOCK_TICK_SECONDS)
-            with self.lock:
-                self.state["clock"] = datetime.now().strftime("%H:%M:%S")
-                if self.state["screen"] == "idle":
-                    self._render()
 
 
 def make_handler(daemon: DisplayDaemon):

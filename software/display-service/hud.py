@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from PIL import Image, ImageDraw, ImageFont
 
 font_title = ImageFont.truetype(FONT_PATH, 20)
+font_wordmark = ImageFont.truetype(FONT_PATH, 28)
 font_tiny = ImageFont.truetype(FONT_PATH, 9)
 font_body = ImageFont.truetype(FONT_PATH, 13)
 font_small = ImageFont.truetype(FONT_PATH, 10)
@@ -83,10 +84,26 @@ def outer_frame(draw):
     draw.line((CHAMFER, 3, W - 1 - 3, 3), fill=FG)
 
 
-def header_block(draw, title, subtitle):
-    top, bottom = 4, 62
-    draw.text((8, top + 8), title, font=font_title, fill=FG)
-    draw.text((8, top + 32), subtitle, font=font_tiny, fill=FG)
+def vertical_text(image, text, font, x=0, y=0):
+    """Paste `text` rotated 90deg clockwise, top-left corner of the rotated
+    block at (x, y). Returns the (width, height) of the placed block so
+    callers can lay out whatever comes next around it.
+    """
+    bbox = font.getbbox(text)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    tmp = Image.new("1", (tw, th), BG)
+    tmp_draw = ImageDraw.Draw(tmp)
+    tmp_draw.text((-bbox[0], -bbox[1]), text, font=font, fill=FG)
+    rotated = tmp.rotate(-90, expand=True)  # negative = clockwise
+    image.paste(rotated, (x, y))
+    return rotated.size
+
+
+def header_block(image, draw, title, subtitle):
+    top = 4
+    tw, th = vertical_text(image, title, font_wordmark, x=0, y=top)
+    draw.text((tw + 10, top + 4), subtitle, font=font_tiny, fill=FG)
+    bottom = top + th + 6
     return bottom
 
 

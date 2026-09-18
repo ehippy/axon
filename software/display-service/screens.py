@@ -44,8 +44,8 @@ def set_screen_index(idx, total):
     _current_index[0], _current_index[1] = idx, total
 
 
-def render_boot(draw, state):
-    y = hud.header_block(draw, "AXON", "SYSTEM BOOT")
+def render_boot(image, draw, state):
+    y = hud.header_block(image, draw, "AXON", "SYSTEM BOOT")
     hud.double_rule(draw, y + 6)
     box_top, box_bottom = y + 16, 190
     draw.text((18, box_top + 40), "ONLINE", font=hud.font_title, fill=hud.FG)
@@ -54,8 +54,8 @@ def render_boot(draw, state):
     draw.text((8, box_bottom + 34), "daemon started", font=hud.font_small, fill=hud.FG)
 
 
-def render_idle(draw, state):
-    y = hud.header_block(draw, "AXON", "AGENT UNIT // 01")
+def render_idle(image, draw, state):
+    y = hud.header_block(image, draw, "AXON", state.get("hostname", "?"))
     hud.double_rule(draw, y + 6)
 
     box_top, box_bottom = y + 16, 190
@@ -78,13 +78,11 @@ def render_idle(draw, state):
     hud.double_rule(draw, box_bottom + 12)
 
     battery_str, _ = _battery_line()
-    draw.text((8, box_bottom + 20), f"HOST {state.get('hostname', '?')}", font=hud.font_small, fill=hud.FG)
-    draw.text((8, box_bottom + 34), f"TIME {state.get('clock', '--:--:--')}", font=hud.font_small, fill=hud.FG)
-    draw.text((8, box_bottom + 48), battery_str, font=hud.font_small, fill=hud.FG)
+    draw.text((8, box_bottom + 20), battery_str, font=hud.font_small, fill=hud.FG)
 
 
-def render_diagnostics(draw, state):
-    y = hud.header_block(draw, "AXON", "DIAGNOSTICS // 02")
+def render_diagnostics(image, draw, state):
+    y = hud.header_block(image, draw, "AXON", "DIAGNOSTICS // 02")
     hud.double_rule(draw, y + 6)
 
     box_top, box_bottom = y + 16, 190
@@ -105,8 +103,8 @@ def render_diagnostics(draw, state):
     _cycle_footer(draw, box_bottom)
 
 
-def render_battery(draw, state):
-    y = hud.header_block(draw, "AXON", "POWER // 03")
+def render_battery(image, draw, state):
+    y = hud.header_block(image, draw, "AXON", "POWER // 03")
     hud.double_rule(draw, y + 6)
 
     box_top, box_bottom = y + 16, 190
@@ -129,8 +127,8 @@ def render_battery(draw, state):
     _cycle_footer(draw, box_bottom)
 
 
-def render_network(draw, state):
-    y = hud.header_block(draw, "AXON", "NETWORK // 04")
+def render_network(image, draw, state):
+    y = hud.header_block(image, draw, "AXON", "NETWORK // 04")
     hud.double_rule(draw, y + 6)
 
     box_top, box_bottom = y + 16, 190
@@ -151,8 +149,8 @@ def render_network(draw, state):
     _cycle_footer(draw, box_bottom)
 
 
-def render_shutdown(draw, state):
-    y = hud.header_block(draw, "AXON", "SHUTDOWN // 00")
+def render_shutdown(image, draw, state):
+    y = hud.header_block(image, draw, "AXON", "SHUTDOWN // 00")
     hud.double_rule(draw, y + 6)
     box_top, box_bottom = y + 16, 190
     draw.text((18, box_top + 30), "POWERING", font=hud.font_title, fill=hud.FG)
