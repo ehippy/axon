@@ -32,6 +32,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 font_title = ImageFont.truetype(FONT_PATH, 20)
 font_wordmark = ImageFont.truetype(FONT_PATH, 30)
+font_watermark = ImageFont.truetype(FONT_PATH, 64)
 font_tiny = ImageFont.truetype(FONT_PATH, 11)
 font_body = ImageFont.truetype(FONT_PATH, 15)
 font_small = ImageFont.truetype(FONT_PATH, 12)
@@ -135,15 +136,17 @@ def vertical_text(image, text, font, x=0, y=0):
     return rotated.size
 
 
-def header_block(image, draw, title):
-    """Draws the vertical title flush left, centered in the panel's height.
-    Returns next_x: where content can start, to the title's right.
+def watermark(draw, text, opacity=0.33, margin=2):
+    """Big, dim logo mark snapped to the bottom-right corner, meant to be
+    drawn first so real content sits on top of it. "Opacity" here is just
+    alpha-over-black math (result = fg * opacity), not real alpha
+    compositing - correct as long as BG stays pure black, much simpler
+    than layering an RGBA overlay for a background that never changes.
     """
-    bbox = font_wordmark.getbbox(title)
-    title_extent = bbox[2] - bbox[0]  # becomes the vertical extent post-rotation
-    y = max(4, (H - title_extent) // 2)
-    tw, _ = vertical_text(image, title, font_wordmark, x=4, y=y)
-    return 4 + tw + 12
+    bbox = font_watermark.getbbox(text)
+    x = W - margin - bbox[2]
+    y = H - margin - bbox[3]
+    draw.text((x, y), text, font=font_watermark, fill=dim(FG, opacity))
 
 
 def battery_icon(draw, x, y, pct, charging=False, w=18, h=9):
