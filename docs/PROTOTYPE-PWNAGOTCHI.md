@@ -181,8 +181,9 @@ for Hermes specifically.
    satellite for the Pi4 puck.
 2. Source art for `/home/pi/axon-assets/idle.png` (or wire up more named art
    hooks in `screens.py` as it shows up).
-3. Wire up actual publishers to the MQTT topic — Claude Code hooks on other
-   network machines, and eventually a `built` plugin for Hermes.
+3. Wire up Claude Code hooks on the *other* network machines (only workstation
+   is done - see `software/claude-hooks/README.md`), and eventually a `built`
+   plugin for Hermes.
 
 ## Status
 
@@ -199,7 +200,10 @@ for Hermes specifically.
       end with a real `mosquitto_pub` from broker-host
 - [ ] Node/Claude Code installed and memory-tested under real usage
 - [ ] Art sourced for the idle screen
-- [ ] Actual MQTT publishers (Claude Code hooks, `built` plugin for Hermes)
+- [x] Claude Code hooks live on workstation (`SessionStart`/`UserPromptSubmit`/
+      `Stop`/`SessionEnd` → `software/claude-hooks/report_status.py`),
+      verified end to end including a live panel update
+- [ ] Same hooks on the rest of the network machines, and a `built` plugin for Hermes
 - [x] NOPASSWD sudo enabled for `pi` on this box (flagged here since it's a
       real security tradeoff: anyone with SSH key access gets root with no friction.
       Reasonable given remote networking-only reachability and single-user, but worth
