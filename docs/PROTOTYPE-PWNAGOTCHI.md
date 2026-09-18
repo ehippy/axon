@@ -206,22 +206,55 @@ and confirmed via `journalctl` that `paho-mqtt`'s background loop
 landed post-reconnect. Not just assumed from the library's docs - tested
 for real.
 
-**Real publisher live**: Claude Code hooks are wired up on **workstation**
-(see `software/claude-hooks/`) across `SessionStart`, `UserPromptSubmit`,
-`PostToolUse`, `Stop`, `SessionEnd` - `PostToolUse` is what makes the task
-text representative of actual work ("editing screens.py", "running: git
-commit...") rather than a static string or raw prompt text, and lifecycle
-events get randomized on-brand phrasing instead of flat strings. Still
-needed: the same hooks on the rest of the network machines, and eventually
-a `built` plugin for Hermes specifically.
+**Real publishers live**: two, on two different harnesses.
+
+- **Claude Code hooks on workstation** (see `software/claude-hooks/`) across
+  `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, `SessionEnd` -
+  `PostToolUse` is what makes the task text representative of actual work
+  ("editing screens.py", "running: git commit...") rather than a static
+  string or raw prompt text, and lifecycle events get randomized on-brand
+  phrasing instead of flat strings. Still needed: the same hooks on the
+  rest of the network machines.
+- **Hermes gateway hook on broker-host** (see `software/hermes-hooks/`). Important
+  correction to earlier notes in this doc: **Hermes is not built on Claude
+  Code** - it's its own independent harness
+  ([hermes-agent.nousresearch.com](https://hermes-agent.nousresearch.com/docs/)),
+  found live on broker-host at `~/.hermes/hermes-agent/` (its own gateway,
+  dashboard, state system, skills, and - genuinely - four separate native
+  hook systems: gateway hooks, plugin hooks, shell hooks, outbound
+  webhooks). Claude Code's hooks mechanism is irrelevant to it entirely;
+  the "future `built` plugin" idea from earlier notes was aimed at the
+  wrong target; `built` (the systemd service, port 19091) is a distinct
+  thing from Hermes's own gateway/dashboard processes (ports 8642/8644/9119).
+  Used a **gateway hook** (`~/.hermes/hooks/axon-status/HOOK.yaml` +
+  `handler.py`, subscribed to `session:start`, `agent:start`, `agent:step`,
+  `agent:end`, `session:end`) - it runs in-process inside the gateway, so
+  `handler.py` uses `asyncio.create_subprocess_exec` rather than a blocking
+  `subprocess.run()`, which would stall the gateway's event loop. Publishes
+  as source `hermes`, not `broker-host` - the machine might someday also report
+  its own separate interactive Claude Code activity, and conflating the two
+  would be confusing on the AGENTS screen. `agent:step`'s `tool_names`
+  context gives genuinely representative task text ("read_file, grep") for
+  free, same idea as Claude Code's `PostToolUse`.
+
+  Verified: `hermes gateway restart` (graceful, drained in-flight turns
+  first) logged `1 hook(s) loaded`; `hermes hooks test <event>` turned out
+  to only cover shell/plugin hooks (a different, non-colon event
+  vocabulary - `pre_tool_call` etc., not `agent:start` etc.), so tested by
+  calling `handler.handle()` directly with synthetic context, same spirit
+  as piping fake JSON into the Claude Code hook script. Confirmed on
+  display-device's journal: `hermes` shows up as its own distinct source with real
+  task text.
 
 ## Open items
 
 1. Source art for `/home/pi/axon-assets/idle.png` (or wire up more named art
    hooks in `screens.py` as it shows up).
 2. Wire up Claude Code hooks on the *other* network machines (only workstation
-   is done - see `software/claude-hooks/README.md`), and eventually a `built`
-   plugin for Hermes.
+   is done - see `software/claude-hooks/README.md`).
+3. Consider a `reaction:added`/`command:*` gateway hook too, or richer
+   `agent:end` context (Hermes's `response` field) for the task text -
+   current Hermes hook only reports coarse state, not as rich as it could be.
 
 ## Status
 
@@ -243,7 +276,10 @@ a `built` plugin for Hermes specifically.
 - [x] Claude Code hooks live on workstation (`SessionStart`/`UserPromptSubmit`/
       `Stop`/`SessionEnd` → `software/claude-hooks/report_status.py`),
       verified end to end including a live panel update
-- [ ] Same hooks on the rest of the network machines, and a `built` plugin for Hermes
+- [x] Hermes gateway hook live on broker-host (`software/hermes-hooks/axon-status/`),
+      confirmed `1 hook(s) loaded` in gateway logs and a real update landing
+      on display-device as source `hermes`
+- [ ] Same Claude Code hooks on the rest of the network machines
 - [x] NOPASSWD sudo enabled for `pi` on this box (flagged here since it's a
       real security tradeoff: anyone with SSH key access gets root with no friction.
       Reasonable given remote networking-only reachability and single-user, but worth
