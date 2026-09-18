@@ -107,22 +107,10 @@ class DisplayDaemon:
             }
             log.info("agent update: %s -> %s", source, payload)
             if self.state["screen"] == "idle":
-                # Nothing else being actively shown - surface it. Only from
-                # idle, not from diagnostics/battery/network: those mean
-                # someone deliberately navigated there, and yanking the
-                # screen away mid-check would be more annoying than useful.
-                self.state["screen"] = "agents"
-                self._render()
-            elif self.state["screen"] == "agents":
                 self._render()
 
     def _render(self, force_full=False):
         screen = self.state["screen"]
-        if screen in screens.CYCLE:
-            screens.set_screen_index(screens.CYCLE.index(screen), len(screens.CYCLE))
-        else:
-            screens.set_screen_index(None, None)
-
         image, draw = hud.new_canvas()
         screens.RENDERERS[screen](image, draw, self.state)
         buf = self.epd.getbuffer(image)
@@ -144,10 +132,12 @@ class DisplayDaemon:
                 self.state["screen"] = screens.HOME
                 self._render()
             elif mode == "double":
-                cur = self.state["screen"]
+                # No page cycle anymore (single screen now) - just refresh.
                 cycle = screens.CYCLE
-                idx = cycle.index(cur) if cur in cycle else -1
-                self.state["screen"] = cycle[(idx + 1) % len(cycle)]
+                if cycle:
+                    cur = self.state["screen"]
+                    idx = cycle.index(cur) if cur in cycle else -1
+                    self.state["screen"] = cycle[(idx + 1) % len(cycle)]
                 self._render()
             elif mode == "long":
                 self.state["screen"] = "shutdown"

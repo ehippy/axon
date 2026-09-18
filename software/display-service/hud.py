@@ -32,8 +32,11 @@ font_tiny = ImageFont.truetype(FONT_PATH, 9)
 font_body = ImageFont.truetype(FONT_PATH, 13)
 font_small = ImageFont.truetype(FONT_PATH, 10)
 
-# Native panel size, portrait - no rotation needed by the driver this way.
-W, H = 122, 250
+# Landscape - the panel is native-portrait (122x250) but text-heavy screens
+# were too horizontally cramped that way. The driver auto-rotates: an image
+# sized (250, 122) - width == panel's native height - gets rotated 90deg
+# internally by getbuffer() before it's sent to the hardware.
+W, H = 250, 122
 BLACK = 0
 WHITE = 255
 BG = BLACK
@@ -99,19 +102,17 @@ def vertical_text(image, text, font, x=0, y=0):
     return rotated.size
 
 
-def header_block(image, draw, title, subtitle=None):
-    """Draws the vertical title flush left. If given, subtitle is drawn
-    immediately to its right. Returns (bottom_y, next_x) - next_x is where
-    the title's rotated block ends, for callers that want to lay out their
-    own content beside it instead of using the built-in subtitle slot.
+def header_block(image, draw, title):
+    """Draws the vertical title flush left, centered in the panel's height -
+    landscape means height (122px) is the scarce dimension now, so center
+    rather than pin to top the way the old portrait layout did. Returns
+    next_x: where content can start, to the title's right.
     """
-    top = 4
-    tw, th = vertical_text(image, title, font_wordmark, x=0, y=top)
-    next_x = tw + 10
-    if subtitle:
-        draw.text((next_x, top + 4), subtitle, font=font_tiny, fill=FG)
-    bottom = top + th + 6
-    return bottom, next_x
+    bbox = font_wordmark.getbbox(title)
+    title_extent = bbox[2] - bbox[0]  # becomes the vertical extent post-rotation
+    y = max(2, (H - title_extent) // 2)
+    tw, _ = vertical_text(image, title, font_wordmark, x=4, y=y)
+    return 4 + tw + 10
 
 
 def battery_icon(draw, x, y, pct, charging=False, w=16, h=8):
@@ -131,9 +132,10 @@ def battery_icon(draw, x, y, pct, charging=False, w=16, h=8):
         draw.line((cx, cy - 2, cx, cy + 2), fill=BG)
 
 
-def double_rule(draw, y):
-    draw.line((0, y, W, y), fill=FG)
-    draw.line((0, y + 3, W, y + 3), fill=FG)
+def double_rule(draw, y, x0=0, x1=None):
+    x1 = W if x1 is None else x1
+    draw.line((x0, y, x1, y), fill=FG)
+    draw.line((x0, y + 3, x1, y + 3), fill=FG)
 
 
 def bracket_box(draw, x0, y0, x1, y1, arm=8):

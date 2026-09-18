@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("screen", nargs="?", help="screen name (idle, diagnostics, battery, network, boot, shutdown)")
+    parser.add_argument("screen", nargs="?", help="screen name (idle, boot, shutdown)")
     parser.add_argument("--art-dir", default=None, help="local folder to load art from instead of /home/pi/axon-assets")
     parser.add_argument("--out", default=None, help="output PNG path (default: <screen>_preview.png)")
     parser.add_argument("--scale", type=int, default=4, help="upscale factor for visibility (panel is only 122x250px)")
@@ -56,14 +56,16 @@ def main():
 
     # Fake state good enough to render something representative - real
     # values on-device come from the daemon's live state dict.
+    import time as _time
     fake_state = {
         "screen": args.screen,
-        "agent_state": "running",
-        "agent_task": "reviewing pull request",
         "hostname": "display-device",
+        "agents": {
+            "hermes": {"state": "running", "task": "read_file, grep", "ts": _time.time()},
+            "workstation": {"state": "running", "task": "editing screens.py", "ts": _time.time() - 190},
+            "broker-host": {"state": "idle", "task": "awaiting input", "ts": _time.time() - 4200},
+        },
     }
-    if args.screen in screens.CYCLE:
-        screens.set_screen_index(screens.CYCLE.index(args.screen), len(screens.CYCLE))
 
     image, draw = hud.new_canvas()
     screens.RENDERERS[args.screen](image, draw, fake_state)
