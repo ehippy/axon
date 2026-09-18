@@ -12,7 +12,7 @@ Pi4+Feather build (see [SPEC.md](SPEC.md)). No SD card yet — needs a fresh ima
 
 | Part | Confirmed | Notes |
 |---|---|---|
-| SBC | Raspberry Pi Zero 2 W Rev 1.0, confirmed via `/proc/cpuinfo` | Hostname `display-device` (`device.example`), `pi` user, SSH key access set up |
+| SBC | Raspberry Pi Zero 2 W Rev 1.0, confirmed via `/proc/cpuinfo` | Hostname is **`axon`** (`device.example`, though mDNS resolution has been flaky from this dev environment - the remote networking IP `device.example` is more reliable). Renamed from the original `display-device` once the project itself was renamed to Axon; system hostname, `/etc/hosts`, and the remote networking device name were all updated to match. `pi` user, SSH key access set up. Older mentions of `display-device` throughout this doc are historical - accurate to when they were written, not stale info to fix. |
 | OS | Debian 13 "trixie", 64-bit (`aarch64`) | Raspberry Pi OS default for Zero 2 W. Earlier note in this doc suggesting 32-bit to save memory was likely backwards — Claude Code's CLI and its native Node deps increasingly ship arm64-only prebuilt binaries (same trend that dropped ARMv6), so 64-bit may be required, not just heavier. Good that it's already set up this way. |
 | Display | Waveshare 2.13" e-Paper HAT (~250×122 monochrome, SPI) | Moved over from the pwnagotchi. Driver confirmed: **V3** (`epd2in13_V3` from the [waveshareteam/e-Paper](https://github.com/waveshareteam/e-Paper) repo) — V2 ran with no errors but no visible change (classic driver-mismatch symptom: wrong init sequence, panel silently ignores it); V3's demo produced real busy/refresh cycling and a visible update. |
 | Battery | **PiSugar3**, confirmed by hardware inspection | Shows up on I2C bus 1 at `0x57` (plus `0x68`, likely its onboard RTC) — note this contradicts the address table this doc had guessed from (PiSugar2 ≈ 0x57, PiSugar3 ≈ 0x2d); trust the hardware ID over that guess. Battery % not wired into software yet. |
@@ -168,6 +168,31 @@ Not yet done: Whisplay's own physical button (raw GPIO, press/release
 only, no built-in gesture detection - unlike PiSugar3's I2C button) isn't
 wired to anything. Also haven't touched the mic/speaker at all yet - real
 audio I/O is a distinct, unstarted piece of work.
+
+### Display rotated 90 degrees clockwise
+
+Whisplay's driver has no rotation support of its own - unlike the old
+e-ink driver (`getbuffer()` auto-detected image orientation and rotated),
+Whisplay's MADCTL register is set once at `_init_display()` and never
+revisited, and `draw_image()`'s bounds check assumes whatever image you
+hand it matches the panel's fixed physical width/height exactly. Rotating
+means composing in a logical canvas of the swapped orientation and
+rotating the whole finished frame ourselves before it reaches hardware.
+
+`hud.py` now has `PANEL_W, PANEL_H = 240, 280` (the panel's real fixed
+size) separate from `W, H` (now `280, 240` - the logical composition
+canvas, rotated 90° clockwise onto the physical panel by
+`rotate_for_display()`/`to_hardware_frame()`). `preview.py` gained a
+`--logical` flag to see the pre-rotation composition for debugging.
+
+**Known risk, not yet resolved**: every corner-inset value (battery icon,
+watermark, status dot) was tuned empirically for the pre-rotation
+orientation. Worked through the coordinate mapping by hand and suspect at
+least the battery icon and the watermark (previously "slammed to the
+floor" with zero margin on one axis) are now near a *different* physical
+rounded corner than before - but couldn't fully verify without seeing the
+actual hardware. Shipped with margins unchanged pending a visual check;
+expect a follow-up round of corner-inset fixes once that's confirmed.
 
 ### Display daemon (original e-Paper version - history, superseded above)
 
