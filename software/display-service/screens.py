@@ -93,18 +93,41 @@ def render_idle(image, draw, state):
     agent_state = state.get("agent_state", "idle").upper()
     draw.text((18, box_top + 10), "STATUS", font=hud.font_small, fill=hud.FG)
 
-    art = hud.load_art("idle", max_size=(70, 70))
+    # Cap art height to what's actually left for it, computed from the real
+    # box bounds rather than a guessed constant - leaves room below for the
+    # task line (~20px) regardless of how tall header_block's vertical title
+    # ends up being.
+    art_max_h = max(20, box_bottom - (box_top + 24) - 20)
+    art = hud.load_art("idle", max_size=(70, art_max_h))
     if art:
         draw.bitmap((18, box_top + 24), art, fill=hud.FG)
+        task_y = box_top + 24 + art.size[1] + 6
     else:
         draw.text((18, box_top + 24), agent_state, font=hud.font_title, fill=hud.FG)
         hud.signal_bars(draw, 18, box_top + 58)
+        task_y = box_top + 78
 
     if agent_state == "RUNNING" and state.get("agent_task"):
         task = state["agent_task"][:16]
-        draw.text((18, box_top + 78), task, font=hud.font_tiny, fill=hud.FG)
+        draw.text((18, task_y), task, font=hud.font_tiny, fill=hud.FG)
 
     hud.double_rule(draw, box_bottom + 12)
+
+
+def _compact_uptime():
+    raw = _run(["cat", "/proc/uptime"])
+    try:
+        secs = int(float(raw.split()[0]))
+    except (ValueError, IndexError):
+        return "?"
+    d, rem = divmod(secs, 86400)
+    h, rem = divmod(rem, 3600)
+    m, _ = divmod(rem, 60)
+    if d:
+        return f"{d}d {h}h"
+    if h:
+        return f"{h}h {m}m"
+    return f"{m}m"
 
 
 def render_diagnostics(image, draw, state):
@@ -114,16 +137,17 @@ def render_diagnostics(image, draw, state):
     box_top, box_bottom = y + 16, 190
 
     ts_ip = _run(["/usr/bin/remote-networking", "ip", "-4"])
-    uptime = _run(["uptime", "-p"]).replace("up ", "")
+    uptime = _compact_uptime()  # not uptime -p: its verbose phrasing ("5
+    # hours, 21 minutes") ran off the right edge of the panel
     loadavg = _run(["cat", "/proc/loadavg"])
     load = loadavg.split(" ")[0] if loadavg != "?" else "?"
 
     lines = [("network", ts_ip), ("UPTIME", uptime), ("LOAD 1M", load)]
-    ly = box_top + 14
+    ly = box_top + 8
     for label, value in lines:
         draw.text((18, ly), label, font=hud.font_small, fill=hud.FG)
         draw.text((18, ly + 13), value, font=hud.font_body, fill=hud.FG)
-        ly += 34
+        ly += 30
 
     hud.double_rule(draw, box_bottom + 12)
     _cycle_footer(draw, box_bottom)
@@ -164,11 +188,11 @@ def render_network(image, draw, state):
     ts_ip = _run(["/usr/bin/remote-networking", "ip", "-4"])
 
     lines = [("WIFI", ssid), ("LOCAL IP", local_ip), ("network IP", ts_ip)]
-    ly = box_top + 14
+    ly = box_top + 8
     for label, value in lines:
         draw.text((18, ly), label, font=hud.font_small, fill=hud.FG)
         draw.text((18, ly + 13), value, font=hud.font_body, fill=hud.FG)
-        ly += 34
+        ly += 30
 
     hud.double_rule(draw, box_bottom + 12)
     _cycle_footer(draw, box_bottom)
