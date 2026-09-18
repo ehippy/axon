@@ -56,6 +56,15 @@ def render_boot(image, draw, state):
 
 def render_idle(image, draw, state):
     y = hud.header_block(image, draw, "AXON", state.get("hostname", "?"))
+    _, batt = _battery_line()
+    pct = batt["percent"] if batt else 0
+    pct_text = f"{pct}%" if batt else "--"
+    tbbox = draw.textbbox((0, 0), pct_text, font=hud.font_tiny)
+    text_x = hud.W - 4 - (tbbox[2] - tbbox[0])
+    icon_x = text_x - 16 - 5
+    draw.text((text_x, 8), pct_text, font=hud.font_tiny, fill=hud.FG)
+    hud.battery_icon(draw, icon_x, 8, pct, w=14, h=7)
+
     hud.double_rule(draw, y + 6)
 
     box_top, box_bottom = y + 16, 190
@@ -76,9 +85,6 @@ def render_idle(image, draw, state):
         draw.text((18, box_top + 78), task, font=hud.font_tiny, fill=hud.FG)
 
     hud.double_rule(draw, box_bottom + 12)
-
-    battery_str, _ = _battery_line()
-    draw.text((8, box_bottom + 20), battery_str, font=hud.font_small, fill=hud.FG)
 
 
 def render_diagnostics(image, draw, state):
