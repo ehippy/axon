@@ -14,15 +14,19 @@ Mosquitto broker, which shows up on Axon's AGENTS screen. See
 2. Clone/pull this repo onto that machine.
 3. Add a `hooks` block to `~/.claude/settings.json` (global - applies to all
    projects on that machine) wiring `SessionStart`, `UserPromptSubmit`,
-   `Stop`, and `SessionEnd` to:
+   `PostToolUse`, `Stop`, and `SessionEnd` to:
    ```
    python3 -u /path/to/boxen/software/claude-hooks/report_status.py
    ```
-   (same command for all four - it branches on `hook_event_name` from stdin).
-   See `~/.claude/settings.json` on workstation for a working example.
+   (same command for all five - it branches on `hook_event_name` from stdin).
+   `PostToolUse` is the one that actually makes the task text representative
+   of real work ("editing screens.py", "running: git commit...") rather than
+   a static string or raw prompt text - worth prioritizing if only wiring a
+   couple of events. See `~/.claude/settings.json` on workstation for a
+   working example.
 4. Test the script standalone before trusting the hooks:
    ```
-   echo '{"hook_event_name":"UserPromptSubmit","prompt":"test"}' | python3 report_status.py
+   echo '{"hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"/tmp/x.py"}}' | python3 report_status.py
    ```
    then check display-device's AGENTS screen or `sudo journalctl -u axon-display` on
    display-device for `agent update: <hostname> -> ...`.
