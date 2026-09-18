@@ -50,9 +50,17 @@ pushing status to this box over the network.
   `device.example`.
 - **Remote access**: remote networking — standard package-manager install works fine now
   (no ARMv6 workaround needed).
-- **Agent runtime**: try Claude Code directly on-device first, now that the CPU
-  blocker is gone. Fall back to the status-display-only role if RAM pressure makes
-  it impractical.
+- **Agent runtime**: **decided — status-display satellite, not self-contained.**
+  Installed Node 20.19.2 + npm via apt (Debian 13's repo version; Claude Code
+  wants Node >=22, warns but still runs) and `@anthropic-ai/claude-code` via
+  `sudo npm install -g`. Measured, not guessed: `claude --help` alone (no
+  session, no conversation, just print help and exit) used **130MB RSS** -
+  30% of the box's 415MB usable memory - while only ~217MB was available with
+  `axon-display` + `pisugar-server` + sshd already running. A live session
+  sustaining that (or more, as history grows) doesn't leave a safe margin.
+  Node/npm/claude-code stay installed (no ongoing cost when idle, might be
+  useful for a one-off triggered task later) but this box is not going to run
+  an interactive Claude Code session as its normal mode.
 - **Display service**: Python using Waveshare's official e-Paper Python library.
   Whether it's rendering local agent status or relaying pushes from elsewhere
   depends on which role wins out above — same coarse-grained-state design either
@@ -209,12 +217,9 @@ a `built` plugin for Hermes specifically.
 
 ## Open items
 
-1. Install Node/Claude Code and watch real memory usage under load — that result
-   decides whether this is a self-contained mini agent box or a status-display
-   satellite for the Pi4 puck.
-2. Source art for `/home/pi/axon-assets/idle.png` (or wire up more named art
+1. Source art for `/home/pi/axon-assets/idle.png` (or wire up more named art
    hooks in `screens.py` as it shows up).
-3. Wire up Claude Code hooks on the *other* network machines (only workstation
+2. Wire up Claude Code hooks on the *other* network machines (only workstation
    is done - see `software/claude-hooks/README.md`), and eventually a `built`
    plugin for Hermes.
 
@@ -231,7 +236,9 @@ a `built` plugin for Hermes specifically.
       ready for an agent to use
 - [x] MQTT wired to broker-host (Mosquitto), AGENTS screen added, verified end to
       end with a real `mosquitto_pub` from broker-host
-- [ ] Node/Claude Code installed and memory-tested under real usage
+- [x] Node/Claude Code installed and memory-tested for real (130MB RSS for
+      just `claude --help`) - decided: status-display satellite, not
+      self-contained
 - [ ] Art sourced for the idle screen
 - [x] Claude Code hooks live on workstation (`SessionStart`/`UserPromptSubmit`/
       `Stop`/`SessionEnd` → `software/claude-hooks/report_status.py`),
