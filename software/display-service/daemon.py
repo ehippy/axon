@@ -39,13 +39,9 @@ MQTT_BROKER = "localhost"
 MQTT_PORT = 1883
 MQTT_TOPIC = "axon/agents/+/status"
 
-# RGB LED colors reflecting aggregate agent state - a glance-without-looking
-# indicator, since the LED is visible even when you're not reading the
-# screen. Checked in priority order: any error beats any running beats idle.
-LED_ERROR = (255, 0, 0)
-LED_RUNNING = (0, 120, 255)
-LED_IDLE = (0, 40, 0)
-LED_EMPTY = (20, 20, 20)
+# LED colors come from hud.STATUS_COLORS (dimmed - see hud.dim) rather than
+# a separate mapping defined here, so the LED and the on-screen status dot
+# can never drift into disagreeing about what a given state looks like.
 
 
 class DisplayDaemon:
@@ -118,16 +114,9 @@ class DisplayDaemon:
                 self._render()
 
     def _update_led(self):
-        agents = self.state["agents"]
-        if not agents:
-            color = LED_EMPTY
-        elif any(a["state"] == "error" for a in agents.values()):
-            color = LED_ERROR
-        elif any(a["state"] == "running" for a in agents.values()):
-            color = LED_RUNNING
-        else:
-            color = LED_IDLE
-        self.board.set_rgb(*color)
+        bucket = hud.aggregate_status(self.state["agents"])
+        color = hud.STATUS_EMPTY if bucket is None else hud.status_color(bucket)
+        self.board.set_rgb(*hud.dim(color))
 
     def _render(self):
         screen = self.state["screen"]

@@ -46,6 +46,44 @@ BG = BLACK
 FG = WHITE
 CHAMFER = 10
 
+# Status colors - the single source of truth for both the on-screen status
+# dot/row coloring and the physical RGB LED (see daemon.py's _update_led),
+# so the two channels can't drift into disagreeing with each other. Full
+# brightness, meant for on-screen use directly; dim() below scales these
+# down for the LED, which is much more glare-y at full saturation than a
+# same-color pixel on the panel.
+STATUS_COLORS = {
+    "error": (255, 60, 60),
+    "running": (70, 150, 255),
+    "idle": (90, 200, 120),
+}
+STATUS_EMPTY = (90, 90, 90)  # nothing reporting
+
+
+def status_color(agent_state):
+    return STATUS_COLORS.get(agent_state, STATUS_COLORS["idle"])
+
+
+def aggregate_status(agents):
+    """One status bucket for the whole agents dict - same priority order
+    the LED uses: error beats running beats idle. None if agents is empty."""
+    if not agents:
+        return None
+    states = [a.get("state", "idle") for a in agents.values()]
+    if "error" in states:
+        return "error"
+    if "running" in states:
+        return "running"
+    return "idle"
+
+
+def dim(color, factor=0.35):
+    return tuple(int(c * factor) for c in color)
+
+
+def status_dot(draw, x, y, color, r=5):
+    draw.ellipse((x - r, y - r, x + r, y + r), fill=color)
+
 # Drop custom art here - see assets/README.md. Looked up by name with no
 # extension; .png tried first, then .bmp. Missing files are just skipped by
 # callers (screens fall back to vector-drawn primitives), so this directory

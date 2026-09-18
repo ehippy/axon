@@ -54,9 +54,15 @@ def render_boot(image, draw, state):
 def render_idle(image, draw, state):
     next_x = hud.header_block(image, draw, "AXON")
 
+    agents = state.get("agents", {})
+    bucket = hud.aggregate_status(agents)
+    dot_color = hud.STATUS_EMPTY if bucket is None else hud.status_color(bucket)
+    hud.status_dot(draw, next_x + 5, 11, dot_color)
+
     hostname = state.get("hostname", "?")
-    draw.text((next_x, 6), hostname, font=hud.font_tiny, fill=hud.FG)
-    hb = draw.textbbox((next_x, 6), hostname, font=hud.font_tiny)
+    text_x = next_x + 16
+    draw.text((text_x, 6), hostname, font=hud.font_tiny, fill=hud.FG)
+    hb = draw.textbbox((text_x, 6), hostname, font=hud.font_tiny)
     draw.text((hb[2] + 8, 6), _wifi_ssid(), font=hud.font_tiny, fill=hud.FG)
 
     batt = _battery_line()
@@ -69,7 +75,6 @@ def render_idle(image, draw, state):
 
     hud.double_rule(draw, 24, x0=next_x)
 
-    agents = state.get("agents", {})
     row_top = 34
     if not agents:
         draw.text((next_x, row_top + 40), "NO AGENTS", font=hud.font_body, fill=hud.FG)
@@ -80,7 +85,8 @@ def render_idle(image, draw, state):
         max_rows = (hud.H - row_top - 6) // row_h
         ly = row_top
         for source, info in ordered[:max_rows]:
-            draw.text((next_x, ly), source.upper(), font=hud.font_body, fill=hud.FG)
+            row_color = hud.status_color(info.get("state", "idle"))
+            draw.text((next_x, ly), source.upper(), font=hud.font_body, fill=row_color)
             age = _relative_time(info["ts"])
             age_w = draw.textbbox((0, 0), age, font=hud.font_tiny)[2]
             draw.text((hud.W - 8 - age_w, ly + 3), age, font=hud.font_tiny, fill=hud.FG)
