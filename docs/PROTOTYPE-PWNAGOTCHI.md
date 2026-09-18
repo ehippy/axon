@@ -183,17 +183,29 @@ JSON payload `{"state": "idle"|"running"|"error", "task": "..."}`. display-devic
 startup (`paho-mqtt`, installed via `apt install python3-paho-mqtt`; note
 it's v2.x, which needs `mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)` -
 the v1 constructor signature is different) and keeps an in-memory registry
-(`state["agents"][source] = {state, task, ts}`) shown on a new **AGENTS**
+(`state["agents"][source] = {state, task, ts}`) shown on the **AGENTS**
 screen (5th in the double-tap cycle: diagnostics → battery → network →
-agents), sorted most-recently-updated first, capped to 5 entries. Verified
-end to end: `mosquitto_pub` from broker-host → daemon log on display-device shows the update
-→ physically confirmed on the panel by cycling to the AGENTS screen.
+agents), sorted most-recently-updated first, capped to 5 entries. Each row
+shows a relative age ("now"/"3m"/"1h"/"2d", computed fresh on every render
+from `ts`) right-aligned next to the source name - without this, a report
+from an hour ago looked identical to one from ten seconds ago, which is
+actively misleading for a "what's happening right now" screen.
 
-Not yet wired up: anything actually publishing to this on a routine basis.
-The plan sketched (not yet built) is a Claude Code hook (`Stop`/`SessionStart`)
-on each network machine running `mosquitto_pub -h localhost -t
-"axon/agents/$(hostname)/status" -m '...'`, plus eventually a `built` plugin
-for Hermes specifically.
+**Reconnect resilience verified**: restarted Mosquitto on broker-host directly
+and confirmed via `journalctl` that `paho-mqtt`'s background loop
+(`loop_start()`) reconnected on its own within ~10s, no restart of
+`axon-display` needed - then confirmed a fresh `mosquitto_pub` actually
+landed post-reconnect. Not just assumed from the library's docs - tested
+for real.
+
+**Real publisher live**: Claude Code hooks are wired up on **workstation**
+(see `software/claude-hooks/`) across `SessionStart`, `UserPromptSubmit`,
+`PostToolUse`, `Stop`, `SessionEnd` - `PostToolUse` is what makes the task
+text representative of actual work ("editing screens.py", "running: git
+commit...") rather than a static string or raw prompt text, and lifecycle
+events get randomized on-brand phrasing instead of flat strings. Still
+needed: the same hooks on the rest of the network machines, and eventually
+a `built` plugin for Hermes specifically.
 
 ## Open items
 

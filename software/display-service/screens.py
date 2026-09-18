@@ -3,6 +3,7 @@ canvas made by hud.new_canvas() given the daemon's shared state dict. Screens
 that show up in the double-tap cycle are listed in CYCLE, in display order.
 """
 import subprocess
+import time
 
 import hud
 from pisugar_client import get_status as get_battery_status
@@ -26,6 +27,17 @@ def _battery_line():
 def _wifi_ssid():
     out = _run(["/usr/bin/nmcli", "-t", "-f", "active,ssid", "dev", "wifi"])
     return next((l.split(":", 1)[1] for l in out.splitlines() if l.startswith("yes:")), "?")
+
+
+def _relative_time(ts):
+    delta = time.time() - ts
+    if delta < 60:
+        return "now"
+    if delta < 3600:
+        return f"{int(delta // 60)}m"
+    if delta < 86400:
+        return f"{int(delta // 3600)}h"
+    return f"{int(delta // 86400)}d"
 
 
 def _cycle_footer(draw, box_bottom):
@@ -178,6 +190,9 @@ def render_agents(image, draw, state):
         ly = box_top + 4
         for source, info in ordered[:5]:
             draw.text((18, ly), source[:14].upper(), font=hud.font_small, fill=hud.FG)
+            age = _relative_time(info["ts"])
+            age_w = draw.textbbox((0, 0), age, font=hud.font_tiny)[2]
+            draw.text((hud.W - 8 - age_w, ly), age, font=hud.font_tiny, fill=hud.FG)
             task = info.get("task") or info.get("state", "?")
             draw.text((18, ly + 12), task[:18], font=hud.font_tiny, fill=hud.FG)
             ly += 26
