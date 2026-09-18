@@ -106,7 +106,14 @@ class DisplayDaemon:
                 "ts": time.time(),
             }
             log.info("agent update: %s -> %s", source, payload)
-            if self.state["screen"] == "agents":
+            if self.state["screen"] == "idle":
+                # Nothing else being actively shown - surface it. Only from
+                # idle, not from diagnostics/battery/network: those mean
+                # someone deliberately navigated there, and yanking the
+                # screen away mid-check would be more annoying than useful.
+                self.state["screen"] = "agents"
+                self._render()
+            elif self.state["screen"] == "agents":
                 self._render()
 
     def _render(self, force_full=False):
