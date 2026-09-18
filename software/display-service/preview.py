@@ -27,6 +27,8 @@ def main():
     parser.add_argument("--art-dir", default=None, help="local folder to load art from instead of /home/pi/axon-assets")
     parser.add_argument("--out", default=None, help="output PNG path (default: <screen>_preview.png)")
     parser.add_argument("--scale", type=int, default=4, help="upscale factor for visibility (panel is only 122x250px)")
+    parser.add_argument("--battery", type=int, default=72, metavar="PCT", help="fake battery percent (no real PiSugar off-device) - default 72")
+    parser.add_argument("--charging", action="store_true", help="show the fake battery as charging")
     parser.add_argument("--list", action="store_true", help="list available screen names and exit")
     args = parser.parse_args()
 
@@ -35,6 +37,12 @@ def main():
 
     import hud
     import screens
+
+    # No real PiSugar to query off-device - fake get_battery_status() so the
+    # battery icon (and anything else reading it) has something to show.
+    screens.get_battery_status = lambda: {
+        "percent": args.battery, "charging": args.charging, "voltage": 3.7 + args.battery / 200,
+    }
 
     if args.list or not args.screen:
         print("Available screens:", ", ".join(screens.RENDERERS.keys()))

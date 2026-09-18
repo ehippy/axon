@@ -23,6 +23,11 @@ def _battery_line():
         return "BATT -- (offline)", None
 
 
+def _wifi_ssid():
+    out = _run(["/usr/bin/nmcli", "-t", "-f", "active,ssid", "dev", "wifi"])
+    return next((l.split(":", 1)[1] for l in out.splitlines() if l.startswith("yes:")), "?")
+
+
 def _cycle_footer(draw, box_bottom):
     if state_screen_index() is not None:
         idx, total = state_screen_index()
@@ -45,7 +50,7 @@ def set_screen_index(idx, total):
 
 
 def render_boot(image, draw, state):
-    y = hud.header_block(image, draw, "AXON", "SYSTEM BOOT")
+    y, _ = hud.header_block(image, draw, "AXON", "SYSTEM BOOT")
     hud.double_rule(draw, y + 6)
     box_top, box_bottom = y + 16, 190
     draw.text((18, box_top + 40), "ONLINE", font=hud.font_title, fill=hud.FG)
@@ -55,7 +60,13 @@ def render_boot(image, draw, state):
 
 
 def render_idle(image, draw, state):
-    y = hud.header_block(image, draw, "AXON", state.get("hostname", "?"))
+    y, x = hud.header_block(image, draw, "AXON")
+
+    hostname = state.get("hostname", "?")
+    draw.text((x, 8), hostname, font=hud.font_tiny, fill=hud.FG)
+    hb = draw.textbbox((x, 8), hostname, font=hud.font_tiny)
+    draw.text((hb[2] + 8, 8), _wifi_ssid(), font=hud.font_tiny, fill=hud.FG)
+
     _, batt = _battery_line()
     pct = batt["percent"] if batt else 0
     charging = batt["charging"] if batt else False
@@ -85,7 +96,7 @@ def render_idle(image, draw, state):
 
 
 def render_diagnostics(image, draw, state):
-    y = hud.header_block(image, draw, "AXON", "DIAGNOSTICS // 02")
+    y, _ = hud.header_block(image, draw, "AXON", "DIAGNOSTICS // 02")
     hud.double_rule(draw, y + 6)
 
     box_top, box_bottom = y + 16, 190
@@ -107,7 +118,7 @@ def render_diagnostics(image, draw, state):
 
 
 def render_battery(image, draw, state):
-    y = hud.header_block(image, draw, "AXON", "POWER // 03")
+    y, _ = hud.header_block(image, draw, "AXON", "POWER // 03")
     hud.double_rule(draw, y + 6)
 
     box_top, box_bottom = y + 16, 190
@@ -131,13 +142,12 @@ def render_battery(image, draw, state):
 
 
 def render_network(image, draw, state):
-    y = hud.header_block(image, draw, "AXON", "NETWORK // 04")
+    y, _ = hud.header_block(image, draw, "AXON", "NETWORK // 04")
     hud.double_rule(draw, y + 6)
 
     box_top, box_bottom = y + 16, 190
 
-    ssid = _run(["/usr/bin/nmcli", "-t", "-f", "active,ssid", "dev", "wifi"])
-    ssid = next((l.split(":", 1)[1] for l in ssid.splitlines() if l.startswith("yes:")), "?")
+    ssid = _wifi_ssid()
     local_ip = _run(["hostname", "-I"]).split(" ")[0]
     ts_ip = _run(["/usr/bin/remote-networking", "ip", "-4"])
 
@@ -153,7 +163,7 @@ def render_network(image, draw, state):
 
 
 def render_shutdown(image, draw, state):
-    y = hud.header_block(image, draw, "AXON", "SHUTDOWN // 00")
+    y, _ = hud.header_block(image, draw, "AXON", "SHUTDOWN // 00")
     hud.double_rule(draw, y + 6)
     box_top, box_bottom = y + 16, 190
     draw.text((18, box_top + 30), "POWERING", font=hud.font_title, fill=hud.FG)

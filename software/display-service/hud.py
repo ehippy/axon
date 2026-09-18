@@ -99,12 +99,19 @@ def vertical_text(image, text, font, x=0, y=0):
     return rotated.size
 
 
-def header_block(image, draw, title, subtitle):
+def header_block(image, draw, title, subtitle=None):
+    """Draws the vertical title flush left. If given, subtitle is drawn
+    immediately to its right. Returns (bottom_y, next_x) - next_x is where
+    the title's rotated block ends, for callers that want to lay out their
+    own content beside it instead of using the built-in subtitle slot.
+    """
     top = 4
     tw, th = vertical_text(image, title, font_wordmark, x=0, y=top)
-    draw.text((tw + 10, top + 4), subtitle, font=font_tiny, fill=FG)
+    next_x = tw + 10
+    if subtitle:
+        draw.text((next_x, top + 4), subtitle, font=font_tiny, fill=FG)
     bottom = top + th + 6
-    return bottom
+    return bottom, next_x
 
 
 def battery_icon(draw, x, y, pct, charging=False, w=16, h=8):
