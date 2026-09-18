@@ -15,6 +15,9 @@ from pisugar_client import get_status as get_battery_status
 
 MARGIN = 10  # left margin for content - no more vertical sidebar title
              # eating space on this edge, just a plain watermark now.
+TOP_LEFT_INSET = 20  # extra clearance for the status dot specifically -
+                     # same rounded-corner clipping the battery icon and
+                     # watermark needed fixing, just the last corner.
 
 
 def _run(cmd, default="?"):
@@ -60,10 +63,11 @@ def render_idle(image, draw, state):
     agents = state.get("agents", {})
     bucket = hud.aggregate_status(agents)
     dot_color = hud.STATUS_EMPTY if bucket is None else hud.status_color(bucket)
-    hud.status_dot(draw, MARGIN + 5, 11, dot_color)
+    dot_x = MARGIN + TOP_LEFT_INSET
+    hud.status_dot(draw, dot_x + 5, 11, dot_color)
 
     hostname = state.get("hostname", "?")
-    text_x = MARGIN + 16
+    text_x = dot_x + 16
     draw.text((text_x, 6), hostname, font=hud.font_tiny, fill=hud.FG)
     hb = draw.textbbox((text_x, 6), hostname, font=hud.font_tiny)
     draw.text((hb[2] + 8, 6), _wifi_ssid(), font=hud.font_tiny, fill=hud.FG)
