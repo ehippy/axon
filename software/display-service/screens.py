@@ -58,12 +58,9 @@ def render_idle(image, draw, state):
     y = hud.header_block(image, draw, "AXON", state.get("hostname", "?"))
     _, batt = _battery_line()
     pct = batt["percent"] if batt else 0
-    pct_text = f"{pct}%" if batt else "--"
-    tbbox = draw.textbbox((0, 0), pct_text, font=hud.font_tiny)
-    text_x = hud.W - 4 - (tbbox[2] - tbbox[0])
-    icon_x = text_x - 16 - 5
-    draw.text((text_x, 8), pct_text, font=hud.font_tiny, fill=hud.FG)
-    hud.battery_icon(draw, icon_x, 8, pct, w=14, h=7)
+    charging = batt["charging"] if batt else False
+    icon_w = 14
+    hud.battery_icon(draw, hud.W - 4 - icon_w - 2, 8, pct, charging=charging, w=icon_w, h=7)
 
     hud.double_rule(draw, y + 6)
 

@@ -107,14 +107,21 @@ def header_block(image, draw, title, subtitle):
     return bottom
 
 
-def battery_icon(draw, x, y, pct, w=16, h=8):
-    """Tight little battery glyph: outline + nub + proportional fill."""
+def battery_icon(draw, x, y, pct, charging=False, w=16, h=8):
+    """Tight little battery glyph: outline + nub + proportional fill, plus a
+    small cutout "+" mark over the fill when charging. No text - the icon
+    alone is meant to carry level and charging state.
+    """
     draw.rectangle((x, y, x + w, y + h), outline=FG)
     nub_h = h // 2
     draw.rectangle((x + w + 1, y + (h - nub_h) // 2, x + w + 2, y + (h - nub_h) // 2 + nub_h), fill=FG)
     fill_w = max(0, int((w - 2) * max(0, min(100, pct)) / 100))
     if fill_w:
         draw.rectangle((x + 1, y + 1, x + 1 + fill_w, y + h - 1), fill=FG)
+    if charging:
+        cx, cy = x + w // 2, y + h // 2
+        draw.line((cx - 2, cy, cx + 2, cy), fill=BG)
+        draw.line((cx, cy - 2, cx, cy + 2), fill=BG)
 
 
 def double_rule(draw, y):
