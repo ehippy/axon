@@ -144,7 +144,7 @@ def vertical_text(image, text, font, x=0, y=0):
     return rotated.size
 
 
-def watermark(draw, text, opacity=0.33, margin_x=20, margin_y=0):
+def watermark(draw, text, opacity=0.165, margin_x=20, margin_y=0):
     """Big, dim logo mark snapped to the bottom-right corner, meant to be
     drawn first so real content sits on top of it. "Opacity" here is just
     alpha-over-black math (result = fg * opacity), not real alpha
