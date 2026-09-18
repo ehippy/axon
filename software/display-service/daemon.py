@@ -19,6 +19,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import paho.mqtt.client as mqtt
+
 import hud
 import screens
 
@@ -27,6 +29,13 @@ log = logging.getLogger("axon-display")
 
 HOST, PORT = "127.0.0.1", 8500
 FULL_REFRESH_EVERY = 12  # partial updates between full refreshes, to limit ghosting
+
+# broker-host is the "brain" - a stationary, wall-powered Pi 5 - vs. display-device which is
+# meant to be picked up and carried, so it's not a reliable place to host the
+# broker itself. See docs/PROTOTYPE-PWNAGOTCHI.md for the reasoning.
+MQTT_BROKER = "localhost"
+MQTT_PORT = 1883
+MQTT_TOPIC = "axon/agents/+/status"
 
 
 class DisplayDaemon:
@@ -39,9 +48,13 @@ class DisplayDaemon:
             "agent_state": "idle",
             "agent_task": "",
             "hostname": os.uname()[1],
+            "agents": {},  # source (hostname/session id) -> {state, task, ts}
         }
         self.partial_count = 0
         self._stop = threading.Event()
+        self.mqtt = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        self.mqtt.on_connect = self._mqtt_on_connect
+        self.mqtt.on_message = self._mqtt_on_message
 
     def start(self):
         with self.lock:
@@ -55,11 +68,46 @@ class DisplayDaemon:
         time.sleep(1.5)
         with self.lock:
             self._render(force_full=True)
+        self._start_mqtt()
 
     def stop(self):
         self._stop.set()
+        self.mqtt.loop_stop()
         with self.lock:
             self.epd.sleep()
+
+    def _start_mqtt(self):
+        try:
+            self.mqtt.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
+            self.mqtt.loop_start()
+        except OSError as e:
+            log.warning("mqtt connect to %s:%d failed: %s (will keep retrying)", MQTT_BROKER, MQTT_PORT, e)
+            self.mqtt.loop_start()  # paho retries connection in the background loop
+
+    def _mqtt_on_connect(self, client, userdata, connect_flags, reason_code, properties):
+        log.info("mqtt connected to %s:%d (%s)", MQTT_BROKER, MQTT_PORT, reason_code)
+        client.subscribe(MQTT_TOPIC)
+
+    def _mqtt_on_message(self, client, userdata, msg):
+        # topic shape: axon/agents/<source>/status
+        parts = msg.topic.split("/")
+        if len(parts) != 4:
+            return
+        source = parts[2]
+        try:
+            payload = json.loads(msg.payload.decode())
+        except json.JSONDecodeError:
+            log.warning("bad mqtt payload on %s: %r", msg.topic, msg.payload)
+            return
+        with self.lock:
+            self.state["agents"][source] = {
+                "state": payload.get("state", "idle"),
+                "task": payload.get("task", ""),
+                "ts": time.time(),
+            }
+            log.info("agent update: %s -> %s", source, payload)
+            if self.state["screen"] == "agents":
+                self._render()
 
     def _render(self, force_full=False):
         screen = self.state["screen"]

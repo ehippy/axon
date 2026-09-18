@@ -131,6 +131,49 @@ receive a pushed status update. Replaced with a persistent systemd service,
 Old scripts (`prototype_ui.py`, `button_diagnostics.py`, `button_shutdown.py`)
 are gone, superseded by the daemon.
 
+## Multi-machine agent status via MQTT (broker-host is the brain)
+
+The user has another always-on box on the network: **broker-host** (`localhost`,
+`broker-host@localhost` over SSH) — a genuine Raspberry Pi 5, 8GB RAM, booting off
+a real SSD (452GB, 232GB free), already running a substantial stack (Docker,
+a Dolt SQL server, remote networking, and notably **Mosquitto**, an MQTT broker). Also
+running there: **`built`**, described as an "agentic software factory" — this
+*is* what the user calls "Hermes" (Hermes is the agent that codes on broker-host via
+`built`). A `built` plugin to publish its own task events is a future item,
+not done yet.
+
+Decided **broker-host, not display-device, should be the always-on coordination point**:
+display-device is meant to be picked up and carried (that's the point of the puck form
+factor + battery), so it's a bad place to host anything other machines depend
+on being reachable. broker-host is stationary, wall-powered, and already the more
+capable box. Mosquitto was confirmed idle (not used for anything else yet) and
+already listening on `0.0.0.0:1883` with `allow_anonymous true` — reachable
+from any network machine with zero additional setup.
+
+Considered adding an MCP server on broker-host for this too (agents could then
+*query* status, not just push it) — deliberately deferred for now in favor of
+plain MQTT pub/sub; simpler, and Hermes/`built` integration isn't happening
+yet anyway. Worth revisiting once there's an actual agent-initiated use case
+(e.g. "what else is already working on this").
+
+**Contract**: any source publishes to `axon/agents/<source>/status` with a
+JSON payload `{"state": "idle"|"running"|"error", "task": "..."}`. display-device's
+`axon-display` daemon subscribes to the wildcard `axon/agents/+/status` on
+startup (`paho-mqtt`, installed via `apt install python3-paho-mqtt`; note
+it's v2.x, which needs `mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)` -
+the v1 constructor signature is different) and keeps an in-memory registry
+(`state["agents"][source] = {state, task, ts}`) shown on a new **AGENTS**
+screen (5th in the double-tap cycle: diagnostics → battery → network →
+agents), sorted most-recently-updated first, capped to 5 entries. Verified
+end to end: `mosquitto_pub` from broker-host → daemon log on display-device shows the update
+→ physically confirmed on the panel by cycling to the AGENTS screen.
+
+Not yet wired up: anything actually publishing to this on a routine basis.
+The plan sketched (not yet built) is a Claude Code hook (`Stop`/`SessionStart`)
+on each network machine running `mosquitto_pub -h localhost -t
+"axon/agents/$(hostname)/status" -m '...'`, plus eventually a `built` plugin
+for Hermes specifically.
+
 ## Open items
 
 1. Install Node/Claude Code and watch real memory usage under load — that result
@@ -138,8 +181,8 @@ are gone, superseded by the daemon.
    satellite for the Pi4 puck.
 2. Source art for `/home/pi/axon-assets/idle.png` (or wire up more named art
    hooks in `screens.py` as it shows up).
-3. Once Claude Code is running (here or on the Pi4), wire it up to actually
-   POST to `/status` instead of that only being curl-tested so far.
+3. Wire up actual publishers to the MQTT topic — Claude Code hooks on other
+   network machines, and eventually a `built` plugin for Hermes.
 
 ## Status
 
@@ -152,8 +195,11 @@ are gone, superseded by the daemon.
 - [x] Real `axon-display` daemon running as a systemd service, partial-refresh
       screens, button-triggered via a local HTTP API, `/status` push endpoint
       ready for an agent to use
+- [x] MQTT wired to broker-host (Mosquitto), AGENTS screen added, verified end to
+      end with a real `mosquitto_pub` from broker-host
 - [ ] Node/Claude Code installed and memory-tested under real usage
 - [ ] Art sourced for the idle screen
+- [ ] Actual MQTT publishers (Claude Code hooks, `built` plugin for Hermes)
 - [x] NOPASSWD sudo enabled for `pi` on this box (flagged here since it's a
       real security tradeoff: anyone with SSH key access gets root with no friction.
       Reasonable given remote networking-only reachability and single-user, but worth

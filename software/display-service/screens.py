@@ -162,6 +162,30 @@ def render_network(image, draw, state):
     _cycle_footer(draw, box_bottom)
 
 
+def render_agents(image, draw, state):
+    y, _ = hud.header_block(image, draw, "AXON", "AGENTS // 05")
+    hud.double_rule(draw, y + 6)
+
+    box_top, box_bottom = y + 16, 190
+
+    agents = state.get("agents", {})
+    if not agents:
+        draw.text((18, box_top + 30), "NO AGENTS", font=hud.font_body, fill=hud.FG)
+        draw.text((18, box_top + 46), "REPORTING", font=hud.font_body, fill=hud.FG)
+    else:
+        # most recently updated first, capped to what fits the box
+        ordered = sorted(agents.items(), key=lambda kv: kv[1]["ts"], reverse=True)
+        ly = box_top + 4
+        for source, info in ordered[:5]:
+            draw.text((18, ly), source[:14].upper(), font=hud.font_small, fill=hud.FG)
+            task = info.get("task") or info.get("state", "?")
+            draw.text((18, ly + 12), task[:18], font=hud.font_tiny, fill=hud.FG)
+            ly += 26
+
+    hud.double_rule(draw, box_bottom + 12)
+    _cycle_footer(draw, box_bottom)
+
+
 def render_shutdown(image, draw, state):
     y, _ = hud.header_block(image, draw, "AXON", "SHUTDOWN // 00")
     hud.double_rule(draw, y + 6)
@@ -178,11 +202,12 @@ HOME = "idle"
 
 # Screens double-tap cycles through, in order. Each render_* function may call
 # _cycle_footer to draw page dots showing position in this list.
-CYCLE = ["diagnostics", "battery", "network"]
+CYCLE = ["diagnostics", "battery", "network", "agents"]
 
 RENDERERS = {
     "boot": render_boot,
     "idle": render_idle,
+    "agents": render_agents,
     "diagnostics": render_diagnostics,
     "battery": render_battery,
     "network": render_network,
