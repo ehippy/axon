@@ -37,10 +37,18 @@ font_tiny = ImageFont.truetype(FONT_PATH, 11)
 font_body = ImageFont.truetype(FONT_PATH, 15)
 font_small = ImageFont.truetype(FONT_PATH, 12)
 
-# Native portrait, matches WhisplayBoard.LCD_WIDTH/LCD_HEIGHT. 240px is
-# already roomy (vs. the old e-ink's 122px), so no need to rotate sideways
-# the way the e-ink screen needed to.
-W, H = 240, 280
+# The panel's fixed physical size (matches WhisplayBoard.LCD_WIDTH/HEIGHT) -
+# do not confuse with W, H below. Unlike the old e-ink driver, Whisplay's
+# draw_image() has no rotation smarts of its own (its MADCTL orientation is
+# set once at init and never revisited) - to show content rotated, we have
+# to compose in a logical canvas of the *other* orientation and rotate the
+# whole finished frame ourselves before it goes to hardware. See
+# rotate_for_display()/to_hardware_frame() below.
+PANEL_W, PANEL_H = 240, 280
+
+# Logical composition canvas - landscape, since content is rotated 90deg
+# clockwise onto the physical (portrait) panel before display.
+W, H = 280, 240
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
 BG = BLACK
@@ -211,10 +219,28 @@ def to_rgb565(image):
     return bytes(out)
 
 
+def rotate_for_display(image):
+    """Rotate a logical (W x H) composed frame 90deg clockwise into the
+    panel's fixed physical (PANEL_W x PANEL_H) orientation. Negative angle
+    = clockwise in PIL's convention. Callers that need to reason about
+    on-screen corners should do it in physical terms, not logical ones -
+    a corner that's safe pre-rotation may not be post-rotation.
+    """
+    rotated = image.rotate(-90, expand=True)
+    assert rotated.size == (PANEL_W, PANEL_H), f"rotated size {rotated.size} != panel ({PANEL_W}, {PANEL_H})"
+    return rotated
+
+
+def to_hardware_frame(image):
+    """Logical composed frame -> ready-to-send RGB565 bytes, rotated to
+    match the panel's fixed physical orientation."""
+    return to_rgb565(rotate_for_display(image))
+
+
 def show(image, hold=2):
     from whisplay import WhisplayBoard  # only importable/needed on the Pi
     board = WhisplayBoard()
     board.set_backlight(70)
-    board.draw_image(0, 0, board.LCD_WIDTH, board.LCD_HEIGHT, to_rgb565(image))
+    board.draw_image(0, 0, board.LCD_WIDTH, board.LCD_HEIGHT, to_hardware_frame(image))
     time.sleep(hold)
     board.cleanup()

@@ -66,7 +66,7 @@ class DisplayDaemon:
         with self.lock:
             image, draw = hud.new_canvas()
             screens.render_boot(image, draw, self.state)
-            self.board.draw_image(0, 0, hud.W, hud.H, hud.to_rgb565(image))
+            self.board.draw_image(0, 0, hud.PANEL_W, hud.PANEL_H, hud.to_hardware_frame(image))
             log.info("boot screen shown")
         time.sleep(1.2)
         with self.lock:
@@ -122,7 +122,7 @@ class DisplayDaemon:
         screen = self.state["screen"]
         image, draw = hud.new_canvas()
         screens.RENDERERS[screen](image, draw, self.state)
-        self.board.draw_image(0, 0, hud.W, hud.H, hud.to_rgb565(image))
+        self.board.draw_image(0, 0, hud.PANEL_W, hud.PANEL_H, hud.to_hardware_frame(image))
         if screen == "idle":
             self._update_led()
         log.info("rendered %s", screen)

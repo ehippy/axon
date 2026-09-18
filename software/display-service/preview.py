@@ -28,6 +28,7 @@ def main():
     parser.add_argument("--scale", type=int, default=4, help="upscale factor for visibility (panel is 240x280px)")
     parser.add_argument("--battery", type=int, default=72, metavar="PCT", help="fake battery percent (no real PiSugar off-device) - default 72")
     parser.add_argument("--charging", action="store_true", help="show the fake battery as charging")
+    parser.add_argument("--logical", action="store_true", help="save the pre-rotation logical composition instead of what actually appears on the physical panel")
     parser.add_argument("--list", action="store_true", help="list available screen names and exit")
     args = parser.parse_args()
 
@@ -58,7 +59,7 @@ def main():
     import time as _time
     fake_state = {
         "screen": args.screen,
-        "hostname": "display-device",
+        "hostname": "axon",
         "agents": {
             "hermes": {"state": "running", "task": "read_file, grep", "ts": _time.time()},
             "workstation": {"state": "running", "task": "editing screens.py", "ts": _time.time() - 190},
@@ -69,8 +70,13 @@ def main():
     image, draw = hud.new_canvas()
     screens.RENDERERS[args.screen](image, draw, fake_state)
 
+    if not args.logical:
+        # What actually appears on the physical panel - rotated, same as
+        # the real daemon does right before calling board.draw_image().
+        image = hud.rotate_for_display(image)
+
     out_path = args.out or f"{args.screen}_preview.png"
-    scaled = image.resize((hud.W * args.scale, hud.H * args.scale), resample=0)  # NEAREST - keep hard pixel edges
+    scaled = image.resize((image.width * args.scale, image.height * args.scale), resample=0)  # NEAREST - keep hard pixel edges
     scaled.save(out_path)
     print(f"Wrote {out_path} ({scaled.width}x{scaled.height}, {args.scale}x scale)")
     if args.art_dir:
