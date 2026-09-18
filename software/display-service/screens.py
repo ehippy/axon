@@ -63,7 +63,9 @@ def render_idle(image, draw, state):
     pct = batt["percent"] if batt else 0
     charging = batt["charging"] if batt else False
     icon_w = 18
-    hud.battery_icon(draw, hud.W - 6 - icon_w - 3, 5, pct, charging=charging, w=icon_w, h=9)
+    # Extra icon_w of inset beyond the usual margin - the panel's rounded
+    # top-right corner was clipping it when it sat right at the edge.
+    hud.battery_icon(draw, hud.W - 6 - icon_w - icon_w - 3, 5, pct, charging=charging, w=icon_w, h=9)
 
     hud.double_rule(draw, 24, x0=next_x)
 
