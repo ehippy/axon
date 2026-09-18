@@ -71,6 +71,27 @@ newline-terminated). Confirmed working: model reports `PiSugar 3`, battery 100%,
 charging, 4.2V. Wrapped in `software/display-service/pisugar_client.py` — the
 prototype UI now shows real battery % instead of a placeholder.
 
+### CPU fix: --ws flag was pegging a full core
+
+Noticed load average sitting around 1.0 on a quad-core box (via the
+DIAGNOSTICS screen) - traced to `pisugar-server` alone burning 98% CPU
+continuously (22m46s of CPU time in 23 minutes of uptime), confirmed with
+`ps aux` and `strace -c` (steady `epoll_pwait`/`clock_gettime`/`write` churn,
+no errors - a busy loop, not a crash spiral). Isolated by testing flag
+combinations directly: dropping `--ws` (the standalone WebSocket push
+server) alone fixed it, CPU dropped to ~0.5% and stayed there. `--http`
+(the browser dashboard on `:8421`) and `--web` were NOT the cause - kept
+both, so the dashboard still works. Only `axon-assets`-relevant interface,
+the raw TCP protocol on `:8423`, was never affected either way.
+
+Fixed by editing `/etc/default/pisugar-server`'s `OPTS` to drop `--ws
+0.0.0.0:8422` and restarting the service (original backed up alongside it
+as `pisugar-server.bak`). Not something this repo tracks (it's a system
+config file on display-device, not a repo file) - if display-device ever gets reflashed, this
+needs redoing. Worth it: on a battery-powered device, a full core spinning
+nonstop for a feature (websocket push) nothing here actually uses is a real
+runtime cost, not just a benchmark curiosity.
+
 ### RTC fix (firmware update required)
 
 The onboard RTC was stuck at a 2020 default date. Two dead ends before the real
