@@ -136,12 +136,17 @@ def vertical_text(image, text, font, x=0, y=0):
     return rotated.size
 
 
-def watermark(draw, text, opacity=0.33, margin=2):
+def watermark(draw, text, opacity=0.33, margin=22):
     """Big, dim logo mark snapped to the bottom-right corner, meant to be
     drawn first so real content sits on top of it. "Opacity" here is just
     alpha-over-black math (result = fg * opacity), not real alpha
     compositing - correct as long as BG stays pure black, much simpler
     than layering an RGBA overlay for a background that never changes.
+
+    margin defaults to just past the panel's rounded-corner radius (the
+    driver's CornerHeight = 20) - text snapped tight to the corner (the
+    battery icon had the same problem in the opposite corner) gets clipped
+    by the physical bezel mask.
     """
     bbox = font_watermark.getbbox(text)
     x = W - margin - bbox[2]
