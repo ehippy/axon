@@ -16,7 +16,7 @@ Mosquitto broker, which shows up on Axon's AGENTS screen. See
    projects on that machine) wiring `SessionStart`, `UserPromptSubmit`,
    `PostToolUse`, `Stop`, and `SessionEnd` to:
    ```
-   python3 -u /path/to/boxen/software/claude-hooks/report_status.py
+   python3 -u /path/to/axon/software/claude-hooks/report_status.py
    ```
    (same command for all five - it branches on `hook_event_name` from stdin).
    `PostToolUse` is the one that actually makes the task text representative

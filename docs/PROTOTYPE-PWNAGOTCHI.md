@@ -363,3 +363,97 @@ for real.
       Confirmed no PiSugar3 conflicts, boot-to-idle now ~4s (was ~16-18s)
 - [ ] Whisplay's own physical button - unused
 - [ ] Whisplay mic/speaker - unused, no audio I/O built yet
+- [x] Display daemon rewritten native (`software/axon-native/`, Rust,
+      cross-compiled x86_64→aarch64 with a pacman-installed
+      `aarch64-linux-gnu-gcc` toolchain - no Docker needed) to kill the
+      RGB565-packing bottleneck the Python/PIL pipeline had (287ms/frame,
+      ~68% of every frame). Now the systemd `axon-display` service.
+      Found and fixed two real bugs along the way, not just a language
+      swap:
+      - `pisugar-server`'s TCP protocol answers instantly but never closes
+        the connection, so the old "read until EOF or timeout" client
+        pattern (present in both the original Python client and this
+        rewrite's first draft) silently blocked for the full timeout on
+        every single battery read. Fixed by reading once and returning.
+      - rppal's software PWM busy-waits part of every cycle for timing
+        precision, which cost ~50% of one core sustained just idling with
+        the backlight + RGB LED channels active - real battery drain on a
+        portable device. Replaced with a plain sleep-based soft-PWM
+        (`software/axon-native/src/softpwm.rs`, ported from the same
+        approach `whisplay.py`'s own `SoftPWM` class already used) - back
+        to ~0% CPU at idle.
+      Net result on real hardware: ~140ms per full re-render (curl+HTTP
+      round-trip included) vs. the Python pipeline's measured 421ms.
+- [x] Status-dot/RGB-LED animation (`software/axon-native/src/animate.rs`):
+      breathing pulse on "running", sharp pulse on "error", still on idle -
+      plus one small dot per active agent, each on its own tilted
+      elliptical orbit around a shared center (distinct radius/tilt per
+      shell, an atom rather than a shared racetrack), orbital speed driven
+      by that agent's own recency (fresh report -> fast spin, decaying
+      exponentially back to the shell's baseline as the report ages).
+      Runs at a genuine ~33fps sustained on real hardware once the ticker
+      loop bug (was sleeping a fixed TICK *on top of* render time instead
+      of targeting a fixed period, silently halving the real frame rate)
+      got fixed.
+- [x] Whisplay's mic/speaker wired up for real: `Projects/gabbie` (the
+      existing hands-free voice assistant, previously desktop-only) now
+      runs directly on axon as a systemd service (`gabbie.service`,
+      ~82MB RSS - light enough once local Whisper was dropped in favor of
+      calling inference-host's `Whisper-Tiny` over `/v1/audio/transcriptions`,
+      confirmed loaded and working). Whisplay's own physical button
+      (previously unused) is now a walkie-talkie push-to-talk trigger -
+      `axon-native` publishes `"start"`/`"stop"` to MQTT topic `axon/ptt`
+      on press/release (`software/axon-native/src/mqtt.rs`'s
+      `publish_ptt()`), and gabbie subscribes, bypassing VAD and the wake
+      word gate while held. Confirmed end to end on real hardware: button
+      hold -> transcription -> LLM reply -> TTS -> played through axon's
+      own speaker, then a natural VAD-driven follow-up turn within the
+      awake window right after.
+- [x] Voice-state screen splash (`software/axon-native/src/screens.rs`'s
+      render_voice, `voicebus.rs`): a breathing radial gradient wash drawn
+      *behind* the normal dashboard (not a takeover of it) - green while
+      gabbie's listening, blue while thinking/speaking. Green is driven
+      directly by the button locally (instant, never false-triggers on
+      gabbie's own continuous ambient VAD noise); blue by her real
+      "thinking"/"speaking"/"confirming" EventBus events (only ever fire
+      after a genuinely accepted utterance); reverts on "done_speaking"
+      plus a 12s timeout backstop. First version mapped raw
+      "listening"/"transcribing" events to the splash and it was
+      permanently stuck up, since gabbie publishes those for her own
+      idle ambient monitoring too, not just real engagement - rebuilt
+      around a proper transition/timeout model instead.
+- [x] Real bug found and fixed in the button->gabbie bridge: the original
+      `publish_ptt()` opened a fresh MQTT connection per press/release, so
+      a quick tap's start/stop could race each other over independent TCP
+      handshakes with no ordering guarantee - when stop won, gabbie's
+      ptt.active got stuck true (stuck listening, degenerate one-word
+      replies). Fixed with one persistent connection for the process's
+      lifetime. Separately, real switch bounce on the physical button was
+      also confirmed via MQTT logging (a single press producing 10+ rapid
+      start/stop toggles) and fixed with a 150ms debounce on the GPIO
+      interrupt (previously registered with debouncing explicitly off).
+- [x] Agent awareness in gabbie: a `list_agents` tool (mirrors
+      axon/agents/+/status over its own independent MQTT subscription -
+      not routed through axon-native) so she can answer "what's
+      workstation doing?". Proactive speech deliberately narrow - only
+      unprompted-interrupts for an agent transitioning into "error"
+      (genuinely time-sensitive); an idle/waiting-for-input transition is
+      *not* worth interrupting a conversation for, so that one's handled
+      passively instead: axon-native's own RGB LED (already watching the
+      same MQTT stream, no round trip through gabbie needed) gives a
+      brief ~1.5s attention flash - white for "just went idle", red-blink
+      for "just errored" - distinct from its normal steady state-driven
+      color.
+- [x] Real infrastructure gap found during this work: axon rebooted
+      mid-session with no diagnosable cause (Pi firmware's sticky
+      undervoltage/throttle register read clean - `vcgencmd get_throttled`
+      = 0x0 - ruling out power/thermal, but the journal was in-memory only
+      and got wiped by the reboot itself). Fixed by enabling persistent
+      journald storage (`/var/log/journal` + `Storage=persistent`), so a
+      future incident is actually diagnosable. Unrelated: the scp that
+      landed mid-reboot produced a silently truncated binary (2MB instead
+      of the real ~7.4MB) that segfaulted instantly with no output at all -
+      not a code bug, just a corrupted transfer; re-copying after
+      reconnecting fixed it. Worth remembering as a class of failure: a
+      binary that crashes before its very first println is worth checking
+      file size against the source build before debugging the code itself.
