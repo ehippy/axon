@@ -35,6 +35,8 @@ pub fn agent_color(source: &str, state: &str) -> Color {
         "workstation" | "claude" => (218, 119, 86),
         // Hermes yellow, as requested.
         "hermes" => (240, 190, 40),
+        // The smart mirror (ehippy/glass) - white, its particle swarm's own color.
+        "mirror" => (255, 255, 255),
         // Unknown/future agents: a neutral hue distinct from the curated
         // colors above and from the state-based palette used elsewhere
         // (status_color's green/blue/red), so it doesn't get misread as
