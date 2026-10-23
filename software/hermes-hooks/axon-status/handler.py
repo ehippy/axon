@@ -15,6 +15,7 @@ stall the gateway's event loop, not just this one hook.
 """
 import asyncio
 import json
+import time
 
 MQTT_BROKER = "localhost"
 
@@ -29,7 +30,7 @@ def _truncate(text, length):
 
 async def _publish(state, task):
     topic = "axon/agents/hermes/status"
-    payload = json.dumps({"state": state, "task": task})
+    payload = json.dumps({"state": state, "task": task, "ts": int(time.time())})
     try:
         proc = await asyncio.create_subprocess_exec(
             "mosquitto_pub", "-h", MQTT_BROKER, "-t", topic, "-m", payload,

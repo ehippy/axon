@@ -122,6 +122,7 @@ pub fn spawn(shared: Arc<Mutex<Daemon>>, fonts: Arc<Fonts>) {
             last_tick = cycle_start;
             {
                 let mut daemon = shared.lock().unwrap();
+                daemon.state.prune_agents(now_unix());
                 let mut screen = daemon.state.screen.clone();
 
                 // LED attention flash: detect "just went idle" (finished a

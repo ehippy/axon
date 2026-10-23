@@ -10,6 +10,12 @@ use crate::{pisugar, screens};
 // this interval regardless of render rate.
 const SENSOR_REFRESH: Duration = Duration::from_secs(5);
 
+// Agents age out after this much silence. A dead publisher can never
+// retract its retained status message, so consumers must expire entries —
+// otherwise a departed "logging off" ghost sits on the AGENTS screen
+// forever. Payload `ts` (see mqtt.rs) keeps the age honest across restarts.
+pub const AGENT_FORGET: f64 = 12.0 * 3600.0;
+
 pub struct AppState {
     pub screen: String,
     pub hostname: String,
@@ -72,6 +78,13 @@ impl AppState {
             led_flash_until: None,
             led_flash_color: (255, 255, 255),
         }
+    }
+
+    /// Drop agents silent past AGENT_FORGET. The map holds a handful of
+    /// fleet members, so this is free; call from the animation tick and
+    /// on every inbound status.
+    pub fn prune_agents(&mut self, now: f64) {
+        self.agents.retain(|_, a| now - a.ts < AGENT_FORGET);
     }
 
     pub fn refresh_sensors_if_stale(&mut self) {

@@ -104,14 +104,28 @@ class DisplayDaemon:
             log.warning("bad mqtt payload on %s: %r", msg.topic, msg.payload)
             return
         with self.lock:
+            # Publisher timestamp (epoch seconds, ms tolerated) if present —
+            # retained redeliveries after a restart must not look brand-new,
+            # or dead agents never age out. Arrival time is the fallback.
+            ts = payload.get("ts")
+            ts = float(ts) if isinstance(ts, (int, float)) else 0.0
+            if ts > 1e11:
+                ts /= 1000.0
             self.state["agents"][source] = {
                 "state": payload.get("state", "idle"),
                 "task": payload.get("task", ""),
-                "ts": time.time(),
+                "ts": ts if ts > 1e9 else time.time(),
             }
+            self._prune_agents()
             log.info("agent update: %s -> %s", source, payload)
             if self.state["screen"] == "idle":
                 self._render()
+
+    def _prune_agents(self):
+        # Dead publishers can't retract retained status; expire the ghosts.
+        cutoff = time.time() - 12 * 3600
+        for a in [k for k, v in self.state["agents"].items() if v.get("ts", 0) < cutoff]:
+            del self.state["agents"][a]
 
     def _update_led(self):
         bucket = hud.aggregate_status(self.state["agents"])
@@ -119,6 +133,7 @@ class DisplayDaemon:
         self.board.set_rgb(*hud.dim(color))
 
     def _render(self):
+        self._prune_agents()
         screen = self.state["screen"]
         image, draw = hud.new_canvas()
         screens.RENDERERS[screen](image, draw, self.state)

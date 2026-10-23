@@ -31,6 +31,7 @@ import random
 import socket
 import subprocess
 import sys
+import time
 
 MQTT_BROKER = "localhost"
 
@@ -70,7 +71,7 @@ def _format_tool(tool_name, tool_input):
 def publish(state, task):
     source = socket.gethostname().lower()
     topic = f"axon/agents/{source}/status"
-    payload = json.dumps({"state": state, "task": task})
+    payload = json.dumps({"state": state, "task": task, "ts": int(time.time())})
     try:
         subprocess.run(
             ["mosquitto_pub", "-h", MQTT_BROKER, "-t", topic, "-m", payload],

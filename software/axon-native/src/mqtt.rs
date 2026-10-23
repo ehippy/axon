@@ -61,9 +61,20 @@ fn handle_publish(shared: &Arc<Mutex<Daemon>>, fonts: &Fonts, topic: &str, paylo
     };
     let state = json.get("state").and_then(|v| v.as_str()).unwrap_or("idle").to_string();
     let task = json.get("task").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    // Publisher-side timestamp (epoch seconds; ms tolerated) so an agent's
+    // age survives display restarts: retained messages otherwise look
+    // brand-new on every boot and never age out. Arrival time is the
+    // fallback for pre-contract publishers (gabbie) and LWT wills.
+    let ts = json
+        .get("ts")
+        .and_then(|v| v.as_f64())
+        .filter(|t| *t > 1e9)
+        .map(|t| if t > 1e11 { t / 1000.0 } else { t })
+        .unwrap_or_else(now);
 
     let mut daemon = shared.lock().unwrap();
-    daemon.state.agents.insert(source, AgentInfo { state, task, ts: now() });
+    daemon.state.prune_agents(now());
+    daemon.state.agents.insert(source, AgentInfo { state, task, ts });
     if daemon.state.screen == "idle" {
         daemon.render(fonts);
     }
