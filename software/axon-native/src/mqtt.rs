@@ -27,7 +27,7 @@ pub fn spawn(shared: Arc<Mutex<Daemon>>, fonts: Arc<Fonts>) {
         let mut options = MqttOptions::new("axon-native", BROKER, PORT);
         options.set_keep_alive(Duration::from_secs(60));
         let (client, mut connection) = Client::new(options, 10);
-        if client.subscribe(TOPIC, QoS::AtMostOnce).is_err() {
+        if client.subscribe(TOPIC, QoS::AtMostOnce).is_err() || client.subscribe("axon/activity/view", QoS::AtLeastOnce).is_err() {
             thread::sleep(Duration::from_secs(3));
             continue;
         }
@@ -49,6 +49,29 @@ pub fn spawn(shared: Arc<Mutex<Daemon>>, fonts: Arc<Fonts>) {
 }
 
 fn handle_publish(shared: &Arc<Mutex<Daemon>>, fonts: &Fonts, topic: &str, payload: &[u8]) {
+    if topic == "axon/activity/view" {
+        let Ok(json) = serde_json::from_slice::<serde_json::Value>(payload) else { return };
+        let Some(sessions) = json["sessions"].as_array() else { return };
+        let mut daemon = shared.lock().unwrap();
+        daemon.state.agents.retain(|key, _| !key.starts_with('@'));
+        daemon.state.activity_deadlines.clear();
+        for session in sessions {
+            if let Some(row) = axon_native::activity::activity_row(session) {
+                let key = row.key;
+                let source = row.source;
+                let info = AgentInfo {state: row.state, task: row.task, ts: row.updated_at};
+                daemon.state.agents.remove(&source);
+                if matches!(session["state"].as_str(), Some("working" | "waiting" | "blocked")) {
+                    let expires = session["updated_at"].as_f64().unwrap_or(0.0)
+                        + session["lease_seconds"].as_f64().unwrap_or(900.0);
+                    daemon.state.activity_deadlines.insert(key.clone(), expires);
+                }
+                daemon.state.agents.insert(key, info);
+            }
+        }
+        if daemon.state.screen == "idle" { daemon.render(fonts); }
+        return;
+    }
     // topic shape: axon/agents/<source>/status
     let parts: Vec<&str> = topic.split('/').collect();
     if parts.len() != 4 {
@@ -74,6 +97,8 @@ fn handle_publish(shared: &Arc<Mutex<Daemon>>, fonts: &Fonts, topic: &str, paylo
 
     let mut daemon = shared.lock().unwrap();
     daemon.state.prune_agents(now());
+    // Rich per-session rows replace the corresponding machine aggregate.
+    if daemon.state.agents.keys().any(|key| key.starts_with(&format!("@{source}/"))) { return; }
     daemon.state.agents.insert(source, AgentInfo { state, task, ts });
     if daemon.state.screen == "idle" {
         daemon.render(fonts);

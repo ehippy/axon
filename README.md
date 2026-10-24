@@ -21,3 +21,10 @@ a remote networking-connected status display while the Pi4 build comes together.
   the panel directly.
 - `software/feather-firmware/` — CircuitPython firmware for the Feather RP2040 (display, LED bar, IMU, button)
 - `software/provisioning/` — first-boot setup scripts (remote networking, agent runtime, display service)
+
+## Session activity and history
+
+[Activity journal](software/activity-journal/README.md) adds individual chat goals,
+steps, blockers, outcomes and evidence, a durable SQLite event history, lifecycle
+hooks, and local query APIs. The native display consumes its session view while
+remaining compatible with the original machine status feed.

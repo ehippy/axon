@@ -101,18 +101,29 @@ fn render_idle_body(canvas: &mut Canvas, fonts: &Fonts, state: &AppState) {
         // without crowding the next row. Costs one row of max capacity
         // (floor(200/44)=4 vs floor(200/36)=5) - a fine trade, there are
         // rarely more than 2-3 agents reporting at once in practice.
-        let row_h = 44;
+        let row_h = if state.agents.keys().any(|s| s.starts_with('@')) { 60 } else { 44 };
         let max_rows = ((canvas::H as i32 - row_top - 6) / row_h).max(0) as usize;
         let mut ly = row_top;
-        for (source, info) in ordered.into_iter().take(max_rows) {
-            let row_color = hud::agent_color(source, &info.state);
-            fonts.draw_text(canvas, MARGIN as f32, ly as f32, SIZE_BODY, &source.to_uppercase(), row_color);
+        // Rotate pages so concurrent chats beyond the first screen remain visible.
+        let pages = (ordered.len() + max_rows.max(1) - 1) / max_rows.max(1);
+        let page = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default().as_secs() / 10) as usize % pages.max(1);
+        for (source, info) in ordered.into_iter().skip(page * max_rows).take(max_rows) {
+            let row_color = hud::agent_color(axon_native::activity::identity_source(source), &info.state);
+            let title = if let Some(key) = source.strip_prefix('@') {
+                let (agent, session) = key.split_once('/').unwrap_or((key, ""));
+                format!("{} {}", agent, session.chars().take(4).collect::<String>())
+            } else { source.clone() };
+            let title: String = title.chars().take(21).collect();
+            fonts.draw_text(canvas, MARGIN as f32, ly as f32, SIZE_BODY, &title.to_uppercase(), row_color);
             let age = relative_time(info.ts);
             let age_w = fonts.text_width(SIZE_TINY, &age);
             fonts.draw_text(canvas, canvas::W as f32 - 8.0 - age_w, (ly + 3) as f32, SIZE_TINY, &age, hud::FG);
             let task = if info.task.is_empty() { info.state.as_str() } else { info.task.as_str() };
-            let task: String = task.chars().take(36).collect();
-            fonts.draw_text(canvas, MARGIN as f32, (ly + 19) as f32, SIZE_TASK, &task, hud::FG);
+            for (i, line) in task.lines().take(if row_h == 60 { 2 } else { 1 }).enumerate() {
+                let line: String = line.chars().take(36).collect();
+                fonts.draw_text(canvas, MARGIN as f32, (ly + 19 + i as i32 * 18) as f32, SIZE_TASK, &line, hud::FG);
+            }
             ly += row_h;
         }
     }

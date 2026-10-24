@@ -1,0 +1,100 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/hooks/run.py\"",
+            "timeout": 3,
+            "statusMessage": "Axon \u00b7 SessionStart"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/hooks/run.py\"",
+            "timeout": 3,
+            "statusMessage": "Axon \u00b7 UserPromptSubmit"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/hooks/run.py\"",
+            "timeout": 3,
+            "statusMessage": "Axon \u00b7 PreToolUse"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/hooks/run.py\"",
+            "timeout": 3,
+            "statusMessage": "Axon \u00b7 PostToolUse"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/hooks/run.py\"",
+            "timeout": 3,
+            "statusMessage": "Axon \u00b7 PermissionRequest"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/hooks/run.py\"",
+            "timeout": 3,
+            "statusMessage": "Axon \u00b7 Stop"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/hooks/run.py\"",
+            "timeout": 3,
+            "statusMessage": "Axon \u00b7 SessionEnd"
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/hooks/run.py\"",
+            "timeout": 3,
+            "statusMessage": "Axon \u00b7 Interrupt"
+          }
+        ]
+      }
+    ]
+  }
+}

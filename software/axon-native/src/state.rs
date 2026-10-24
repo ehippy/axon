@@ -20,6 +20,7 @@ pub struct AppState {
     pub screen: String,
     pub hostname: String,
     pub agents: HashMap<String, AgentInfo>,
+    pub activity_deadlines: HashMap<String, f64>,
     /// 0.0-1.0 multiplier applied to the status dot's color (and, scaled
     /// down, the RGB LED) - the animation ticker drives this to breathe on
     /// "running" and pulse sharper on "error"; stays 1.0 (no-op) otherwise.
@@ -66,6 +67,7 @@ impl AppState {
             screen: "idle".to_string(),
             hostname,
             agents: HashMap::new(),
+            activity_deadlines: HashMap::new(),
             dot_brightness: 1.0,
             wifi_ssid: "?".to_string(),
             battery_pct: 0,

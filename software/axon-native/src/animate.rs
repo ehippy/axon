@@ -123,6 +123,17 @@ pub fn spawn(shared: Arc<Mutex<Daemon>>, fonts: Arc<Fonts>) {
             {
                 let mut daemon = shared.lock().unwrap();
                 daemon.state.prune_agents(now_unix());
+                // Expire rich rows locally too: a dead journal/broker cannot leave work running forever.
+                let expired: Vec<String> = daemon.state.activity_deadlines.iter()
+                    .filter(|(_, deadline)| now_unix() > **deadline).map(|(key, _)| key.clone()).collect();
+                for key in expired {
+                    if let Some(info) = daemon.state.agents.get_mut(&key) {
+                        info.state = "idle".into();
+                        let goal = info.task.lines().next().unwrap_or("").to_string();
+                        info.task = format!("{goal}\nlost_contact: update overdue");
+                    }
+                    daemon.state.activity_deadlines.remove(&key);
+                }
                 let mut screen = daemon.state.screen.clone();
 
                 // LED attention flash: detect "just went idle" (finished a
@@ -186,7 +197,7 @@ pub fn spawn(shared: Arc<Mutex<Daemon>>, fonts: Arc<Fonts>) {
                             let omega = angular_velocity(i, age);
                             let phase = phases.entry(name.clone()).or_insert(i as f64 * 0.9);
                             *phase = (*phase + omega * dt) % (2.0 * PI);
-                            (orbit_position(i, *phase), hud::agent_color(name, &info.state))
+                            (orbit_position(i, *phase), hud::agent_color(axon_native::activity::identity_source(name), &info.state))
                         })
                         .collect();
 

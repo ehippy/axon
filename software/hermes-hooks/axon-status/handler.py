@@ -42,6 +42,22 @@ async def _publish(state, task):
 
 
 async def handle(event_type: str, context: dict):
+    # Only create rich rows when the gateway supplies a real session identity.
+    # The blocking disk/MQTT work runs off the gateway event loop.
+    if context.get("session_id"):
+        try:
+            from pathlib import Path
+            import sys
+            sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "activity-journal"))
+            from report import hook
+            event = {"session:start": "SessionStart", "agent:start": "UserPromptSubmit",
+                     "agent:step": "PostToolUse", "agent:end": "Stop", "session:end": "SessionEnd"}.get(event_type)
+            if event:
+                await asyncio.to_thread(hook, {"session_id": context["session_id"],
+                    "hook_event_name": event, "cwd": context.get("cwd", ""), "tool_name": "working"}, "hermes")
+        except Exception:
+            pass
+
     if event_type == "session:start":
         await _publish("idle", "session started")
     elif event_type == "agent:start":
