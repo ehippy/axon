@@ -54,13 +54,16 @@ def validate(v):
 
 
 class Journal:
-    def __init__(self, path):
+    def __init__(self, path, retention_days=30):
+        if type(retention_days) is not int or retention_days < 0:
+            raise ValueError('retention_days must be a nonnegative integer')
+        self.retention_days = retention_days
         self.path = str(path)
         with self.connect() as db:
             db.executescript('''
               PRAGMA journal_mode=WAL;
               CREATE TABLE IF NOT EXISTS events (
-                seq INTEGER PRIMARY KEY, source TEXT, session TEXT, id TEXT,
+                seq INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, session TEXT, id TEXT,
                 at REAL, received REAL, kind TEXT, payload TEXT,
                 UNIQUE(source, session, id));
               CREATE INDEX IF NOT EXISTS event_session ON events(source, session, seq);
@@ -68,6 +71,37 @@ class Journal:
                 source TEXT, session TEXT, at REAL, payload TEXT,
                 PRIMARY KEY(source, session));
             ''')
+
+
+            # Old databases used rowids that can be reused after deletion. Preserve
+            # the event cursor high-water mark even when retention empties history.
+            schema = db.execute("SELECT sql FROM sqlite_master WHERE name='events'").fetchone()[0]
+            if 'AUTOINCREMENT' not in schema.upper():
+                db.executescript('''
+                  BEGIN IMMEDIATE;
+                  CREATE TABLE events_retention (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, session TEXT, id TEXT,
+                    at REAL, received REAL, kind TEXT, payload TEXT, UNIQUE(source,session,id));
+                  INSERT INTO events_retention SELECT * FROM events ORDER BY seq;
+                  DROP TABLE events;
+                  ALTER TABLE events_retention RENAME TO events;
+                  CREATE INDEX event_session ON events(source,session,seq);
+                  COMMIT;
+                ''')
+            db.execute('CREATE INDEX IF NOT EXISTS event_age ON events(at)')
+            db.execute('CREATE INDEX IF NOT EXISTS session_age ON sessions(at)')
+        self.prune()
+
+    def prune(self, now=None):
+        if not self.retention_days:
+            return {'events': 0, 'sessions': 0}
+        now = time.time() if now is None else now
+        cutoff = now - self.retention_days * 86400
+        with self.connect() as db:
+            events = db.execute('DELETE FROM events WHERE at < ?', (cutoff,)).rowcount
+            sessions = db.execute('DELETE FROM sessions WHERE at < ?', (cutoff,)).rowcount
+        return {'events': events, 'sessions': sessions}
+
 
     @contextmanager
     def connect(self):
@@ -81,6 +115,9 @@ class Journal:
 
     def ingest(self, event):
         v = validate(event)
+        # A delayed outbox or broker replay must not resurrect expired history.
+        if self.retention_days and v['at'] < time.time() - self.retention_days * 86400:
+            return False
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             prior = db.execute('SELECT * FROM sessions WHERE source=? AND session=?', (v['source'], v['session'])).fetchone()
@@ -158,7 +195,7 @@ def handler(journal):
             filters = {k: v[-1] for k, v in parse_qs(url.query).items()}
             try:
                 if url.path == '/health':
-                    data = {'ok': True}
+                    data = {'ok': True, 'retention_days': journal.retention_days}
                 elif url.path == '/sessions':
                     data = {'sessions': journal.sessions(filters)}
                 elif url.path == '/events':
@@ -238,6 +275,17 @@ def publish_view(journal, broker, stop, port=1883):
         stop.wait(5)
 
 
+def maintain(journal, stop):
+    # Startup pruning runs in Journal(); repeat even when no events arrive.
+    while not stop.wait(3600):
+        try:
+            removed = journal.prune()
+            if any(removed.values()):
+                logging.info('Retention removed %s', removed)
+        except sqlite3.Error:
+            logging.exception('Journal retention failed; retrying next hour')
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--db', default='activity.sqlite3')
@@ -245,12 +293,17 @@ def main():
     p.add_argument('--broker-port', type=int, default=1883)
     p.add_argument('--listen', default='127.0.0.1')
     p.add_argument('--port', type=int, default=8510)
+    p.add_argument('--retention-days', type=int, default=30, help='History lifetime in days (default 30; 0 disables cleanup)')
     p.add_argument('--no-mqtt', action='store_true')
     args = p.parse_args()
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
-    journal = Journal(args.db)
+    if args.retention_days < 0:
+        p.error('--retention-days must be nonnegative')
+    journal = Journal(args.db, args.retention_days)
     stop = threading.Event()
-    threads = []
+    maintenance = threading.Thread(target=maintain, args=(journal, stop), daemon=True)
+    maintenance.start()
+    threads = [maintenance]
     if not args.no_mqtt:
         for target in (mqtt, publish_view):
             thread = threading.Thread(target=target, args=(journal, args.broker, stop, args.broker_port), daemon=True)

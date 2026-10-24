@@ -91,8 +91,15 @@ received timestamps are also available. Events are ordered by durable sequence,
 so a delayed arrival is not skipped by cursor pagination. `next_after` is the next
 cursor. Session rows preserve their last stated state and expose a separate
 `effective_state` for freshness. Terminal outcomes remain queryable indefinitely;
-the tiny display's view includes the last 24 hours. There is no automatic deletion
-of journal history in this first version.
+the tiny display's view includes the last 24 hours. Journal history defaults to 30 days. Events older than the window and sessions
+whose latest update is older than the window are removed at startup and hourly.
+Recently active sessions keep their current goal and result snapshot even when
+older timeline events expire. Delayed older reports are discarded. Set
+`--retention-days N` to change the window, or `--retention-days 0` to disable
+cleanup. SQLite reuses freed pages; cleanup does not run a blocking full VACUUM.
+Event cursors stay increasing even when the entire history expires. This policy
+applies to the central journal, not installation rollback backups or reporter
+outboxes on other machines.
 
 HTTP equivalents:
 

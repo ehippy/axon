@@ -144,5 +144,61 @@ class ReporterTests(unittest.TestCase):
             self.assertEqual(emit.call_args.args[2], 'waiting')
 
 
+class RetentionTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / 'history.db'
+        self.now = time.time()
+    def tearDown(self):
+        self.tmp.cleanup()
+    def event(self, id, at, session='old', kind='progress', **data):
+        return dict(version=1,source='test',session=session,id=id,at=at,kind=kind,data=data)
+    def test_default_prunes_on_startup_but_preserves_active_session_goal(self):
+        journal = Journal(self.path, retention_days=0)
+        journal.ingest(self.event('1',self.now-40*86400,session='active',kind='start',goal='Long-running work'))
+        journal.ingest(self.event('2',self.now,session='active',kind='heartbeat'))
+        journal.ingest(self.event('3',self.now-31*86400))
+        journal.ingest(self.event('4',self.now-86400,session='recent'))
+        restarted = Journal(self.path)
+        self.assertEqual(restarted.retention_days,30)
+        self.assertEqual([e['id'] for e in restarted.events()],['2','4'])
+        self.assertEqual({s['session'] for s in restarted.sessions()},{'active','recent'})
+        self.assertEqual(restarted.sessions({'session':'active'})[0]['goal'],'Long-running work')
+    def test_late_delivery_cannot_resurrect_expired_history(self):
+        journal = Journal(self.path)
+        self.assertFalse(journal.ingest(self.event('1',self.now-31*86400)))
+        self.assertEqual(journal.events(),[])
+        self.assertEqual(journal.sessions(),[])
+    def test_custom_window_boundary_and_disabled_cleanup(self):
+        journal=Journal(self.path,retention_days=0)
+        journal.ingest(self.event('1',self.now-7*86400-1))
+        journal.ingest(self.event('2',self.now-7*86400,session='boundary'))
+        self.assertEqual(journal.prune(now=self.now),{'events':0,'sessions':0})
+        journal.retention_days=7
+        self.assertEqual(journal.prune(now=self.now),{'events':1,'sessions':1})
+        self.assertEqual(journal.events()[0]['id'],'2')
+        with self.assertRaises(ValueError): Journal(self.path,retention_days=-1)
+    def test_pagination_cursor_never_reused_after_all_events_expire(self):
+        journal=Journal(self.path,retention_days=0)
+        journal.ingest(self.event('1',self.now-31*86400))
+        cursor=journal.events()[-1]['seq']
+        journal.retention_days=30
+        journal.prune(now=self.now)
+        journal.ingest(self.event('2',self.now,session='new'))
+        result=journal.events({'after':str(cursor)})
+        self.assertEqual(len(result),1)
+        self.assertGreater(result[0]['seq'],cursor)
+    def test_existing_database_migration_preserves_cursor_high_water(self):
+        import sqlite3
+        with sqlite3.connect(self.path) as db:
+            db.execute('CREATE TABLE events (seq INTEGER PRIMARY KEY,source TEXT,session TEXT,id TEXT,at REAL,received REAL,kind TEXT,payload TEXT,UNIQUE(source,session,id))')
+            v=self.event('old',self.now-40*86400)
+            db.execute('INSERT INTO events VALUES(?,?,?,?,?,?,?,?)',(41,'test','old','old',v['at'],self.now,'progress',json.dumps(v)))
+        journal=Journal(self.path)
+        self.assertEqual(journal.events(),[])
+        journal.ingest(self.event('new',self.now))
+        self.assertEqual(journal.events({'after':'41'})[0]['seq'],42)
+
+
 if __name__ == '__main__':
     unittest.main()
