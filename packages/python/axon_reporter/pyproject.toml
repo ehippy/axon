@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "axon-reporter"
+version = "0.3.0"
+requires-python = ">=3.10"
+dependencies = ['axon-protocol==0.3.0']
+
+[project.scripts]
+axon-report = "axon_reporter.report:main"
+
+[tool.setuptools]
+packages = ['axon_reporter']

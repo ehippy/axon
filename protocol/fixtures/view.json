@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "sessions": [
+    {
+      "source": "codex-example",
+      "session": "example-session",
+      "project": "glass",
+      "goal": "Check status",
+      "state": "finished",
+      "effective_state": "finished",
+      "outcome": "Status verified",
+      "evidence": [
+        "test: protocol fixture"
+      ],
+      "updated_at": 1700000001,
+      "lease_seconds": 900,
+      "fresh": false,
+      "agent": "codex",
+      "machine": "example-installation"
+    }
+  ]
+}

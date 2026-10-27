@@ -1,8 +1,0 @@
-name: axon-status
-description: Report Hermes activity to Axon's MQTT status pipeline (see docs/PROTOTYPE-PWNAGOTCHI.md)
-events:
-  - session:start
-  - agent:start
-  - agent:step
-  - agent:end
-  - session:end

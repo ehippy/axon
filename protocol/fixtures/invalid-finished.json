@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "source": "codex-example",
+  "session": "example-session",
+  "id": "invalid-1",
+  "at": 1700000001,
+  "kind": "finished",
+  "data": {
+    "outcome": "Unproven result"
+  }
+}
