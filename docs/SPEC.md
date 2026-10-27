@@ -15,7 +15,7 @@ not a port of anything of theirs.
   in a bezel, sitting on the desk most of the time but light enough to pick up and
   carry (not a battery-all-day portable).
 - **Must-have**: GPIO breakout for hardware hacking, remote access baked in
-  (remote networking) so the agent is reachable/SSH-able from anywhere.
+  (SSH), with network access configured for the deployment.
 - **Explicitly out of scope for v1**: Agent KVM (USB capture + HID emulation),
   fingerprint sensor, immutable/A-B signed OS (nice-to-have later, not v1).
 
@@ -23,7 +23,7 @@ not a port of anything of theirs.
 
 | Part | Choice | Notes |
 |---|---|---|
-| SBC | Raspberry Pi 4B (already owned) | RAM size unknown — no silkscreen marking. Check with `cat /proc/cpuinfo \| grep Revision` and look up the revision code, or `vcgencmd get_config total_mem`. Doesn't block starting — the software stack (remote networking + Claude Code + lightweight display/voice services) should fit even on a 2GB unit; revisit only if it turns out to be 1GB. |
+| SBC | Raspberry Pi 4B (already owned) | RAM size unknown — no silkscreen marking. Check with `cat /proc/cpuinfo \| grep Revision` and look up the revision code, or `vcgencmd get_config total_mem`. Doesn't block starting — the software stack (Claude Code + lightweight display/voice services) should fit even on a 2GB unit; revisit only if it turns out to be 1GB. |
 | Storage | microSD for v1 prototype | Skipping USB-SSD/NVMe for now to keep the prototype simple and free up a USB port for the Feather; get a high-endurance card (e.g. SanDisk High Endurance / Industrial) given agent workloads write a lot (logs, git). Revisit USB-SSD boot later if card wear or reliability becomes a real problem. |
 | Cooling | Pi4-specific heatsink+fan case or fan shim (not Pi5's Active Cooler, which is a different mount) | Puck is short (~30-35mm) — cooler height is the tightest constraint in the enclosure |
 
@@ -132,8 +132,7 @@ heartbeat, say).
 
 - **OS**: Raspberry Pi OS Lite (Debian 12, arm64) as the base — swap for a hardened
   read-only-root setup later if v1 proves out.
-- **Remote access**: remote networking installed and enrolled at first boot; `remote-networking ssh`
-  enabled so no separate SSH key management is needed once it's on the network.
+- **Remote access**: SSH with key-based authentication configured for the deployment.
 - **Agent runtime**: Claude Code (or the Agent SDK) running as a systemd service,
   logs to journald.
 - **Display service**: small daemon on the Pi4 that owns the USB-serial link to the
@@ -144,7 +143,7 @@ heartbeat, say).
 - **Feather firmware**: CircuitPython script owning the actual display/LED/IMU/button
   hardware, taking commands over USB-serial and emitting button/motion events back.
 - **Provisioning**: a single `first-boot.sh` (or Ansible playbook) that installs
-  remote networking, the display service, and the agent runtime from a fresh Pi OS Lite
+  the display service, and the agent runtime from a fresh Pi OS Lite
   flash — so the whole software side is reproducible from a blank SD card.
 
 ## Enclosure

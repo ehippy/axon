@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render any Axon HUD screen to a PNG, without touching display-device or the
+"""Render any Axon HUD screen to a PNG, without touching the display device or the
 Whisplay hardware at all - same drawing code, just saved to a file instead
 of pushed to the panel. For iterating on art while away from the device.
 
@@ -63,7 +63,7 @@ def main():
         "agents": {
             "hermes": {"state": "running", "task": "read_file, grep", "ts": _time.time()},
             "workstation": {"state": "running", "task": "editing screens.py", "ts": _time.time() - 190},
-            "broker-host": {"state": "idle", "task": "awaiting input", "ts": _time.time() - 4200},
+            "example-agent": {"state": "idle", "task": "awaiting input", "ts": _time.time() - 4200},
         },
     }
 

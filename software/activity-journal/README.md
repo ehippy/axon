@@ -14,7 +14,8 @@ python3 journal.py --db ~/.local/state/axon/activity.sqlite3 --broker localhost
 The read-only API listens on **127.0.0.1:8510**. For production, install
 `axon-activity.service` in `/etc/systemd/system/` and enable it with
 `sudo systemctl enable --now axon-activity`. The supplied unit assumes the checkout
-is `/home/broker-host/axon` and the service user is `broker-host`; adjust both for another host.
+is `/opt/axon` and the service user is `axon`; create that account and adjust both
+for your deployment.
 It persists SQLite in `/var/lib/axon-activity`. Back up the database with SQLite's
 backup API or `sqlite3 activity.sqlite3 '.backup backup.sqlite3'`.
 

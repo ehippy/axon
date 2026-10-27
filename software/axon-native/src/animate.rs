@@ -47,7 +47,7 @@ const BREATHE_PERIOD_SECS: f64 = 2.4;
 const PULSE_PERIOD_SECS: f64 = 0.5;
 const VOICE_BREATHE_PERIOD_SECS: f64 = 3.0; // slower - a full-screen glow reads calmer slow
 // Safety net, not a UX timer - see the "voice" branch below. Was 12s, but a
-// real trace showed inference-host taking 26.3s to first token on one turn,
+// real trace showed inference server taking 26.3s to first token on one turn,
 // so 12s was reverting the splash to idle mid-"thinking", before "speaking"
 // ever had a chance to fire - the button->blue handoff looked broken when
 // it was actually just racing real inference latency. 60s comfortably

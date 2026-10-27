@@ -206,7 +206,7 @@ def signal_bars(draw, x, y):
 def to_rgb565(image):
     """Pack a PIL RGB image into the raw big-endian RGB565 byte buffer
     WhisplayBoard.draw_image() expects. Pure Python - no numpy needed, and
-    numpy would be one more thing competing for display-device's tight 512MB.
+    numpy would be one more thing competing for the prototype's tight 512MB.
     """
     data = image.convert("RGB").tobytes()
     out = bytearray(len(data) // 3 * 2)

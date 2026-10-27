@@ -8,7 +8,7 @@ as a peripheral controller.
 See [docs/SPEC.md](docs/SPEC.md) for the full hardware/software spec, and
 [docs/PROTOTYPE-PWNAGOTCHI.md](docs/PROTOTYPE-PWNAGOTCHI.md) for a faster-to-bring-up
 parallel track that repurposes a spare pwnagotchi (Pi Zero W + e-Paper + PiSugar) as
-a remote networking-connected status display while the Pi4 build comes together.
+a network-connected status display while the Pi4 build comes together.
 
 ## Layout
 
@@ -16,11 +16,11 @@ a remote networking-connected status display while the Pi4 build comes together.
 - `hardware/bom/` — bill of materials
 - `hardware/enclosure/` — 3D-printable enclosure design files
 - `software/display-service/` — the e-Paper display daemon. Currently holds the
-  working version built for the display-device (Zero 2 W) prototype; the Pi4 build will
+  working version built for the Pi Zero 2 W prototype; the Pi4 build will
   need a variant that talks to the Feather over USB-serial instead of driving
   the panel directly.
 - `software/feather-firmware/` — CircuitPython firmware for the Feather RP2040 (display, LED bar, IMU, button)
-- `software/provisioning/` — first-boot setup scripts (remote networking, agent runtime, display service)
+- `software/provisioning/` — first-boot setup scripts (agent runtime, display service)
 
 ## Session activity and history
 
@@ -28,3 +28,12 @@ a remote networking-connected status display while the Pi4 build comes together.
 steps, blockers, outcomes and evidence, a durable SQLite event history, lifecycle
 hooks, and local query APIs. The native display consumes its session view while
 remaining compatible with the original machine status feed.
+
+## Deployment configuration
+
+The MQTT broker defaults to `localhost`. Set `AXON_BROKER` in each publisher and
+display process environment for a remote broker; the journal also has `--broker`.
+For systemd services, use a local override with `Environment=AXON_BROKER=...`.
+Keep host addresses, SSH destinations, and credentials in local configuration.
+The relay helper uses `AXON_SSH_TARGET`; its queue path is a deployment example.
+Example service units must be adjusted to your service account and install path.

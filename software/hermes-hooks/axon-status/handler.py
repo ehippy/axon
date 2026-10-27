@@ -1,23 +1,14 @@
-"""Hermes gateway hook: publishes Hermes's activity to broker-host's own Mosquitto
-broker (localhost - the broker lives on the same box) so it shows up on
-Axon's AGENTS screen alongside Claude Code sessions from other machines. See
-docs/PROTOTYPE-PWNAGOTCHI.md in the axon repo for the MQTT contract.
+"""Publish Hermes gateway activity to the configured MQTT broker.
 
-Uses "hermes" as the source name (topic axon/agents/hermes/status), not
-"broker-host" - broker-host the machine might someday also report its own interactive
-Claude Code activity separately, and conflating the two would be confusing
-on the AGENTS screen.
-
-Runs in-process inside the Hermes gateway (unlike the Claude Code hooks,
-which are separate subprocess invocations), so this uses asyncio subprocess
-calls rather than a blocking subprocess.run() - a blocking call here would
-stall the gateway's event loop, not just this one hook.
+Uses the integration name as its source, independently of the host name.
+Async subprocess calls keep the gateway event loop responsive.
 """
 import asyncio
 import json
+import os
 import time
 
-MQTT_BROKER = "localhost"
+MQTT_BROKER = os.environ.get("AXON_BROKER", "localhost")
 
 
 def _truncate(text, length):

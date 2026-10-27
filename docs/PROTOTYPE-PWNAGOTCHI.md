@@ -1,459 +1,78 @@
-# Fast-track prototype: repurposed pwnagotchi parts on a Pi Zero 2 W
+# Portable display prototype
 
-A dormant pwnagotchi on the desk has a battery (PiSugar) and a display (Waveshare
-2.13" e-Paper) already wired up. Plan: move that HAT + PiSugar off the pwnagotchi's
-original Pi Zero W and onto the spare **Pi Zero 2 W** instead — same Zero form
-factor (65×30mm, same GPIO header position/mounting holes), so the HAT and PiSugar
-should drop right on once a 40-pin header is soldered onto the Zero 2 W (it ships
-headerless). Gets a physical prototype running this week instead of waiting on the
-Pi4+Feather build (see [SPEC.md](SPEC.md)). No SD card yet — needs a fresh image.
+This prototype repurposes a Raspberry Pi Zero 2 W, display HAT, and PiSugar3
+battery controller as a portable agent status display. A Raspberry Pi 4 build
+is described separately in [SPEC.md](SPEC.md).
 
-## What's actually in it
+## Hardware and drivers
 
-| Part | Confirmed | Notes |
-|---|---|---|
-| SBC | Raspberry Pi Zero 2 W Rev 1.0, confirmed via `/proc/cpuinfo` | Hostname is **`axon`** (`device.example`, though mDNS resolution has been flaky from this dev environment - the remote networking IP `device.example` is more reliable). Renamed from the original `display-device` once the project itself was renamed to Axon; system hostname, `/etc/hosts`, and the remote networking device name were all updated to match. `pi` user, SSH key access set up. Older mentions of `display-device` throughout this doc are historical - accurate to when they were written, not stale info to fix. |
-| OS | Debian 13 "trixie", 64-bit (`aarch64`) | Raspberry Pi OS default for Zero 2 W. Earlier note in this doc suggesting 32-bit to save memory was likely backwards — Claude Code's CLI and its native Node deps increasingly ship arm64-only prebuilt binaries (same trend that dropped ARMv6), so 64-bit may be required, not just heavier. Good that it's already set up this way. |
-| Display | Waveshare 2.13" e-Paper HAT (~250×122 monochrome, SPI) | Moved over from the pwnagotchi. Driver confirmed: **V3** (`epd2in13_V3` from the [waveshareteam/e-Paper](https://github.com/waveshareteam/e-Paper) repo) — V2 ran with no errors but no visible change (classic driver-mismatch symptom: wrong init sequence, panel silently ignores it); V3's demo produced real busy/refresh cycling and a visible update. |
-| Battery | **PiSugar3**, confirmed by hardware inspection | Shows up on I2C bus 1 at `0x57` (plus `0x68`, likely its onboard RTC) — note this contradicts the address table this doc had guessed from (PiSugar2 ≈ 0x57, PiSugar3 ≈ 0x2d); trust the hardware ID over that guess. Battery % not wired into software yet. |
-| GPIO header | Soldered, HAT + PiSugar seated | Both physically installed |
+- Raspberry Pi Zero 2 W with Raspberry Pi OS Lite, 64-bit.
+- Current display: PiSugar Whisplay HAT (240×280 color LCD, RGB LED, button,
+  microphone, and speaker). Use the upstream Whisplay driver and verify SPI,
+  audio, and GPIO access for the service account.
+- Earlier display: Waveshare 2.13-inch e-Paper V3. Select `epd2in13_V3`;
+  the V2 driver can run without errors while producing no visible refresh.
+- PiSugar3 provides battery telemetry and power/button management. Confirm
+  controller identity and firmware before selecting an I2C address or updater.
+- Display rotation and panel offsets depend on the enclosure and driver.
 
-**Measured at idle right after first boot** (`free -h`): 415Mi total RAM (of the
-512MB physical — rest reserved for GPU/firmware), 134Mi already used by the base OS
-+ sshd, 280Mi available, and a 414Mi swap already 20Mi into use doing essentially
-nothing. That's the real headroom Claude Code's Node process has to fit into —
-worth watching closely once it's installed, not just a theoretical concern anymore.
+## Services and configuration
 
-## Why this beats the original Zero W plan
+`software/axon-native/` implements the native display daemon.
+`software/display-service/` retains the Python implementation and preview tools.
+The display exposes a loopback HTTP API on port 8500 for health, status, and
+button events. Keep this API local unless you provide appropriate access controls.
 
-The original Pi Zero W is ARMv6 (ARM1176). Node.js officially dropped ARMv6 support
-after v11 (2018) — unofficial community builds exist but are unsupported and break
-across releases, and even a working Node wouldn't make Claude Code's CLI pleasant on
-a single-core 1GHz chip. The Zero 2 W's BCM2710A1 is the same ARMv7/ARMv8
-Cortex-A53 family as the Pi 3 — Node.js runs on it normally, no workarounds needed.
+The display and reporting adapters use MQTT. Set `AXON_BROKER` in each process's
+local environment (or a local systemd override) to select a broker; the default
+is `localhost`. The journal also accepts `--broker`. Broker credentials, host
+addresses, remote-access configuration, and SSH destinations belong in local
+configuration rather than this repository. Configure broker authentication and
+network access controls for your deployment.
 
-**Remaining watch-item: still only 512MB RAM.** That's now the only real question
-mark, not the CPU architecture. Likely workable for Claude Code + remote networking +
-a lightweight Python display service if nothing else heavy runs alongside them, but
-worth validating empirically rather than assuming — add a modest swap file as a
-safety margin (not a performance layer; avoid relying on it under sustained load,
-it'll thrash the SD card) and watch actual memory usage once it's running.
+For the activity journal service, create a dedicated `axon` account, install the
+checkout under `/opt/axon`, or adjust the example unit to your installation.
+See [the journal guide](../software/activity-journal/README.md) and
+[plugin installation guide](../software/plugins/README.md).
 
-If 512MB turns out too tight in practice, the fallback is the same re-scoped role
-from the original plan: a remote networking-connected status display / SSH jump point,
-with actual Claude Code execution staying on the Pi4 puck (or elsewhere) and
-pushing status to this box over the network.
+## Agent status contract
 
-## Software plan
+Legacy publishers send retained JSON to `axon/agents/<source>/status`:
 
-- **OS**: Done — Debian 13 (trixie), 64-bit, flashed and SSH-reachable at
-  `device.example`.
-- **Remote access**: remote networking — standard package-manager install works fine now
-  (no ARMv6 workaround needed).
-- **Agent runtime**: **decided — status-display satellite, not self-contained.**
-  Installed Node 20.19.2 + npm via apt (Debian 13's repo version; Claude Code
-  wants Node >=22, warns but still runs) and `@anthropic-ai/claude-code` via
-  `sudo npm install -g`. Measured, not guessed: `claude --help` alone (no
-  session, no conversation, just print help and exit) used **130MB RSS** -
-  30% of the box's 415MB usable memory - while only ~217MB was available with
-  `axon-display` + `pisugar-server` + sshd already running. A live session
-  sustaining that (or more, as history grows) doesn't leave a safe margin.
-  Node/npm/claude-code stay installed (no ongoing cost when idle, might be
-  useful for a one-off triggered task later) but this box is not going to run
-  an interactive Claude Code session as its normal mode.
-- **Display service**: Python using Waveshare's official e-Paper Python library.
-  Whether it's rendering local agent status or relaying pushes from elsewhere
-  depends on which role wins out above — same coarse-grained-state design either
-  way (e-ink's refresh speed doesn't suit scrolling text or fast animation).
-- **PiSugar**: once the model's confirmed, its software (PiSugar-power-manager, a
-  small HTTP service PiSugar themselves provide) reports battery level — worth
-  wiring into the status display regardless of which role this box ends up playing.
-
-## PiSugar3 software
-
-Installed via the official installer (`wget https://cdn.pisugar.com/release/pisugar-power-manager.sh && sudo bash pisugar-power-manager.sh -c release`):
-`pisugar-server` (a systemd service) exposes a web UI on `:8421` and a plain-text
-line-based query protocol on `:8423` (no REST/JSON despite some docs implying
-otherwise — it's `get battery`, `get battery_charging`, etc. over a raw TCP socket,
-newline-terminated). Confirmed working: model reports `PiSugar 3`, battery 100%,
-charging, 4.2V. Wrapped in `software/display-service/pisugar_client.py` — the
-prototype UI now shows real battery % instead of a placeholder.
-
-### CPU fix: --ws flag was pegging a full core
-
-Noticed load average sitting around 1.0 on a quad-core box (via the
-DIAGNOSTICS screen) - traced to `pisugar-server` alone burning 98% CPU
-continuously (22m46s of CPU time in 23 minutes of uptime), confirmed with
-`ps aux` and `strace -c` (steady `epoll_pwait`/`clock_gettime`/`write` churn,
-no errors - a busy loop, not a crash spiral). Isolated by testing flag
-combinations directly: dropping `--ws` (the standalone WebSocket push
-server) alone fixed it, CPU dropped to ~0.5% and stayed there. `--http`
-(the browser dashboard on `:8421`) and `--web` were NOT the cause - kept
-both, so the dashboard still works. Only `axon-assets`-relevant interface,
-the raw TCP protocol on `:8423`, was never affected either way.
-
-Fixed by editing `/etc/default/pisugar-server`'s `OPTS` to drop `--ws
-0.0.0.0:8422` and restarting the service (original backed up alongside it
-as `pisugar-server.bak`). Not something this repo tracks (it's a system
-config file on display-device, not a repo file) - if display-device ever gets reflashed, this
-needs redoing. Worth it: on a battery-powered device, a full core spinning
-nonstop for a feature (websocket push) nothing here actually uses is a real
-runtime cost, not just a benchmark curiosity.
-
-### RTC fix (firmware update required)
-
-The onboard RTC was stuck at a 2020 default date. Two dead ends before the real
-fix:
-- PiSugar's documented kernel-overlay approach (`dtoverlay=i2c-rtc,ds3231` in
-  `/boot/firmware/config.txt`) bound a driver but then spammed continuous I2C
-  write errors in `dmesg` without ever producing a readable time — reverted.
-- `pisugar-server`'s own `rtc_pi2rtc` sync command reported `done` but silently
-  did nothing; `rtc_addr` read back as `0x00` (unset) despite the RTC actually
-  living at `0x68` on the I2C bus.
-
-**Actual fix: update the PiSugar3 MCU firmware.** It shipped on v1.0.5; updated
-via the official installer:
+```json
+{"state": "running", "task": "Updating display", "ts": 1700000000}
 ```
-curl -fsSL https://cdn.pisugar.com/release/PiSugarUpdate.sh | sudo bash
-```
-Landed on v1.3.8 (not quite the v1.4.0 PiSugar's docs mention — likely just a
-stale doc page, not a problem). After the update, `rtc_addr` correctly
-self-reports `0x68` and `rtc_pi2rtc` actually works — RTC time now tracks
-system time within a second. This is a real MCU flash (the script pauses for a
-"battery must be charged / stop pisugar-server first" confirmation, then
-reflashes over I2C) — worth knowing before re-running it, not a config change.
 
-## Hardware swap: PiSugar Whisplay HAT replaces the e-Paper panel
+Use deployment-selected source labels. Publisher timestamps let displays expire
+stale state after reconnecting. The journal publishes richer per-session rows to
+`axon/activity/view`; these replace the corresponding aggregate rows.
+Codex, Claude Code, and Hermes have adapters in `software/`.
 
-The Waveshare e-Paper HAT this section originally describes is gone,
-replaced by a **PiSugar Whisplay HAT**: 240×280 color LCD (ST7789P3),
-RGB LED, speaker, mic. PiSugar3 (battery/RTC/button) is untouched -
-confirmed no I2C conflicts (Whisplay's own controller sits at `0x10`,
-separate from PiSugar3's `0x57`/`0x68`).
+A stationary broker can coordinate portable displays without depending on the
+display's uptime. Enable broker persistence if retained state and durable
+subscriptions must survive broker restarts. Verify reconnect behavior by
+restarting the broker and confirming that publishers and displays recover.
 
-Driver: [github.com/PiSugar/Whisplay](https://github.com/PiSugar/Whisplay),
-cloned to `~/Whisplay` on display-device. Read `runtime/whisplay.py` directly rather
-than trust an incomplete web-doc summary of its Python API. Deliberately
-skipped their optional `whisplay-daemon` (a full app-switching framework
-with its own WiFi/Bluetooth/Power-menu pages) since it wants exclusive
-hardware ownership and would fight with the PiSugar3 button wiring already
-in place - used the raw `WhisplayBoard` class directly instead, same
-own-lightweight-daemon pattern as everything else here.
+## Gabbie and Glass integrations
 
-Gotcha: `install_driver.sh` has an interactive `[y/N]` prompt that silently
-defaults to No over SSH with no TTY - first attempt failed quietly for
-exactly that reason (`echo y |` on retry fixed it). Verified the actual
-driver with a non-interactive smoke test (fill screen, draw text, flash
-the RGB LED) before writing any of our own code against it, and confirmed
-PiSugar3 still worked afterward (battery/RTC reads unaffected).
+Gabbie can run alongside the display and use its microphone, speaker, and button.
+The native display consumes Gabbie's loopback event stream on port 8765.
+The push-to-talk bridge publishes ordered `start`/`stop` events to `axon/ptt`
+through one persistent MQTT connection, avoiding ordering races between separate
+TCP connections. Voice-state timeouts return the display to idle if events stop.
+Glass can publish status through the same agent-status contract.
 
-What changed in `hud.py`/`screens.py`/`daemon.py`:
-- Canvas is real RGB now, not 1-bit - FG/BG are RGB tuples, `load_art()`
-  no longer dithers, text renders anti-aliased instead of blocky.
-- Back to **portrait** (240×280) rather than the e-ink's landscape flip -
-  240px alone is already roomier than the old e-ink's full 122px width, so
-  the constraint that motivated going landscape doesn't apply here.
-- Dropped e-ink's partial-refresh/base-image/full-refresh-every-12-updates
-  machinery entirely - a normal LCD just gets the whole frame pushed each
-  time. Simpler *and* much faster: boot-to-idle dropped from ~16-18s to ~4s.
-- New capability the e-ink never had: the **RGB LED reflects aggregate
-  agent state** at a glance (red = any error, blue = any running, dim
-  green = all idle, off = nothing reporting) - checked on every idle render.
+## Implementation notes
 
-Unchanged: the whole MQTT agents pipeline, PiSugar3's own button wiring
-(still single/double/long-tap via `button_shell` → `curl` to `/event`),
-and the daemon's HTTP API shape.
-
-Not yet done: Whisplay's own physical button (raw GPIO, press/release
-only, no built-in gesture detection - unlike PiSugar3's I2C button) isn't
-wired to anything. Also haven't touched the mic/speaker at all yet - real
-audio I/O is a distinct, unstarted piece of work.
-
-### Display rotated 90 degrees clockwise
-
-Whisplay's driver has no rotation support of its own - unlike the old
-e-ink driver (`getbuffer()` auto-detected image orientation and rotated),
-Whisplay's MADCTL register is set once at `_init_display()` and never
-revisited, and `draw_image()`'s bounds check assumes whatever image you
-hand it matches the panel's fixed physical width/height exactly. Rotating
-means composing in a logical canvas of the swapped orientation and
-rotating the whole finished frame ourselves before it reaches hardware.
-
-`hud.py` now has `PANEL_W, PANEL_H = 240, 280` (the panel's real fixed
-size) separate from `W, H` (now `280, 240` - the logical composition
-canvas, rotated 90° clockwise onto the physical panel by
-`rotate_for_display()`/`to_hardware_frame()`). `preview.py` gained a
-`--logical` flag to see the pre-rotation composition for debugging.
-
-**Known risk, not yet resolved**: every corner-inset value (battery icon,
-watermark, status dot) was tuned empirically for the pre-rotation
-orientation. Worked through the coordinate mapping by hand and suspect at
-least the battery icon and the watermark (previously "slammed to the
-floor" with zero margin on one axis) are now near a *different* physical
-rounded corner than before - but couldn't fully verify without seeing the
-actual hardware. Shipped with margins unchanged pending a visual check;
-expect a follow-up round of corner-inset fixes once that's confirmed.
-
-### Display daemon (original e-Paper version - history, superseded above)
-
-The original single/double/long-press scripts each re-init'd the e-Paper panel
-from scratch on every call (slow, full-flash every time) and had no way to
-receive a pushed status update. Replaced with a persistent systemd service,
-`axon-display` (`software/display-service/daemon.py`), installed at
-`/home/pi/axon-display/` on display-device:
-
-- Owns the panel for the life of the service — uses `displayPartial` /
-  `displayPartBaseImage` for fast, low-flicker updates instead of a full
-  refresh every time, with a full refresh every 12 partial updates to bound
-  e-ink ghosting.
-- Screen registry in `screens.py`: `idle` (home screen, single-tap always
-  returns here), plus a double-tap cycle through `diagnostics` → `battery` →
-  `network`, each showing page-dot position indicators. `boot` and `shutdown`
-  are one-off screens outside the cycle.
-- A tiny local HTTP API on `127.0.0.1:8500`:
-  - `GET /event/<single|double|long>` — what PiSugar's `button_shell` actually
-    calls now (a cheap `curl`, not a whole new Python+PIL+driver process per
-    press). Note: this had to be GET+path-segment, not a POST with a JSON
-    body — `pisugar-server`'s `button_shell` strips quote characters from the
-    command string it stores, so a JSON body doesn't survive round-tripping
-    through it.
-  - `POST /status` `{"state": "idle"|"running"|"error", "task": "..."}` — the
-    actual hook for pushing live agent status, from wherever Claude Code ends
-    up running (this box itself, or the Pi4 puck over remote networking). Re-renders
-    the idle screen immediately if it's the one currently shown.
-  - `GET /health`
-- Art hook: `hud.load_art(name, max_size=...)` looks in
-  `/home/pi/axon-assets/<name>.png` (or `.bmp`) and dithers it to 1-bit;
-  currently wired up for `idle.png` in the status box. Falls back to the
-  plain vector text/signal-bars treatment when no art file exists yet - see
-  `software/display-service/assets/README.md`.
-
-Old scripts (`prototype_ui.py`, `button_diagnostics.py`, `button_shutdown.py`)
-are gone, superseded by the daemon.
-
-## Multi-machine agent status via MQTT (broker-host is the brain)
-
-The user has another always-on box on the network: **broker-host** (`localhost`,
-`broker-host@localhost` over SSH) — a genuine Raspberry Pi 5, 8GB RAM, booting off
-a real SSD (452GB, 232GB free), already running a substantial stack (Docker,
-a Dolt SQL server, remote networking, and notably **Mosquitto**, an MQTT broker). Also
-running there: **`built`**, described as an "agentic software factory" — this
-*is* what the user calls "Hermes" (Hermes is the agent that codes on broker-host via
-`built`). A `built` plugin to publish its own task events is a future item,
-not done yet.
-
-Decided **broker-host, not display-device, should be the always-on coordination point**:
-display-device is meant to be picked up and carried (that's the point of the puck form
-factor + battery), so it's a bad place to host anything other machines depend
-on being reachable. broker-host is stationary, wall-powered, and already the more
-capable box. Mosquitto was confirmed idle (not used for anything else yet) and
-already listening on `0.0.0.0:1883` with `allow_anonymous true` — reachable
-from any network machine with zero additional setup.
-
-Considered adding an MCP server on broker-host for this too (agents could then
-*query* status, not just push it) — deliberately deferred for now in favor of
-plain MQTT pub/sub; simpler, and Hermes/`built` integration isn't happening
-yet anyway. Worth revisiting once there's an actual agent-initiated use case
-(e.g. "what else is already working on this").
-
-**Contract**: any source publishes to `axon/agents/<source>/status` with a
-JSON payload `{"state": "idle"|"running"|"error", "task": "..."}`. display-device's
-`axon-display` daemon subscribes to the wildcard `axon/agents/+/status` on
-startup (`paho-mqtt`, installed via `apt install python3-paho-mqtt`; note
-it's v2.x, which needs `mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)` -
-the v1 constructor signature is different) and keeps an in-memory registry
-(`state["agents"][source] = {state, task, ts}`) shown on the **AGENTS**
-screen (5th in the double-tap cycle: diagnostics → battery → network →
-agents), sorted most-recently-updated first, capped to 5 entries. Each row
-shows a relative age ("now"/"3m"/"1h"/"2d", computed fresh on every render
-from `ts`) right-aligned next to the source name - without this, a report
-from an hour ago looked identical to one from ten seconds ago, which is
-actively misleading for a "what's happening right now" screen.
-
-**Reconnect resilience verified**: restarted Mosquitto on broker-host directly
-and confirmed via `journalctl` that `paho-mqtt`'s background loop
-(`loop_start()`) reconnected on its own within ~10s, no restart of
-`axon-display` needed - then confirmed a fresh `mosquitto_pub` actually
-landed post-reconnect. Not just assumed from the library's docs - tested
-for real.
-
-**Real publishers live**: two, on two different harnesses.
-
-- **Claude Code hooks on workstation** (see `software/claude-hooks/`) across
-  `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, `SessionEnd` -
-  `PostToolUse` is what makes the task text representative of actual work
-  ("editing screens.py", "running: git commit...") rather than a static
-  string or raw prompt text, and lifecycle events get randomized on-brand
-  phrasing instead of flat strings. Still needed: the same hooks on the
-  rest of the network machines.
-- **Hermes gateway hook on broker-host** (see `software/hermes-hooks/`). Important
-  correction to earlier notes in this doc: **Hermes is not built on Claude
-  Code** - it's its own independent harness
-  ([hermes-agent.nousresearch.com](https://hermes-agent.nousresearch.com/docs/)),
-  found live on broker-host at `~/.hermes/hermes-agent/` (its own gateway,
-  dashboard, state system, skills, and - genuinely - four separate native
-  hook systems: gateway hooks, plugin hooks, shell hooks, outbound
-  webhooks). Claude Code's hooks mechanism is irrelevant to it entirely;
-  the "future `built` plugin" idea from earlier notes was aimed at the
-  wrong target; `built` (the systemd service, port 19091) is a distinct
-  thing from Hermes's own gateway/dashboard processes (ports 8642/8644/9119).
-  Used a **gateway hook** (`~/.hermes/hooks/axon-status/HOOK.yaml` +
-  `handler.py`, subscribed to `session:start`, `agent:start`, `agent:step`,
-  `agent:end`, `session:end`) - it runs in-process inside the gateway, so
-  `handler.py` uses `asyncio.create_subprocess_exec` rather than a blocking
-  `subprocess.run()`, which would stall the gateway's event loop. Publishes
-  as source `hermes`, not `broker-host` - the machine might someday also report
-  its own separate interactive Claude Code activity, and conflating the two
-  would be confusing on the AGENTS screen. `agent:step`'s `tool_names`
-  context gives genuinely representative task text ("read_file, grep") for
-  free, same idea as Claude Code's `PostToolUse`.
-
-  Verified: `hermes gateway restart` (graceful, drained in-flight turns
-  first) logged `1 hook(s) loaded`; `hermes hooks test <event>` turned out
-  to only cover shell/plugin hooks (a different, non-colon event
-  vocabulary - `pre_tool_call` etc., not `agent:start` etc.), so tested by
-  calling `handler.handle()` directly with synthetic context, same spirit
-  as piping fake JSON into the Claude Code hook script. Confirmed on
-  display-device's journal: `hermes` shows up as its own distinct source with real
-  task text.
-
-## Open items
-
-1. Source art for `/home/pi/axon-assets/idle.png` (or wire up more named art
-   hooks in `screens.py` as it shows up) - now real color, not dithered 1-bit.
-2. Wire up Claude Code hooks on the *other* network machines (only workstation
-   is done - see `software/claude-hooks/README.md`).
-3. Consider a `reaction:added`/`command:*` gateway hook too, or richer
-   `agent:end` context (Hermes's `response` field) for the task text -
-   current Hermes hook only reports coarse state, not as rich as it could be.
-4. Wire up Whisplay's own physical button (currently unused - PiSugar3's
-   button handles everything).
-5. Mic/speaker are untouched - no audio I/O built yet at all.
-
-## Status
-
-- [x] Fresh OS flashed, SSH key access working (`ssh pi@device.example`)
-- [x] remote networking installed and connected (device.example, hostname `display-device`)
-- [x] Header soldered, e-Paper HAT + PiSugar moved over and confirmed working
-      (SPI + I2C enabled, `epd2in13_V3` demo verified visually on the panel)
-- [x] PiSugar3 power manager installed and confirmed reading real battery data
-- [x] PiSugar3 RTC fixed via firmware update (v1.0.5 → v1.3.8)
-- [x] Real `axon-display` daemon running as a systemd service, partial-refresh
-      screens, button-triggered via a local HTTP API, `/status` push endpoint
-      ready for an agent to use
-- [x] MQTT wired to broker-host (Mosquitto), AGENTS screen added, verified end to
-      end with a real `mosquitto_pub` from broker-host
-- [x] Node/Claude Code installed and memory-tested for real (130MB RSS for
-      just `claude --help`) - decided: status-display satellite, not
-      self-contained
-- [ ] Art sourced for the idle screen
-- [x] Claude Code hooks live on workstation (`SessionStart`/`UserPromptSubmit`/
-      `Stop`/`SessionEnd` → `software/claude-hooks/report_status.py`),
-      verified end to end including a live panel update
-- [x] Hermes gateway hook live on broker-host (`software/hermes-hooks/axon-status/`),
-      confirmed `1 hook(s) loaded` in gateway logs and a real update landing
-      on display-device as source `hermes`
-- [ ] Same Claude Code hooks on the rest of the network machines
-- [x] NOPASSWD sudo enabled for `pi` on this box (flagged here since it's a
-      real security tradeoff: anyone with SSH key access gets root with no friction.
-      Reasonable given remote networking-only reachability and single-user, but worth
-      remembering if this box's threat model ever changes.)
-- [x] PiSugar Whisplay HAT installed and driving the display (240×280 color
-      LCD + RGB LED reflecting agent state), e-Paper HAT fully retired.
-      Confirmed no PiSugar3 conflicts, boot-to-idle now ~4s (was ~16-18s)
-- [ ] Whisplay's own physical button - unused
-- [ ] Whisplay mic/speaker - unused, no audio I/O built yet
-- [x] Display daemon rewritten native (`software/axon-native/`, Rust,
-      cross-compiled x86_64→aarch64 with a pacman-installed
-      `aarch64-linux-gnu-gcc` toolchain - no Docker needed) to kill the
-      RGB565-packing bottleneck the Python/PIL pipeline had (287ms/frame,
-      ~68% of every frame). Now the systemd `axon-display` service.
-      Found and fixed two real bugs along the way, not just a language
-      swap:
-      - `pisugar-server`'s TCP protocol answers instantly but never closes
-        the connection, so the old "read until EOF or timeout" client
-        pattern (present in both the original Python client and this
-        rewrite's first draft) silently blocked for the full timeout on
-        every single battery read. Fixed by reading once and returning.
-      - rppal's software PWM busy-waits part of every cycle for timing
-        precision, which cost ~50% of one core sustained just idling with
-        the backlight + RGB LED channels active - real battery drain on a
-        portable device. Replaced with a plain sleep-based soft-PWM
-        (`software/axon-native/src/softpwm.rs`, ported from the same
-        approach `whisplay.py`'s own `SoftPWM` class already used) - back
-        to ~0% CPU at idle.
-      Net result on real hardware: ~140ms per full re-render (curl+HTTP
-      round-trip included) vs. the Python pipeline's measured 421ms.
-- [x] Status-dot/RGB-LED animation (`software/axon-native/src/animate.rs`):
-      breathing pulse on "running", sharp pulse on "error", still on idle -
-      plus one small dot per active agent, each on its own tilted
-      elliptical orbit around a shared center (distinct radius/tilt per
-      shell, an atom rather than a shared racetrack), orbital speed driven
-      by that agent's own recency (fresh report -> fast spin, decaying
-      exponentially back to the shell's baseline as the report ages).
-      Runs at a genuine ~33fps sustained on real hardware once the ticker
-      loop bug (was sleeping a fixed TICK *on top of* render time instead
-      of targeting a fixed period, silently halving the real frame rate)
-      got fixed.
-- [x] Whisplay's mic/speaker wired up for real: `Projects/gabbie` (the
-      existing hands-free voice assistant, previously desktop-only) now
-      runs directly on axon as a systemd service (`gabbie.service`,
-      ~82MB RSS - light enough once local Whisper was dropped in favor of
-      calling inference-host's `Whisper-Tiny` over `/v1/audio/transcriptions`,
-      confirmed loaded and working). Whisplay's own physical button
-      (previously unused) is now a walkie-talkie push-to-talk trigger -
-      `axon-native` publishes `"start"`/`"stop"` to MQTT topic `axon/ptt`
-      on press/release (`software/axon-native/src/mqtt.rs`'s
-      `publish_ptt()`), and gabbie subscribes, bypassing VAD and the wake
-      word gate while held. Confirmed end to end on real hardware: button
-      hold -> transcription -> LLM reply -> TTS -> played through axon's
-      own speaker, then a natural VAD-driven follow-up turn within the
-      awake window right after.
-- [x] Voice-state screen splash (`software/axon-native/src/screens.rs`'s
-      render_voice, `voicebus.rs`): a breathing radial gradient wash drawn
-      *behind* the normal dashboard (not a takeover of it) - green while
-      gabbie's listening, blue while thinking/speaking. Green is driven
-      directly by the button locally (instant, never false-triggers on
-      gabbie's own continuous ambient VAD noise); blue by her real
-      "thinking"/"speaking"/"confirming" EventBus events (only ever fire
-      after a genuinely accepted utterance); reverts on "done_speaking"
-      plus a 12s timeout backstop. First version mapped raw
-      "listening"/"transcribing" events to the splash and it was
-      permanently stuck up, since gabbie publishes those for her own
-      idle ambient monitoring too, not just real engagement - rebuilt
-      around a proper transition/timeout model instead.
-- [x] Real bug found and fixed in the button->gabbie bridge: the original
-      `publish_ptt()` opened a fresh MQTT connection per press/release, so
-      a quick tap's start/stop could race each other over independent TCP
-      handshakes with no ordering guarantee - when stop won, gabbie's
-      ptt.active got stuck true (stuck listening, degenerate one-word
-      replies). Fixed with one persistent connection for the process's
-      lifetime. Separately, real switch bounce on the physical button was
-      also confirmed via MQTT logging (a single press producing 10+ rapid
-      start/stop toggles) and fixed with a 150ms debounce on the GPIO
-      interrupt (previously registered with debouncing explicitly off).
-- [x] Agent awareness in gabbie: a `list_agents` tool (mirrors
-      axon/agents/+/status over its own independent MQTT subscription -
-      not routed through axon-native) so she can answer "what's
-      workstation doing?". Proactive speech deliberately narrow - only
-      unprompted-interrupts for an agent transitioning into "error"
-      (genuinely time-sensitive); an idle/waiting-for-input transition is
-      *not* worth interrupting a conversation for, so that one's handled
-      passively instead: axon-native's own RGB LED (already watching the
-      same MQTT stream, no round trip through gabbie needed) gives a
-      brief ~1.5s attention flash - white for "just went idle", red-blink
-      for "just errored" - distinct from its normal steady state-driven
-      color.
-- [x] Real infrastructure gap found during this work: axon rebooted
-      mid-session with no diagnosable cause (Pi firmware's sticky
-      undervoltage/throttle register read clean - `vcgencmd get_throttled`
-      = 0x0 - ruling out power/thermal, but the journal was in-memory only
-      and got wiped by the reboot itself). Fixed by enabling persistent
-      journald storage (`/var/log/journal` + `Storage=persistent`), so a
-      future incident is actually diagnosable. Unrelated: the scp that
-      landed mid-reboot produced a silently truncated binary (2MB instead
-      of the real ~7.4MB) that segfaulted instantly with no output at all -
-      not a code bug, just a corrupted transfer; re-copying after
-      reconnecting fixed it. Worth remembering as a class of failure: a
-      binary that crashes before its very first println is worth checking
-      file size against the source build before debugging the code itself.
+- Keep one process responsible for the panel to avoid competing refreshes.
+- The earlier e-Paper implementation needed partial refreshes with periodic full
+  refreshes; the color LCD renders complete frames.
+- Use one shared status palette for screen and LED feedback.
+- Button scripts may strip JSON quotes; the loopback GET event endpoint supports
+  simple gesture commands when a JSON POST is unsuitable.
+- Keep firmware, audio, display, and battery checks independent when diagnosing
+  hardware faults. Verify the driver against the actual hardware revision.
+- Store custom artwork and generated previews outside tracked source files.
+- Keep personal activity databases, relay queues, logs, and deployment settings
+  outside Git. Do not grant passwordless administrative access merely to run a
+  display or reporting service.

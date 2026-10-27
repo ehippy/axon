@@ -1,4 +1,4 @@
-//! MQTT subscriber - broker-host is the broker/brain (stationary Pi 5); axon just
+//! MQTT subscriber - the display
 //! subscribes to axon/agents/+/status and re-renders on updates. Port of
 //! daemon.py's paho-mqtt wiring onto rumqttc's blocking client, which
 //! reconnects with backoff internally the same way paho's loop_start() did.
@@ -13,7 +13,9 @@ use crate::font::Fonts;
 use crate::hud::AgentInfo;
 use crate::Daemon;
 
-const BROKER: &str = "localhost";
+fn broker_host() -> String {
+    std::env::var("AXON_BROKER").unwrap_or_else(|_| "localhost".to_string())
+}
 const PORT: u16 = 1883;
 const TOPIC: &str = "axon/agents/+/status";
 const PTT_TOPIC: &str = "axon/ptt";
@@ -24,7 +26,7 @@ fn now() -> f64 {
 
 pub fn spawn(shared: Arc<Mutex<Daemon>>, fonts: Arc<Fonts>) {
     thread::spawn(move || loop {
-        let mut options = MqttOptions::new("axon-native", BROKER, PORT);
+        let mut options = MqttOptions::new("axon-native", broker_host(), PORT);
         options.set_keep_alive(Duration::from_secs(60));
         let (client, mut connection) = Client::new(options, 10);
         if client.subscribe(TOPIC, QoS::AtMostOnce).is_err() || client.subscribe("axon/activity/view", QoS::AtLeastOnce).is_err() {
@@ -160,7 +162,7 @@ impl PttPublisher {
 }
 
 fn new_publisher_client() -> (Client, rumqttc::Connection) {
-    let mut options = MqttOptions::new("axon-native-ptt", BROKER, PORT);
+    let mut options = MqttOptions::new("axon-native-ptt", broker_host(), PORT);
     options.set_keep_alive(Duration::from_secs(30));
     Client::new(options, 10)
 }

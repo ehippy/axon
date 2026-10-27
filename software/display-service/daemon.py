@@ -32,10 +32,8 @@ log = logging.getLogger("axon-display")
 
 HOST, PORT = "127.0.0.1", 8500
 
-# broker-host is the "brain" - a stationary, wall-powered Pi 5 - vs. display-device which is
-# meant to be picked up and carried, so it's not a reliable place to host the
-# broker itself. See docs/PROTOTYPE-PWNAGOTCHI.md for the reasoning.
-MQTT_BROKER = "localhost"
+# Use a local broker by default; configure a remote broker with AXON_BROKER.
+MQTT_BROKER = os.environ.get("AXON_BROKER", "localhost")
 MQTT_PORT = 1883
 MQTT_TOPIC = "axon/agents/+/status"
 

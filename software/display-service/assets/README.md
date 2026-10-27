@@ -1,7 +1,7 @@
 # Display art
 
 Drop custom art here as it gets sourced, deployed to `/home/pi/axon-assets/`
-on display-device (see `hud.ASSETS_DIR`). Nothing is required - screens fall back to
+on the display device (see `hud.ASSETS_DIR`). Nothing is required - screens fall back to
 plain vector-drawn primitives (text/shapes) for anything missing.
 
 Currently looked up:

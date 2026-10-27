@@ -7,7 +7,7 @@ description: Check gabbie's relay queue on axon for messages she couldn't delive
 
 Gabbie (the voice assistant running on axon) can't call `send_message`
 herself - only an interactive Claude Code session can, and she isn't one.
-When the user tells her "tell workstation to X," her `relay_to_agent` tool
+When the user tells her "tell display-maintenance to X," her `relay_to_agent` tool
 just appends a line to a queue file on axon. This skill is the other half:
 drain that queue and actually deliver each entry via `send_message`.
 
@@ -22,16 +22,22 @@ Matching is by **exact session title**, case-insensitive - not fuzzy
 substring matching. Session titles are normally auto-generated per
 conversation topic, so this only works because sessions meant to be
 relay targets get manually retitled to a fixed name via
-`set_session_title` (e.g. this project's main session on workstation is
-titled exactly "workstation"). If a `target` doesn't exactly match any
+`set_session_title` (e.g. a target session can be titled exactly
+"display-maintenance"). If a `target` doesn't exactly match any
 open session's title, treat it as unresolved - don't fall back to
 guessing from a partial/topic-based title.
+
+## Configuration
+
+Set `AXON_SSH_TARGET` to your deployment's SSH destination (`user@host`).
+Keep this value in your local environment, outside the repository.
+The queue path below is an example; adjust it for your installation.
 
 ## Steps
 
 1. **Read the queue.**
    ```
-   ssh pi@device.example "cat /home/pi/gabbie/relay_queue.jsonl 2>/dev/null"
+   ssh "${AXON_SSH_TARGET:?Set AXON_SSH_TARGET to user@host}" "cat /home/pi/gabbie/relay_queue.jsonl 2>/dev/null"
    ```
    Each line is one JSON object: `{"target", "message", "ts", "delivered"}`.
    If the file doesn't exist or every line has `"delivered": true`, there's
@@ -60,7 +66,7 @@ guessing from a partial/topic-based title.
    left unresolved stays `false` untouched, exactly as it was, so the next
    pass retries it). Write the whole updated file back:
    ```
-   ssh pi@device.example "cat > /home/pi/gabbie/relay_queue.jsonl" <<'EOF'
+   ssh "${AXON_SSH_TARGET:?Set AXON_SSH_TARGET to user@host}" "cat > /home/pi/gabbie/relay_queue.jsonl" <<'EOF'
    <updated JSONL content>
    EOF
    ```

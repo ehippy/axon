@@ -31,11 +31,11 @@ pub fn agent_color(source: &str, state: &str) -> Color {
         return status_color("error");
     }
     match source.to_lowercase().as_str() {
-        // Claude's own brand terracotta - Claude Code sessions (workstation etc).
-        "workstation" | "claude" => (218, 119, 86),
-        // Hermes yellow, as requested.
+        // Claude Code's terracotta identity color.
+        "claude" => (218, 119, 86),
+        // Hermes integration color.
         "hermes" => (240, 190, 40),
-        // The smart mirror (ehippy/glass) - white, its particle swarm's own color.
+        // The smart mirror (Glass) - white, its particle swarm's own color.
         "mirror" => (255, 255, 255),
         // Unknown/future agents: a neutral hue distinct from the curated
         // colors above and from the state-based palette used elsewhere

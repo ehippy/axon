@@ -68,7 +68,9 @@ back, restore that backup's settings and package, then reload the agent. For
 Hermes also restore `legacy-HOOK.yaml` to its original hook directory and restore
 its saved `config.yaml` if returning to the gateway-only integration.
 
-Prerequisites: Python 3.10+, `mosquitto_pub`, access to broker-host's broker on 1883.
+Prerequisites: Python 3.10+, `mosquitto_pub`, access to an MQTT broker on port 1883.
+Set `AXON_BROKER` in the publisher and display process environments to select
+a remote broker; the default is `localhost`. The journal also accepts `--broker`.
 No Python packages are needed by the plugins or installer. Reporter environment
 settings (`AXON_BROKER`, `AXON_PORT`, `AXON_ACTIVITY_HOME`, `AXON_MOSQUITTO_PUB`)
 work in all three agents. Session commands include the exact session ID explicitly;

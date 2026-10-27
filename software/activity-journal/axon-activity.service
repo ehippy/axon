@@ -5,8 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=broker-host
-WorkingDirectory=/home/broker-host/axon/software/activity-journal
+User=axon
+WorkingDirectory=/opt/axon/software/activity-journal
 StateDirectory=axon-activity
 ExecStart=/usr/bin/python3 journal.py --db /var/lib/axon-activity/activity.sqlite3 --broker localhost
 Restart=on-failure

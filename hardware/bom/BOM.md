@@ -7,7 +7,7 @@ for the reasoning behind each choice.
 
 | Part | Role | Notes |
 |---|---|---|
-| Raspberry Pi 4B | Main compute — remote networking, Claude Code, display/voice services | RAM size unknown, need to check |
+| Raspberry Pi 4B | Main compute — Claude Code, display/voice services | RAM size unknown, need to check |
 | Adafruit Feather RP2040 | Peripheral controller — display, LED bar, IMU, button | Chosen over the bare RP2040 and QT Py RP2040 for GPIO count + onboard NeoPixel + STEMMA QT |
 | Pi Zero 2 W | Spare | Not in v1 scope |
 | Bare RP2040 board, QT Py RP2040 | Spares | Not in v1 scope; QT Py earmarked for a possible future compact sensor node |
