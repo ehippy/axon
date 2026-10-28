@@ -65,12 +65,12 @@ def heartbeat_due(agent, session, now=None):
 
 
 def lifecycle(agent, data):
-    """Only identifiers, cwd, event and tool names are read; other payloads are ignored."""
+    """Only identifiers, cwd, event and tool names are read, plus usage counts from the transcript; other payloads are ignored."""
     session = data.get('session_id')
     event = data.get('hook_event_name')
     if not session:
         return
-    safe = {key: data[key] for key in ('session_id','cwd','hook_event_name','tool_name') if key in data}
+    safe = {key: data[key] for key in ('session_id','cwd','hook_event_name','tool_name','transcript_path') if key in data}
     if event in ('PreToolUse','PostToolUse') and not heartbeat_due(agent,session):
         return
     if event == 'UserPromptSubmit':

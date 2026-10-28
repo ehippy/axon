@@ -220,6 +220,45 @@ class Journal:
                 rows.append({'provider':provider,'account':'primary','observed_at':None,'windows':[]})
         return rows
 
+    def token_usage(self, since):
+        """Tokens each agent sent and received since a time, from per-session running totals.
+        A session already under way before the period with no earlier count is measured from its
+        first count inside the period, so turning reporting on never dumps a whole session into it."""
+        with self.connect() as db:
+            counted = db.execute("""SELECT DISTINCT source, session FROM events
+                WHERE at>=? AND payload LIKE '%"tokens"%'""", (since,)).fetchall()
+            rows = []
+            for source, session in counted:
+                agent = db.execute("SELECT json_extract(payload,'$.agent') FROM sessions WHERE source=? AND session=?", (source, session)).fetchone()
+                began = db.execute('SELECT MIN(at) FROM events WHERE source=? AND session=?', (source, session)).fetchone()[0]
+                for at, tokens in db.execute("""SELECT at, json_extract(payload,'$.data.tokens') FROM events
+                        WHERE source=? AND session=? AND payload LIKE '%"tokens"%' ORDER BY at""", (source, session)):
+                    rows.append({'source': source, 'session': session, 'at': at, 'tokens': tokens,
+                                 'agent': agent and agent[0], 'began': began})
+        sessions = {}
+        for row in rows:
+            tokens = json.loads(row['tokens']) if row['tokens'] else None
+            if not isinstance(tokens, dict):
+                continue
+            entry = sessions.setdefault((row['source'], row['session']), {'agent': row['agent'], 'base': None, 'last': None})
+            if row['at'] < since:
+                entry['base'] = tokens
+            else:
+                if entry['base'] is None and entry['last'] is None:
+                    entry['base'] = tokens if row['began'] < since else {}
+                entry['last'] = tokens
+        usage = {}
+        for entry in sessions.values():
+            if not entry['last'] or not entry['agent']:
+                continue
+            total = usage.setdefault(entry['agent'], {'input': 0, 'cached': 0, 'output': 0, 'sessions': 0})
+            # A count that went backwards is a restarted transcript; what it shows now is all new.
+            for key in ('input', 'cached', 'output'):
+                change = entry['last'][key] - entry['base'].get(key, 0)
+                total[key] += change if change >= 0 else entry['last'][key]
+            total['sessions'] += 1
+        return usage
+
     def activity_times(self):
         """Heartbeat freshness must not reshuffle work; heartbeat-only sessions use first sighting."""
         with self.connect() as db:
@@ -373,6 +412,8 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
                     data = {'ok': True, 'retention_days': journal.retention_days}
                 elif url.path == '/resources':
                     data = {'resources': journal.resources()}
+                elif url.path == '/resources/tokens':
+                    data = {'tokens': journal.token_usage(float(filters.get('since', '')))}
                 elif url.path == '/resources/history':
                     if not prometheus_url or filters.get('account') not in inference:
                         self.send_error(404); return
@@ -660,7 +701,12 @@ def inference_history(base, label, seconds, end=None, timeout=8):
             'start': end-seconds, 'end': end, 'step': step}, timeout)
         if result:
             series[name] = [[float(at), finite(value)] for at, value in result[0]['values']]
-    return {'account': label, 'range': seconds, 'step': step, 'series': series}
+    totals = {}
+    for name, counter in (('input', 'prompt_tokens_total'), ('output', 'tokens_predicted_total')):
+        result = prometheus(base, '/api/v1/query', {'query': f'sum(increase(llamacpp:{counter}{{{sel}}}[{seconds}s]))', 'time': end}, timeout)
+        if result and (value := finite(result[0]['value'][1])) is not None:
+            totals[name] = round(value)
+    return {'account': label, 'range': seconds, 'step': step, 'series': series, 'tokens': totals}
 
 
 def endpoint_metrics(url, timeout=4):

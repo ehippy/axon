@@ -195,6 +195,19 @@ The server's MQTT collector subscribes to `axon/resources/+/+`; `/resources` ser
 the latest durable snapshot per provider/account and resource changes signal SSE.
 There is no additional browser polling service or provider login on the server.
 
+## Token totals
+
+The Codex and Claude panels show tokens sent up and received over the top bar's
+time horizon, summed across every host and session. The Claude and Codex hooks read
+running totals from the session's own transcript (`transcript_path`), keeping only
+usage numbers and resuming where the last read stopped, and attach them to lifecycle
+reports as `tokens: {input, cached, output}`. Sent-up counts include cached context,
+which dominates agent sessions; hover the line for the cached share. A session already
+running when the period starts counts from its first report inside the period. Claude
+subagent transcripts are separate files and are not yet counted. The totals come from
+`GET /resources/tokens?since=<epoch seconds>`. Hosts start sending counts once
+their plugins are updated.
+
 ## Shared inference servers
 
 An inference server already reports its own load, so the server can simply poll it.
@@ -234,15 +247,17 @@ whenever `/metrics` is read, so two readers garble each other's speed. With
 counters (`rate()` over a minute). It reads the endpoint directly only when Prometheus
 is unreachable or holds no fresh scrape of that label.
 
-Prometheus also adds trends. Each panel shows small charts for output tokens per
-second, running and queued requests, KV cache, and GPU busy, power and temperature
-over the top bar's time horizon (Any time shows 30 days). These come from
-`GET /resources/history?account=<label>&range=<seconds>` in at most 120 steps. Load
-charts show each step's peak and hardware charts its average. GPU power and
-temperature come from node-exporter's `amdgpu` hwmon sensors on the same `instance`.
-GPU busy appears once node-exporter runs with `--collector.drm`. A chart with no
-series is left out, and without `--prometheus` the endpoint returns 404 and panels
-show live readings only.
+Prometheus also adds history. The panel keeps GPU use and a few headline numbers
+(generation speed, running/queued requests, GPU memory) on the left, with one chart of
+output tokens per second on the right over the top bar's time horizon (Any time shows
+30 days). Hover the chart to read any step. A footer gives the prompt and output tokens
+the server handled in that span. Both come from
+`GET /resources/history?account=<label>&range=<seconds>`, which returns up to 120 steps
+of output rate, requests, KV cache and GPU busy, power and temperature, plus the span's
+token totals. Each step holds the peak for load measures and the average for hardware.
+GPU power and temperature come from node-exporter's `amdgpu` hwmon sensors on the same
+`instance`. GPU busy appears once node-exporter runs with `--collector.drm`. Without
+`--prometheus` the endpoint returns 404 and panels show live readings only.
 
 A panel turns Stale thirty seconds after the last reading. An endpoint that answers
 with anything other than usable metrics is Offline, not a row of zeros. Load stays

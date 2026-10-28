@@ -209,9 +209,12 @@ class PrometheusTests(unittest.TestCase):
             history = inference_history('http://prom:9090', 'neuralforge', 10**9, end=2_000_000_000)
         self.assertEqual(history['range'], 30*86400); self.assertEqual(history['step'], 30*86400//120)
         self.assertEqual(history['series'], {'output_tps': [[100.0, 12.5], [130.0, None]], 'gpu_power_watts': [[100.0, 80.0]]})
-        self.assertEqual({q['step'] for q in fake.queries}, {str(history['step'])})
+        self.assertEqual({q['step'] for q in fake.queries if 'start' in q}, {str(history['step'])})
         with patch('axon_server.journal.urlopen', FakePrometheus()):
             self.assertEqual(inference_history('http://prom:9090', 'neuralforge', 1)['step'], 15)
+        with patch('axon_server.journal.urlopen', FakePrometheus({'prompt_tokens_total': [0, '1234.4'], 'tokens_predicted_total': [0, '567.6']})) as fake:
+            self.assertEqual(inference_history('http://prom:9090', 'neuralforge', 3600)['tokens'], {'input': 1234, 'output': 568})
+        self.assertTrue(any('increase(llamacpp:prompt_tokens_total{instance="neuralforge"}[3600s])' in q['query'] for q in fake.queries))
 
     def serve(self, **options):
         journal = Journal(Path(self.tmp.name)/'journal.db')
@@ -240,3 +243,7 @@ class PrometheusTests(unittest.TestCase):
             self.assertEqual(self.status(url+'?account=neuralforge&range=soon')[0], 400)
         with patch('axon_server.journal.urlopen', FakePrometheus(down=True)):
             self.assertEqual(self.status(url+'?account=neuralforge')[0], 502)
+        tokens = url.replace('/history', '/tokens')
+        code, body = self.status(tokens+'?since=0')
+        self.assertEqual((code, body), (200, {'tokens': {}}))
+        self.assertEqual(self.status(tokens)[0], 400, 'a period is required')

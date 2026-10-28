@@ -66,6 +66,7 @@ function renderResources(values=[]) {
     })};});
   const signature=JSON.stringify([view,inference.map(row=>({...row,stale:now-row.observed_at>30})),state.historyStamp]);if(state.resourceSignature===signature)return;state.resourceSignature=signature;
   const fragment=document.createDocumentFragment();
+  const counted=new Set();
   for(const row of view){
     const panel=node('article','resource-panel agent-'+row.provider+(row.stale?' stale':'')+(row.unavailable?' unavailable':''));
     const header=node('div','resource-heading');header.append(node('h2','',agentName({agent:row.provider})+(row.account==='primary'?'':' · '+row.account)),node('span','resource-age',!row.updated?'Waiting for data':(row.stale?'Stale · ':'Updated ')+row.updated));panel.append(header);
@@ -79,6 +80,8 @@ function renderResources(values=[]) {
       box.append(label,bar,node('div','quota-reset',window.reset));windows.append(box);
     }
     panel.append(windows);
+    // Tokens belong to the agent, not an account, so they sit on that agent's first panel.
+    if(!counted.has(row.provider)){counted.add(row.provider);const line=tokenLine(state.tokens?.[row.provider]);if(line)panel.append(line);}
     if(row.unavailable){
       const overlay=node('div','unavailable-overlay');
       overlay.append(node('span','unavailable-label','Out of tokens'),node('strong','unavailable-countdown',row.unavailable),node('span','unavailable-label','until reset'));
@@ -92,36 +95,36 @@ function renderResources(values=[]) {
     const header=node('div','resource-heading');
     header.append(node('h2','',row.account+' · Inference'),node('span','resource-age',stale?'Stale · '+inferenceAge(row.observed_at):row.online?'Live':'Endpoint offline'));
     panel.append(header);
-    const bars=node('div','inference-bars');
+    // Left: what the hardware is doing now and the headline numbers. Right: load over the horizon.
+    const body=node('div','inference-body'), current=node('div','inference-now');
     const gpus=row.gpus||[];
     if(gpus.length){
       // A host collector reports real device utilization, so the bar is the same headroom reading as a quota bar.
       for(const gpu of gpus){
-        const detail=[gpu.utilization_percent==null?null:fmt(gpu.utilization_percent,'% busy'),
-          gpu.power_watts==null?null:fmt(gpu.power_watts,' W'),
-          gpu.temperature_c==null?null:fmt(gpu.temperature_c,' °C')].filter(Boolean);
-        bars.append(capacityBar(row,gpu.utilization_percent,gpu.name||'GPU',detail.join(' · ')||'Utilization not reported'));
+        const detail=[gpu.power_watts==null?null:fmt(gpu.power_watts,' W'),gpu.temperature_c==null?null:fmt(gpu.temperature_c,' °C')].filter(Boolean);
+        current.append(capacityBar(row,gpu.utilization_percent,gpu.name||'GPU',detail.join(' · ')||'Power not reported'));
       }
     }else{
       // Polling reaches only the endpoint, which never reports hardware; KV cache is the one occupancy share it does give.
-      bars.append(capacityBar(row,row.online?row.metrics.kv_cache_percent:null,'KV cache',
-        row.online?'Cache occupancy: no host telemetry for GPU use':'Endpoint offline'));
+      current.append(capacityBar(row,row.online?row.metrics.kv_cache_percent:null,'KV cache',row.online?'No host GPU telemetry':'Endpoint offline'));
     }
-    panel.append(bars);
     const stats=node('div','inference-stats');
-    const show=(label,value)=>stats.append(node('div','inference-stat',label+' '+value));
+    const show=(value,label)=>{const stat=node('div','inference-stat');stat.append(node('strong','',value),node('span','',label));stats.append(stat);};
     if(row.online){
-      show('Running',row.metrics.running??'Unknown');show('Queued',row.metrics.queued??'Unknown');
-      show('Generation',fmt(row.metrics.generation_tps,' tok/s'));show('Prompt',fmt(row.metrics.prompt_tps,' tok/s'));
-      if(gpus.length)show('KV cache',fmt(row.metrics.kv_cache_percent,'%'));
+      show(row.metrics.generation_tps==null?'–':Math.round(row.metrics.generation_tps)+'','tok/s');
+      show((row.metrics.running??'–')+'/'+(row.metrics.queued??'–'),'run/queue');
     }
+    // An APU keeps its weights in shared memory, so that is the pool worth watching when it exists.
+    const gib=bytes=>Math.round(bytes/1073741824);
     for(const gpu of gpus){
-      const memory=(used,total)=>used==null||total==null?'Unknown':fmt(used/1073741824)+' / '+fmt(total/1073741824)+' GiB';
-      show('VRAM',memory(gpu.memory_used_bytes,gpu.memory_total_bytes));
-      if(gpu.shared_total_bytes!=null)show('Shared GPU memory',memory(gpu.shared_used_bytes,gpu.shared_total_bytes));
+      const [used,total]=gpu.shared_total_bytes!=null?[gpu.shared_used_bytes,gpu.shared_total_bytes]:[gpu.memory_used_bytes,gpu.memory_total_bytes];
+      if(used!=null&&total!=null)show(gib(used)+'/'+gib(total),'GiB');
     }
-    panel.append(stats);
-    if(state.history?.[row.account]) panel.append(trendCharts(state.history[row.account]));
+    current.append(stats);body.append(current);
+    const history=state.history?.[row.account];
+    if(history) body.append(trendChart(history,'output_tps','Output',' tok/s'));
+    panel.append(body);
+    const line=tokenLine(history?.tokens);if(line)panel.append(line);
     fragment.append(panel);
   }
   // Every quota and inference panel gets its own column: one row, however many there are.
@@ -158,65 +161,70 @@ function capacityBar(row, used, label, note) {
   box.append(caption, bar, node('div','quota-reset',note));
   return box;
 }
-// One small chart per measure, each on its own zero-based scale; a percentage keeps its full 0-100 scale.
-const TRENDS=[['output_tps','Output',' tok/s'],['running','Running',''],['queued','Queued',''],['kv_cache_percent','KV cache','%',100],
-  ['gpu_busy_percent','GPU busy','%',100],['gpu_power_watts','GPU power',' W'],['gpu_temperature_c','GPU temp',' °C']];
-function trendCharts(history) {
-  const box=node('div','inference-trends');
-  const end=Math.max(...Object.values(history.series).flatMap(points=>points.map(point=>point[0])));
-  const start=end-history.range;
-  for (const [name,label,unit,ceiling] of TRENDS) {
-    const points=(history.series[name]||[]).filter(point=>point[1]!=null);
-    // An idle queue is the normal case; a flat zero chart there is noise.
-    if (!points.length || (name==='queued' && !points.some(point=>point[1]>0))) continue;
-    const peak=Math.max(...points.map(point=>point[1])), top=ceiling ?? (peak>0 ? peak*1.1 : 1);
-    const value=v=>(v>=100||Number.isInteger(v) ? Math.round(v) : v.toFixed(1))+unit;
-    // Live readings sit in the stats above; a long span's last step is an average, so the chart leads with its peak.
-    const resting='peak '+value(peak), span='last '+horizonName(history.range);
-    const chart=node('figure','trend'), caption=node('figcaption','trend-label'), reading=node('strong','',resting);
-    caption.append(node('span','',label),reading);
-    const W=240, H=34, x=at=>(at-start)/(end-start||1)*W, y=v=>H-1-Math.min(v,top)/top*(H-2);
-    // Break the line where Prometheus has no sample instead of drawing across the gap.
-    const runs=[];let run=[];
-    for (const [i,point] of points.entries()) {
-      if (i && point[0]-points[i-1][0]>history.step*1.5) {runs.push(run);run=[];}
-      run.push(point);
-    }
-    runs.push(run);
-    const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
-    svg.setAttribute('viewBox',`0 0 ${W} ${H}`);svg.setAttribute('preserveAspectRatio','none');
-    svg.setAttribute('role','img');svg.setAttribute('aria-label',`${label}, ${span}: ${resting}`);
-    const draw=(tag,cls,attrs)=>{const el=document.createElementNS('http://www.w3.org/2000/svg',tag);el.setAttribute('class',cls);for(const k in attrs)el.setAttribute(k,attrs[k]);svg.append(el);return el;};
-    draw('line','trend-base',{x1:0,x2:W,y1:H-.5,y2:H-.5});
-    for (const part of runs) {
-      const line=part.map(point=>x(point[0]).toFixed(1)+','+y(point[1]).toFixed(1)).join(' ');
-      draw('polygon','trend-area',{points:`${x(part[0][0]).toFixed(1)},${H} ${line} ${x(part[part.length-1][0]).toFixed(1)},${H}`});
-      draw('polyline','trend-line',{points:part.length>1 ? line : line+' '+(x(part[0][0])+1).toFixed(1)+','+y(part[0][1]).toFixed(1)});
-    }
-    const cursor=draw('line','trend-cursor',{x1:0,x2:0,y1:0,y2:H});
-    const note=node('div','trend-note',span);
-    svg.addEventListener('pointermove',event=>{
-      const box=svg.getBoundingClientRect(), at=start+(event.clientX-box.left)/box.width*(end-start);
-      const point=points.reduce((best,p)=>Math.abs(p[0]-at)<Math.abs(best[0]-at)?p:best);
-      cursor.setAttribute('x1',x(point[0]));cursor.setAttribute('x2',x(point[0]));chart.classList.add('hover');
-      reading.textContent=value(point[1]);note.textContent=history.range>86400 ? new Date(point[0]*1000).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : clock(point[0]);
-    });
-    svg.addEventListener('pointerleave',()=>{chart.classList.remove('hover');reading.textContent=resting;note.textContent=span;});
-    chart.append(caption,svg,note);box.append(chart);
+function trendChart(history, name, label, unit) {
+  const chart=node('figure','trend');
+  const points=(history.series[name]||[]).filter(point=>point[1]!=null);
+  const span='last '+horizonName(history.range);
+  if(!points.length){chart.append(node('figcaption','trend-label',label),node('div','trend-empty','No samples'),node('div','trend-note',span));return chart;}
+  const end=Math.max(...Object.values(history.series).flatMap(series=>series.map(point=>point[0]))), start=end-history.range;
+  const peak=Math.max(...points.map(point=>point[1])), top=peak>0 ? peak*1.1 : 1;
+  const value=v=>(v>=100||Number.isInteger(v) ? Math.round(v) : v.toFixed(1))+unit;
+  // A long span's last step is an average, and the live reading sits beside the chart, so the chart leads with its peak.
+  const resting='peak '+value(peak);
+  const caption=node('figcaption','trend-label'), reading=node('strong','',resting);
+  caption.append(node('span','',label),reading);
+  const W=240, H=48, x=at=>(at-start)/(end-start||1)*W, y=v=>H-1-Math.min(v,top)/top*(H-2);
+  // Break the line where Prometheus has no sample instead of drawing across the gap.
+  const runs=[];let run=[];
+  for (const [i,point] of points.entries()) {
+    if (i && point[0]-points[i-1][0]>history.step*1.5) {runs.push(run);run=[];}
+    run.push(point);
   }
-  return box;
+  runs.push(run);
+  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+  svg.setAttribute('viewBox',`0 0 ${W} ${H}`);svg.setAttribute('preserveAspectRatio','none');
+  svg.setAttribute('role','img');svg.setAttribute('aria-label',`${label}, ${span}: ${resting}`);
+  const draw=(tag,cls,attrs)=>{const el=document.createElementNS('http://www.w3.org/2000/svg',tag);el.setAttribute('class',cls);for(const k in attrs)el.setAttribute(k,attrs[k]);svg.append(el);return el;};
+  draw('line','trend-base',{x1:0,x2:W,y1:H-.5,y2:H-.5});
+  for (const part of runs) {
+    const line=part.map(point=>x(point[0]).toFixed(1)+','+y(point[1]).toFixed(1)).join(' ');
+    draw('polygon','trend-area',{points:`${x(part[0][0]).toFixed(1)},${H} ${line} ${x(part[part.length-1][0]).toFixed(1)},${H}`});
+    draw('polyline','trend-line',{points:part.length>1 ? line : line+' '+(x(part[0][0])+1).toFixed(1)+','+y(part[0][1]).toFixed(1)});
+  }
+  const cursor=draw('line','trend-cursor',{x1:0,x2:0,y1:0,y2:H});
+  const note=node('div','trend-note',span);
+  svg.addEventListener('pointermove',event=>{
+    const box=svg.getBoundingClientRect(), at=start+(event.clientX-box.left)/box.width*(end-start);
+    const point=points.reduce((best,p)=>Math.abs(p[0]-at)<Math.abs(best[0]-at)?p:best);
+    cursor.setAttribute('x1',x(point[0]));cursor.setAttribute('x2',x(point[0]));chart.classList.add('hover');
+    reading.textContent=value(point[1]);note.textContent=history.range>86400 ? new Date(point[0]*1000).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : clock(point[0]);
+  });
+  svg.addEventListener('pointerleave',()=>{chart.classList.remove('hover');reading.textContent=resting;note.textContent=span;});
+  chart.append(caption,svg,note);
+  return chart;
+}
+function tokenCount(n) { return n>=1e9 ? (n/1e9).toFixed(1)+'B' : n>=1e6 ? (n/1e6).toFixed(1)+'M' : n>=1e3 ? Math.round(n/1e3)+'k' : String(Math.round(n)); }
+function tokenLine(tokens) {
+  // Sent up includes cached context, which dominates agent sessions, so its share is said rather than hidden.
+  if (!tokens || tokens.input==null && tokens.output==null) return null;
+  const line=node('div','token-line'), span=$('period').value==='all' ? 'any time' : horizonName(Number($('period').value));
+  line.append(node('span','token-label','Tokens · '+span),node('strong','','↑ '+tokenCount(tokens.input||0)+'  ↓ '+tokenCount(tokens.output||0)));
+  if (tokens.cached) line.title=Math.round(tokens.cached/Math.max(1,tokens.input)*100)+'% of tokens sent were cached'+(tokens.sessions ? ' · '+tokens.sessions+' sessions' : '');
+  return line;
 }
 function horizonName(seconds) { return seconds>=86400 ? seconds/86400+'d' : seconds>=3600 ? seconds/3600+'h' : seconds/60+'m'; }
 // Trends come from the server's Prometheus; a server without one answers 404 and the panel keeps its live readings only.
+// Agent token totals ride the same once-a-minute refresh.
 async function loadHistory() {
-  const accounts=(state.resources||[]).filter(row=>row.provider==='inference').map(row=>row.account);
-  if (state.historyOff || !accounts.length) return;
+  const accounts=state.historyOff ? [] : (state.resources||[]).filter(row=>row.provider==='inference').map(row=>row.account);
   state.historyAt=Date.now();
   const range=$('period').value==='all' ? 2592000 : Number($('period').value), history={};
   for (const account of accounts) {
     try { history[account]=await api('/resources/history',new URLSearchParams({account,range})); }
     catch (error) { if (/ 404\./.test(error.message)) state.historyOff=true; }
   }
+  try { state.tokens=(await api('/resources/tokens',new URLSearchParams({since:$('period').value==='all' ? 0 : Math.floor(Date.now()/1000)-range}))).tokens; }
+  catch { state.tokens=null; }
   state.history=history;state.historyStamp=state.historyAt;renderResources(state.resources);
 }
 function inferenceAge(at) {

@@ -207,6 +207,13 @@ def hook(data, agent):
         patch['activity'] = ('editing' if any(x in tool for x in ('edit', 'write', 'patch')) else
                              'running tools' if any(x in tool for x in ('exec', 'bash', 'shell')) else
                              'researching' if any(x in tool for x in ('search', 'web', 'fetch')) else 'working')
+    if event in ('Stop', 'SessionEnd', 'PreToolUse', 'PostToolUse'):
+        try:
+            from axon_reporter.tokens import session_tokens
+            if (tokens := session_tokens(agent, str(session), data.get('transcript_path'))):
+                patch['tokens'] = tokens
+        except Exception:
+            pass  # counts are a bonus; the lifecycle report still goes out
     report(agent, session, kind, patch)
 
 
