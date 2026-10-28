@@ -8,7 +8,7 @@ from unittest.mock import patch
 import test_resources
 from axon_reporter.inference import parse_metrics, collect, gpu_stats
 from axon_protocol.resources import validate_resource
-from axon_server.journal import Journal, inference_endpoints, poll_inference
+from axon_server.journal import GPU_HOLD, Journal, held_gpus, inference_endpoints, poll_inference
 
 class InferenceTests(unittest.TestCase):
     def sample(self,name='neuralforge'):
@@ -97,6 +97,28 @@ class PollerTests(unittest.TestCase):
                        return_value=PollerTests.Response(PollerTests.EXPOSED))
         self.assertEqual(set(rows),{'neuralforge','moar'})
         self.assertTrue(all(row['online'] for row in rows.values()))
+
+    def test_polling_does_not_erase_host_hardware_readings(self):
+        """A poll that cannot see the GPU must blank it no more than the hold window allows."""
+        with tempfile.TemporaryDirectory() as tmp:
+            journal=Journal(Path(tmp)/'journal.db')
+            gpu={'id':'card1','name':'AMD GPU','utilization_percent':64.0,'power_watts':80.0}
+            journal.ingest_resource(dict(version=1,provider='inference',account='neuralforge',observed_at=time.time(),
+                online=True,metrics={'running':2},gpus=[gpu]))
+            self.assertEqual(held_gpus(journal,'neuralforge'),[gpu])
+            with patch('axon_server.journal.urlopen',return_value=PollerTests.Response(PollerTests.EXPOSED)):
+                stop=threading.Event(); worker=threading.Thread(target=poll_inference,args=(journal,{'neuralforge':'http://h/metrics'},stop,5),daemon=True)
+                worker.start(); time.sleep(1.2); stop.set(); worker.join(timeout=3)
+            row=next(r for r in journal.resources() if r['account']=='neuralforge')
+            self.assertEqual(row['gpus'],[gpu],'host GPU readings survived a poll')
+            self.assertEqual(row['metrics']['running'],3,'endpoint metrics still came from the poll')
+
+    def test_stale_host_hardware_is_dropped_rather_than_shown_forever(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal=Journal(Path(tmp)/'journal.db')
+            journal.ingest_resource(dict(version=1,provider='inference',account='neuralforge',observed_at=time.time()-GPU_HOLD-5,
+                online=True,metrics={'running':1},gpus=[{'id':'card1','name':'AMD GPU','utilization_percent':64.0}]))
+            self.assertEqual(held_gpus(journal,'neuralforge'),[])
 
     def test_unreachable_endpoint_is_offline_with_no_invented_readings(self):
         rows=self.poll({'neuralforge':'http://neuralforge:13308/metrics'},side_effect=OSError)
