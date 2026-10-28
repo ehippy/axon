@@ -562,6 +562,18 @@ def inference_endpoints(values):
     return endpoints
 
 
+GPU_HOLD = 60
+
+
+def held_gpus(journal, label, hold=GPU_HOLD):
+    """Polling cannot see hardware, so carry a host collector's readings forward while they are
+    fresh rather than blanking a working GPU bar every interval. Stale hardware goes unsaid."""
+    prior = next((row for row in journal.resources() if row['provider'] == 'inference' and row['account'] == label), None)
+    if not prior or not prior.get('gpus'):
+        return []
+    return prior['gpus'] if 0 <= time.time() - prior['observed_at'] <= hold else []
+
+
 def poll_inference(journal, endpoints, stop, interval=10, timeout=4):
     """Pull what each inference server already reports about itself; nothing runs on that host."""
     while not stop.is_set():
@@ -576,7 +588,7 @@ def poll_inference(journal, endpoints, stop, interval=10, timeout=4):
                 logging.warning('Inference server %s is not serving usable metrics', label)
             try:
                 journal.ingest_resource(dict(version=1, provider='inference', account=label,
-                    observed_at=time.time(), online=online, metrics=metrics, gpus=[]))
+                    observed_at=time.time(), online=online, metrics=metrics, gpus=held_gpus(journal, label)))
             except ValueError:
                 logging.warning('Rejected inference snapshot for %s', label)
         stop.wait(interval)
