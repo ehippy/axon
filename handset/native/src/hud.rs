@@ -27,13 +27,21 @@ pub fn agent_color(source: &str, state: &str) -> Color {
     if state == "error" {
         return status_color("error");
     }
-    match source.to_lowercase().as_str() {
+    let source = source.to_lowercase();
+    // Sources are install-scoped ("hermes-69f471e05c0f4aa2"); the agent name
+    // is the prefix before the install hash.
+    let agent = source
+        .split_once('-')
+        .map_or(source.as_str(), |(head, _)| head);
+    match agent {
         // Claude Code's terracotta identity color.
         "claude" => (218, 119, 86),
         // Hermes integration color.
         "hermes" => (240, 190, 40),
         // The smart mirror (Glass) - white, its particle swarm's own color.
         "mirror" => (255, 255, 255),
+        // Pi coding agent - its branding blue, rgb(106, 159, 204).
+        "pi" => (106, 159, 204),
         // Unknown/future agents: a neutral hue distinct from the curated
         // colors above and from the state-based palette used elsewhere
         // (status_color's green/blue/red), so it doesn't get misread as
@@ -116,4 +124,30 @@ pub fn battery_icon(canvas: &mut Canvas, x: i32, y: i32, pct: i32, charging: boo
 pub fn double_rule(canvas: &mut Canvas, y: i32, x0: i32, x1: i32) {
     canvas.draw_line(x0, y, x1, y, FG);
     canvas.draw_line(x0, y + 3, x1, y + 3, FG);
+}
+
+#[cfg(test)]
+mod hud_tests {
+    use super::agent_color;
+
+    #[test]
+    fn install_scoped_sources_keep_their_agent_color() {
+        // Sources are install-scoped; the name before the dash is the agent.
+        assert_eq!(
+            agent_color("pi-69f471e05c0f4aa2", "running"),
+            (106, 159, 204)
+        );
+        assert_eq!(agent_color("pi-69f471e05c0f4aa2", "idle"), (106, 159, 204));
+        assert_eq!(
+            agent_color("hermes-69f471e05c0f4aa2", "running"),
+            (240, 190, 40)
+        );
+        assert_eq!(agent_color("mirror", "idle"), (255, 255, 255));
+        // Error always overrides identity; unknown agents stay neutral.
+        assert_eq!(agent_color("pi-69f471e05c0f4aa2", "error"), (255, 60, 60));
+        assert_eq!(
+            agent_color("mystery-69f471e05c0f4aa2", "running"),
+            (170, 170, 190)
+        );
+    }
 }

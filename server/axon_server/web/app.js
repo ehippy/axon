@@ -32,8 +32,8 @@ function relative(at) {
 function clock(at) { return new Date(Number(at)*1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); }
 function date(at) { return new Date(Number(at)*1000).toLocaleDateString([], {month:'long', day:'numeric', year:'numeric'}); }
 function key(row) { return row.source+'/'+row.session; }
-function agentClass(row) { return ['codex','claude','hermes'].includes(row.agent) ? 'agent-'+row.agent : 'agent-other'; }
-function agentName(row) { return ({codex:'Codex',claude:'Claude',hermes:'Hermes'})[row.agent] || row.agent || 'Agent'; }
+function agentClass(row) { return ['codex','claude','hermes','pi'].includes(row.agent) ? 'agent-'+row.agent : 'agent-other'; }
+function agentName(row) { return ({codex:'Codex',claude:'Claude',hermes:'Hermes',pi:'Pi'})[row.agent] || row.agent || 'Agent'; }
 function hostName(row) { return row.machine || 'Host not reported'; }
 const HOST_KINDS = ['laptop', 'desktop', 'server'];
 const INPUT_AGENTS = ['claude'];

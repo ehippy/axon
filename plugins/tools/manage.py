@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
-AGENTS = ('codex','claude','hermes')
+AGENTS = ('codex','claude','hermes','pi')
 
 
 def build(agent, destination):
@@ -22,13 +22,15 @@ def build(agent, destination):
     # Only replace recognized generated packages, never arbitrary user directories.
     if destination.exists() and any(destination.iterdir()) and not (
             (destination/'runtime').is_dir() and any((destination/name).is_file()
-            for name in ('plugin.json', '.claude-plugin/plugin.json', 'plugin.yaml'))):
+            for name in ('plugin.json', '.claude-plugin/plugin.json', 'plugin.yaml', 'package.json'))):
         raise ValueError('Build destination must be empty or an existing Axon package')
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.axon-build-', dir=destination.parent) as tmp:
         staged = Path(tmp)/'package'
         staged.mkdir()
-        selected = ['README.md','__init__.py','plugin.yaml'] if agent == 'hermes' else ['README.md','hooks','skills', 'plugin.json' if agent=='codex' else '.claude-plugin']
+        selected = ['README.md','__init__.py','plugin.yaml'] if agent == 'hermes' else \
+            ['README.md','index.ts','package.json','hooks','skills'] if agent == 'pi' else \
+            ['README.md','hooks','skills', 'plugin.json' if agent=='codex' else '.claude-plugin']
         for name in selected:
             src, dst = source/name, staged/name
             if src.is_dir():
@@ -95,12 +97,13 @@ def write_json(path,value):
 def install(agent, home, apply=False, enable=True, hermes_command='hermes'):
     home=Path(home).expanduser().resolve()
     package=home/'.local/share/axon/plugins'/agent
-    settings=home/f'.{agent}'/('hooks.json' if agent=='codex' else 'settings.json' if agent=='claude' else 'config.yaml')
+    settings=home/'.pi/agent/settings.json' if agent=='pi' else \
+        home/f'.{agent}'/('hooks.json' if agent=='codex' else 'settings.json' if agent=='claude' else 'config.yaml')
     # Read malformed configuration before making any changes.
-    current=json.loads(settings.read_text()) if agent!='hermes' and settings.exists() else {}
-    if agent!='hermes' and (not isinstance(current,dict) or not isinstance(current.get('hooks',{}),dict)):
+    current=json.loads(settings.read_text()) if agent not in ('hermes','pi') and settings.exists() else {}
+    if agent not in ('hermes','pi') and (not isinstance(current,dict) or not isinstance(current.get('hooks',{}),dict)):
         raise ValueError('Invalid existing settings; nothing changed')
-    proposed=merged_config(current,agent,package) if agent!='hermes' else None
+    proposed=merged_config(current,agent,package) if agent not in ('hermes','pi') else None
     plan={'agent':agent,'package':str(package),'settings':str(settings),'apply':apply}
     if not apply:
         return plan
@@ -121,6 +124,19 @@ def install(agent, home, apply=False, enable=True, hermes_command='hermes'):
         if enable:
             # Hermes owns its configuration format and preserves other enabled plugins.
             subprocess.run([hermes_command,'plugins','enable','axon-activity'],check=True)
+    elif agent=='pi':
+        # Pi auto-discovers extension directories; the package.json manifest
+        # points at index.ts. No configuration file is rewritten.
+        target=home/'.pi/agent/extensions/axon-activity'
+        target.parent.mkdir(parents=True,exist_ok=True)
+        if target.exists() or target.is_symlink():
+            target.rename(backup/'pi-extension')
+        target.symlink_to(package,target_is_directory=True)
+        skill=home/'.pi/agent/skills/axon-activity'
+        skill.parent.mkdir(parents=True,exist_ok=True)
+        if skill.exists() or skill.is_symlink():
+            skill.rename(backup/'skill')
+        skill.symlink_to(package/'skills/axon-activity',target_is_directory=True)
     else:
         write_json(settings,proposed)
         skill=home/f'.{agent}/skills/axon-activity'

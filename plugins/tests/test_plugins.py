@@ -138,7 +138,7 @@ class PluginTests(unittest.TestCase):
                 report.report('codex','a','finished',{'outcome':'Done'})
         self.assertFalse((self.root/'state/outbox.sqlite3').exists())
     def test_bundles_exclude_server_and_query_client(self):
-        for agent in ('codex', 'claude', 'hermes'):
+        for agent in ('codex', 'claude', 'hermes', 'pi'):
             package = manage.build(agent, self.root/agent)
             names = {p.name for p in package.rglob('*.py')}
             self.assertNotIn('journal.py', names)
@@ -176,6 +176,54 @@ class HermesTests(unittest.TestCase):
             self.module.child_start(child_session_id='child',parent_session_id='parent',child_goal='SECRET')
             self.assertIn('parent',emit.call_args.args[3])
             self.assertNotIn('SECRET',str(emit.call_args))
+
+
+class PiTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(); self.root=Path(self.tmp.name)
+        self.env={**os.environ,'AXON_ACTIVITY_HOME':str(self.root/'state'),'AXON_MOSQUITTO_PUB':'/missing/axon-pub','PYTHONDONTWRITEBYTECODE':'1'}
+    def tearDown(self):
+        self.tmp.cleanup()
+    def test_bundle_is_a_discoverable_pi_package(self):
+        package=manage.build('pi',self.root/'pi')
+        manifest=json.loads((package/'package.json').read_text())
+        self.assertEqual(manifest['pi']['extensions'],['./index.ts'])
+        self.assertTrue((package/'index.ts').is_file())
+        self.assertTrue((package/'hooks/run.py').is_file())
+        self.assertTrue((package/'skills/axon-activity/SKILL.md').is_file())
+        manage.build('pi',package)  # recognized package replaces cleanly
+        self.assertTrue((package/'runtime/axon_reporter/report.py').is_file())
+    def test_hook_is_standalone_fails_open_and_never_leaks_prompts(self):
+        package=manage.build('pi',self.root/'pi')
+        data={'session_id':'pi; echo SECRET','hook_event_name':'SessionStart','cwd':'/projects/glass',
+              'prompt':'PRIVATE PROMPT','systemPrompt':'PRIVATE','event':{'message':'PRIVATE'}}
+        result=subprocess.run([sys.executable,str(package/'hooks/run.py')],input=json.dumps(data),
+                              text=True,capture_output=True,env=self.env,check=True)
+        output=json.loads(result.stdout)['hookSpecificOutput']
+        self.assertEqual(output['hookEventName'],'SessionStart')
+        self.assertIn("'pi; echo SECRET'",output['additionalContext'])
+        self.assertIn(str(package/'runtime/axon_reporter/report.py'),output['additionalContext'])
+        self.assertEqual(result.stderr,'')
+        self.assertNotIn('PRIVATE',result.stdout)
+        with sqlite3.connect(self.root/'state/outbox.sqlite3') as db:
+            self.assertNotIn('PRIVATE',str([row[0] for row in db.execute('SELECT payload FROM outbox')]))
+        result=subprocess.run([sys.executable,str(package/'hooks/run.py')],input='not json',
+                              text=True,capture_output=True,env=self.env)
+        self.assertEqual((result.returncode,result.stdout,result.stderr),(0,'',''))
+    def test_pi_install_symlinks_extension_and_skill_idempotently(self):
+        home=self.root/'home'
+        manage.install('pi',home,apply=True)
+        extension=home/'.pi/agent/extensions/axon-activity'
+        skill=home/'.pi/agent/skills/axon-activity'
+        self.assertTrue(extension.is_symlink())
+        self.assertTrue((extension/'index.ts').is_file())
+        self.assertTrue((skill/'SKILL.md').is_file())
+        first=(extension.resolve(),skill.resolve())
+        manage.install('pi',home,apply=True)
+        self.assertEqual((extension.resolve(),skill.resolve()),first)
+        self.assertTrue(list((home/'.local/state/axon/install-backups').iterdir()))
+        # The install never invents or rewrites a Pi settings file.
+        self.assertFalse((home/'.pi/agent/settings.json').exists())
 
 
 class InboxTests(unittest.TestCase):
