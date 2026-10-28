@@ -78,14 +78,14 @@ def save_state(root, state):
 
 
 def deployed_commit(root, mirror, state):
-    if state.get('commit'):
-        return state['commit']
-    # First run after hand deploys: the live release name carries the short commit.
+    # The live release name carries its short commit, and stays true when someone deploys by hand.
     try:
         short = (root/'current').resolve().name.rsplit('-', 1)[1]
+        if state.get('commit', '').startswith(short):
+            return state['commit']
         return git(mirror, 'rev-parse', '--verify', short+'^{commit}')
     except (IndexError, subprocess.CalledProcessError):
-        return None
+        return state.get('commit')
 
 
 def build(mirror, sha, releases, python):
@@ -164,7 +164,12 @@ def update(args, ci=ci_state, check=healthy, restart_unit=restart):
     state = load_state(root)
     head = fetch(mirror, args.repo, args.branch)
     current = deployed_commit(root, mirror, state)
-    if head in (current, state.get('seen'), state.get('failed')):
+    if head == current:
+        if state.get('commit') != head:  # deployed by hand: record it rather than rebuild the live virtualenv
+            state.update(commit=head, seen=head, release=(root/'current').resolve().name)
+            save_state(root, state)
+        return 'current'
+    if head in (state.get('seen'), state.get('failed')):
         return 'current'
     if not touches_server(mirror, current, head):
         state.update(commit=head, seen=head)

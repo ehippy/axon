@@ -52,6 +52,15 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(json.loads((self.root/'update-state.json').read_text())['commit'],head)
         self.assertEqual(self.run_update(),'current')
 
+    def test_hand_deployed_commit_is_recorded_not_rebuilt(self):
+        self.run_update()
+        head=self.commit('server/axon_server/journal.py','by hand')
+        release=self.root/'releases'/('0.3.0-'+head[:7]);release.mkdir();(release/'marker').write_text('live')
+        (self.root/'current').unlink();(self.root/'current').symlink_to(release.relative_to(self.root))
+        self.assertEqual(self.run_update(),'current');self.assertEqual(self.restarts,[])
+        self.assertTrue((release/'marker').exists())
+        self.assertEqual(json.loads((self.root/'update-state.json').read_text())['commit'],head)
+
     def test_commit_outside_the_server_restarts_nothing(self):
         self.commit('plugins/claude/README.md','docs')
         self.assertEqual(self.run_update(),'unchanged')
