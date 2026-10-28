@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
-AGENTS = ('codex','claude','hermes','pi')
+AGENTS = ('codex','claude','hermes','pi','opencode')
 
 
 def build(agent, destination):
@@ -22,7 +22,7 @@ def build(agent, destination):
     # Only replace recognized generated packages, never arbitrary user directories.
     if destination.exists() and any(destination.iterdir()) and not (
             (destination/'runtime').is_dir() and any((destination/name).is_file()
-            for name in ('plugin.json', '.claude-plugin/plugin.json', 'plugin.yaml', 'package.json'))):
+            for name in ('plugin.json', '.claude-plugin/plugin.json', 'plugin.yaml', 'package.json', 'plugin/axon.js'))):
         raise ValueError('Build destination must be empty or an existing Axon package')
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.axon-build-', dir=destination.parent) as tmp:
@@ -30,6 +30,7 @@ def build(agent, destination):
         staged.mkdir()
         selected = ['README.md','__init__.py','plugin.yaml'] if agent == 'hermes' else \
             ['README.md','index.ts','package.json','hooks','skills'] if agent == 'pi' else \
+            ['README.md','plugin','hooks','skills'] if agent == 'opencode' else \
             ['README.md','hooks','skills', 'plugin.json' if agent=='codex' else '.claude-plugin']
         for name in selected:
             src, dst = source/name, staged/name
@@ -98,12 +99,13 @@ def install(agent, home, apply=False, enable=True, hermes_command='hermes'):
     home=Path(home).expanduser().resolve()
     package=home/'.local/share/axon/plugins'/agent
     settings=home/'.pi/agent/settings.json' if agent=='pi' else \
+        home/'.config/opencode/opencode.json' if agent=='opencode' else \
         home/f'.{agent}'/('hooks.json' if agent=='codex' else 'settings.json' if agent=='claude' else 'config.yaml')
     # Read malformed configuration before making any changes.
-    current=json.loads(settings.read_text()) if agent not in ('hermes','pi') and settings.exists() else {}
-    if agent not in ('hermes','pi') and (not isinstance(current,dict) or not isinstance(current.get('hooks',{}),dict)):
+    current=json.loads(settings.read_text()) if agent not in ('hermes','pi','opencode') and settings.exists() else {}
+    if agent not in ('hermes','pi','opencode') and (not isinstance(current,dict) or not isinstance(current.get('hooks',{}),dict)):
         raise ValueError('Invalid existing settings; nothing changed')
-    proposed=merged_config(current,agent,package) if agent not in ('hermes','pi') else None
+    proposed=merged_config(current,agent,package) if agent not in ('hermes','pi','opencode') else None
     plan={'agent':agent,'package':str(package),'settings':str(settings),'apply':apply}
     if not apply:
         return plan
@@ -133,6 +135,19 @@ def install(agent, home, apply=False, enable=True, hermes_command='hermes'):
             target.rename(backup/'pi-extension')
         target.symlink_to(package,target_is_directory=True)
         skill=home/'.pi/agent/skills/axon-activity'
+        skill.parent.mkdir(parents=True,exist_ok=True)
+        if skill.exists() or skill.is_symlink():
+            skill.rename(backup/'skill')
+        skill.symlink_to(package/'skills/axon-activity',target_is_directory=True)
+    elif agent=='opencode':
+        # opencode auto-loads JS/TS modules from the global plugins directory;
+        # skills live under skills/<name>/SKILL.md. No config file is rewritten.
+        target=home/'.config/opencode/plugins/axon-activity.js'
+        target.parent.mkdir(parents=True,exist_ok=True)
+        if target.exists() or target.is_symlink():
+            target.rename(backup/'opencode-plugin')
+        shutil.copy2(package/'plugin/axon.js',target)
+        skill=home/'.config/opencode/skills/axon-activity'
         skill.parent.mkdir(parents=True,exist_ok=True)
         if skill.exists() or skill.is_symlink():
             skill.rename(backup/'skill')

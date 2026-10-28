@@ -10,7 +10,7 @@ can run on different machines or together on one device.
 - **[Handset](docs/install-handset.md):** a Rust application for the PiSugar
   Whisplay display, buttons, battery, and LEDs. No journal database required.
 - **[Agent plugins](docs/install-plugins.md):** self-contained Codex, Claude
-  Code, Hermes, and Pi adapters. No server implementation bundled.
+  Code, Hermes, Pi, and OpenCode adapters. No server implementation bundled.
 - **[Integrations](integrations/README.md):** optional Gabbie voice/relay and
   Glass status publishing. A handset works without either.
 

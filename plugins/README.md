@@ -1,23 +1,25 @@
 # Agent plugins
 
-Codex, Claude Code, Hermes, and Pi use native adapters with one shared
-reporter runtime. Built packages contain protocol/reporter code only; no server
-modules, query client, or neighboring source checkout are required at runtime.
+Codex, Claude Code, Hermes, Pi, and OpenCode use native adapters with one
+shared reporter runtime. Built packages contain protocol/reporter code only;
+no server modules, query client, or neighboring source checkout are required
+at runtime.
 
 ```sh
 python3 plugins/tools/manage.py build --output /tmp/axon-plugins
 ```
 
-This creates `axon-codex`, `axon-claude`, `axon-hermes`, and `axon-pi`
-directories. Rebuild instead of editing artifacts. Rebuilding a recognized
-package replaces it cleanly so old runtime files cannot remain. Arbitrary
-nonempty directories are rejected.
+This creates `axon-codex`, `axon-claude`, `axon-hermes`, `axon-pi`, and
+`axon-opencode` directories. Rebuild instead of editing artifacts. Rebuilding
+a recognized package replaces it cleanly so old runtime files cannot remain.
+Arbitrary nonempty directories are rejected.
 
 Native layouts are root `plugin.json` plus hooks/skill for Codex,
 `.claude-plugin/plugin.json` plus hooks/skill for Claude, `plugin.yaml` plus
-CLI/gateway hooks for Hermes, and a Pi package manifest (`package.json` with
-`pi.extensions`) plus an in-process `index.ts` extension for Pi. Use your
-agent's native plugin installation flow, or the managed installer:
+CLI/gateway hooks for Hermes, a Pi package manifest (`package.json` with
+`pi.extensions`) plus an in-process `index.ts` extension for Pi, and a plain
+JS module auto-loaded from opencode's global plugins directory for OpenCode.
+Use your agent's native plugin installation flow, or the managed installer:
 
 ```sh
 python3 plugins/tools/manage.py install codex          # preview only
@@ -25,6 +27,7 @@ python3 plugins/tools/manage.py install codex --apply
 python3 plugins/tools/manage.py install claude --apply
 python3 plugins/tools/manage.py install hermes --apply
 python3 plugins/tools/manage.py install pi --apply
+python3 plugins/tools/manage.py install opencode --apply
 ```
 
 The installer manages packages under `~/.local/share/axon/plugins/<agent>`,
