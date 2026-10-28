@@ -54,7 +54,7 @@ class WebTests(unittest.TestCase):
             self.assertNotIn('https://',text)
 
     def test_host_icons_are_packaged_svg_and_kind_reaches_sessions(self):
-        for name in ('laptop','pc-display','hdd-rack'):
+        for name in ('laptop','pc-display','hdd-rack','chat-dots'):
             with urlopen(self.base+f'/ui/icons/{name}.svg') as response:
                 self.assertEqual(response.headers['Content-Type'],'image/svg+xml')
                 self.assertIn(b'<svg',response.read())
@@ -90,6 +90,15 @@ class WebTests(unittest.TestCase):
         self.assertEqual([m['text'] for m in self.post('/sessions/example/one/inbox/claim')[1]['messages']],['Ship it'])
         self.assertEqual(self.post('/sessions/example/one/inbox/claim')[1]['messages'],[])
         self.assertIsNotNone(self.get('/sessions/example/one/messages')['messages'][0]['delivered_at'])
+
+    def test_board_sessions_carry_queued_input_counts(self):
+        self.event(kind='start',agent='claude')
+        self.event(session='two',kind='start',agent='claude')
+        self.journal.send_message('example','one','First');self.journal.send_message('example','one','Second')
+        counts={s['session']:s['queued_messages'] for s in self.get('/sessions')['sessions']}
+        self.assertEqual(counts,{'one':2,'two':0})
+        self.journal.claim('example','one')
+        self.assertEqual(self.get('/sessions?session=one')['sessions'][0]['queued_messages'],0)
 
     def test_claim_long_poll_wakes_when_input_arrives(self):
         self.event(kind='start',agent='claude')

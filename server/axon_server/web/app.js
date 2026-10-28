@@ -7,7 +7,7 @@ function onBoard(row, now=Date.now()/1000) {
   return ACTIVE.includes(row.effective_state) || now-Number(row.updated_at) <= BOARD_RECENCY;
 }
 const LABEL = {working:'Working', waiting:'Waiting', blocked:'Blocked', finished:'Finished', stopped:'Stopped', interrupted:'Interrupted', lost_contact:'Lost contact'};
-const state = {view:'now', filter:'', sessions:[], events:[], before:null, more:false, selected:null, detailEvents:[], detailBefore:null, detailMore:false, synced:null, request:0, detailRequest:0};
+const state = {compose:null, drafts:{}, view:'now', filter:'', sessions:[], events:[], before:null, more:false, selected:null, detailEvents:[], detailBefore:null, detailMore:false, synced:null, request:0, detailRequest:0};
 let timer;
 
 function node(tag, className, text) {
@@ -131,7 +131,66 @@ function card(row, grouped=false) {
   button.classList.toggle('grouped-card',grouped);
   button.setAttribute('aria-label',agentName(row)+' on '+hostName(row)+': '+(row.project || 'Unassigned project')+' — '+(row.goal || row.outcome || 'Work session')+' — '+LABEL[label]+' — '+row.session.slice(0,8));
   button.append(project,node('h3','work-title',row.goal || row.outcome || 'Work session'),node('p','card-step',detail || 'No further update reported.'),bottom);
-  button.addEventListener('click',()=>openSession(row)); return button;
+  button.addEventListener('click',()=>openSession(row));
+  if (!INPUT_AGENTS.includes(row.agent)) return button;
+  const shell=node('div','card-shell'+(state.compose===key(row)?' composing':''));shell.dataset.composeKey=key(row);
+  const frame=node('div','card-frame');frame.append(button,chatToggle(row));shell.append(frame);
+  if (state.compose===key(row)) shell.append(composer(row));
+  return shell;
+}
+function chatToggle(row) {
+  const listening=listeningLeft(row), queued=Number(row.queued_messages||0), toggle=node('button','chat-toggle'+(listening?' listening':''));
+  toggle.type='button';toggle.setAttribute('aria-expanded',String(state.compose===key(row)));
+  const label='Message '+agentName(row)+' on '+hostName(row)+(listening ? ' (listening, wakes immediately)' : '')+(queued ? ', '+queued+' queued' : '');
+  toggle.setAttribute('aria-label',label);toggle.title=label;
+  toggle.append(node('i','chat-icon'));
+  if (queued) toggle.append(node('span','chat-badge',queued));
+  toggle.addEventListener('click',event=>{event.stopPropagation();state.compose=state.compose===key(row)?null:key(row);render();
+    if (state.compose) document.querySelector('.card-composer textarea, .card-composer input')?.focus();});
+  return toggle;
+}
+function inputNote(row, enabled=true) {
+  return !enabled ? 'Session input is disabled on this server.'
+    : listeningLeft(row) ? 'Idle and listening: a message wakes it immediately.'
+    : row.effective_state==='working' ? 'Working: the message arrives at its next tool call.'
+    : ACTIVE.includes(row.effective_state) ? 'Not listening: the message waits until the session next runs.'
+    : 'Session has ended or lost contact: the message waits if it resumes.';
+}
+function composer(row) {
+  const id=key(row), box=node('form','card-composer');
+  if (!storedToken()) {
+    const input=node('input');input.type='password';input.autocomplete='off';input.placeholder="Paste the server's input token";input.setAttribute('aria-label','Input token');
+    const save=node('button','send-button','Save');save.type='submit';box.append(input,save);
+    box.addEventListener('submit',event=>{event.preventDefault();if(input.value.trim()){storeToken(input.value.trim());render();document.querySelector('.card-composer textarea')?.focus();}});
+    return box;
+  }
+  const text=node('textarea');text.rows=2;text.maxLength=4000;text.placeholder='Message '+agentName(row)+'…';text.setAttribute('aria-label','Message');text.value=state.drafts[id]||'';
+  const send=node('button','send-button','Send'), note=node('span','composer-note',state.sent?.[id] || inputNote(row));send.type='submit';
+  const actions=node('div','composer-actions');actions.append(note,send);box.append(text,actions);
+  text.addEventListener('input',()=>{state.drafts[id]=text.value;});
+  text.addEventListener('keydown',event=>{
+    if (event.key==='Escape') {text.blur();state.compose=null;render();}
+    else if (event.key==='Enter' && !event.shiftKey && !event.isComposing) {event.preventDefault();box.requestSubmit();}
+  });
+  box.addEventListener('submit',async event=>{
+    event.preventDefault();if (!text.value.trim()) return;
+    send.disabled=true;note.textContent='Sending…';
+    const result=await postMessage(row,text.value.trim());
+    note.textContent=result.message;send.disabled=false;
+    if (result.ok) {text.value='';delete state.drafts[id];state.sent={...state.sent,[id]:result.message};refresh();}
+    else if (result.retoken) render();
+  });
+  return box;
+}
+async function postMessage(row, text) {
+  try {
+    const response=await fetch(sessionPath(row)+'/messages',{method:'POST',cache:'no-store',signal:AbortSignal.timeout(8000),
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+storedToken()},body:JSON.stringify({text})});
+    if (response.status===401) { storeToken('');return {ok:false,retoken:true,message:'Token rejected. Paste it again.'}; }
+    if (response.status===403) return {ok:false,message:'Session input is disabled on this server.'};
+    if (!response.ok) return {ok:false,message:'Not sent: the journal returned '+response.status+'.'};
+    return {ok:true,message:listeningLeft(row) ? 'Sent · waking it now.' : 'Sent · queued for its next hook.'};
+  } catch (error) { return {ok:false,message:'Not sent: '+error.message}; }
 }
 function eventRow(event, compact=false) {
   const session=state.sessions.find(row=>key(row)===key(event));
@@ -194,6 +253,7 @@ function render() {
   $('section-title').textContent=state.view==='now' ? 'IN THE ROOM' : 'LATEST RECEIVED';
   const container=$('activity');container.classList.toggle('board',state.view==='now');
   const focused=document.activeElement?.dataset?.sessionKey;
+  if (state.view==='now' && document.activeElement?.closest?.('.card-composer')) return; // never wipe a draft mid-typing
   container.replaceChildren();
   if (state.view==='now') {
     let rows=filteredSessions();
@@ -332,12 +392,7 @@ function renderInput(row, inbox) {
       return item;
     }));
   }
-  const live=ACTIVE.includes(row.effective_state);
-  $('input-note').textContent=!inbox.input ? 'Session input is disabled on this server.'
-    : listeningLeft(row) ? 'Idle and listening: a message wakes it immediately.'
-    : row.effective_state==='working' ? 'Working: the message arrives at its next tool call.'
-    : live ? 'Not listening: the message waits until the session next runs.'
-    : 'Session has ended or lost contact: the message waits if it resumes.';
+  $('input-note').textContent=inputNote(row,inbox.input);
   const token=!!storedToken();
   $('message-form').hidden=!inbox.input || !token;$('token-form').hidden=!inbox.input || token;
 }
@@ -346,18 +401,13 @@ async function sendMessage(event) {
   const selected=state.selected, text=$('message-text').value.trim();
   if (!selected || !text) return;
   $('message-send').disabled=true;$('message-status').textContent='Sending…';
-  try {
-    const response=await fetch(sessionPath(selected)+'/messages',{method:'POST',cache:'no-store',signal:AbortSignal.timeout(8000),
-      headers:{'Content-Type':'application/json','Authorization':'Bearer '+storedToken()},body:JSON.stringify({text})});
-    if (response.status===401) { storeToken('');$('message-status').textContent='Token rejected. Paste it again.'; }
-    else if (!response.ok) $('message-status').textContent='Not sent: the journal returned '+response.status+'.';
-    else { $('message-text').value='';$('message-status').textContent='Queued.'; }
-    await loadDetail(false);
-  } catch (error) { $('message-status').textContent='Not sent: '+error.message; }
-  finally { $('message-send').disabled=false; }
+  const row=state.sessions.find(item=>key(item)===key(selected)) || selected, result=await postMessage(row,text);
+  $('message-status').textContent=result.message;$('message-send').disabled=false;
+  if (result.ok) $('message-text').value='';
+  await loadDetail(false);
 }
 $('message-form').addEventListener('submit',sendMessage);
-$('message-text').addEventListener('keydown',event=>{if(event.key==='Enter' && (event.metaKey||event.ctrlKey)) sendMessage(event);});
+$('message-text').addEventListener('keydown',event=>{if(event.key==='Enter' && !event.shiftKey && !event.isComposing) sendMessage(event);});
 $('token-form').addEventListener('submit',event=>{event.preventDefault();const value=$('token-input').value.trim();if(!value) return;storeToken(value);$('token-input').value='';$('message-status').textContent='';loadDetail(false);});
 function filtersChanged() { state.events=[];state.before=null;$('view-note').textContent='Refreshes every 5 seconds';route();refresh(); }
 $('filters').addEventListener('submit',event=>event.preventDefault());

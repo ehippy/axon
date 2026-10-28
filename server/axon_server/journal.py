@@ -193,6 +193,12 @@ class Journal:
             self.inbox.notify_all()
         return message
 
+    def queued(self):
+        """Undelivered input per session, for the board's chat buttons."""
+        with self.connect() as db:
+            rows = db.execute('SELECT source, session, COUNT(*) FROM messages WHERE delivered_at IS NULL GROUP BY source, session').fetchall()
+        return {(r[0], r[1]): r[2] for r in rows}
+
     def messages(self, source, session):
         with self.connect() as db:
             rows = db.execute('SELECT * FROM messages WHERE source=? AND session=? ORDER BY at', (source, session)).fetchall()
@@ -229,7 +235,7 @@ def handler(journal, web=True, token=None):
                           '/ui/app.css': ('app.css', 'text/css; charset=utf-8'),
                           '/ui/app.js': ('app.js', 'text/javascript; charset=utf-8'),
                           **{f'/ui/icons/{name}.svg': (f'icons/{name}.svg', 'image/svg+xml')
-                             for name in ('laptop', 'pc-display', 'hdd-rack')}}
+                             for name in ('laptop', 'pc-display', 'hdd-rack', 'chat-dots')}}
                 if web and url.path in assets:
                     asset, content_type = assets[url.path]
                     body = files('axon_server').joinpath('web', *asset.split('/')).read_bytes()
@@ -240,7 +246,9 @@ def handler(journal, web=True, token=None):
                 if url.path == '/health':
                     data = {'ok': True, 'retention_days': journal.retention_days}
                 elif url.path == '/sessions':
-                    data = {'sessions': journal.sessions(filters)}
+                    queued = journal.queued()
+                    data = {'sessions': [{**s, 'queued_messages': queued.get((s['source'], s['session']), 0)}
+                                         for s in journal.sessions(filters)]}
                 elif (parts := session_path(url.path)) and parts[2] == 'messages':
                     data = {'messages': journal.messages(parts[0], parts[1]), 'input': bool(token)}
                 elif url.path == '/events':
