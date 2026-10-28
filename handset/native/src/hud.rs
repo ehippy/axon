@@ -42,6 +42,9 @@ pub fn agent_color(source: &str, state: &str) -> Color {
         "mirror" => (255, 255, 255),
         // Pi coding agent - its branding blue, rgb(106, 159, 204).
         "pi" => (106, 159, 204),
+        // OpenCode - the warm stone grey its site is built on, rgb(142, 139, 139).
+        // Warm on purpose: codex and the unknown fallback are cool greys.
+        "opencode" => (142, 139, 139),
         // Unknown/future agents: a neutral hue distinct from the curated
         // colors above and from the state-based palette used elsewhere
         // (status_color's green/blue/red), so it doesn't get misread as
@@ -143,6 +146,10 @@ mod hud_tests {
             (240, 190, 40)
         );
         assert_eq!(agent_color("mirror", "idle"), (255, 255, 255));
+        assert_eq!(
+            agent_color("opencode-69f471e05c0f4aa2", "idle"),
+            (142, 139, 139)
+        );
         // Error always overrides identity; unknown agents stay neutral.
         assert_eq!(agent_color("pi-69f471e05c0f4aa2", "error"), (255, 60, 60));
         assert_eq!(

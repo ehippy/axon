@@ -138,7 +138,7 @@ class PluginTests(unittest.TestCase):
                 report.report('codex','a','finished',{'outcome':'Done'})
         self.assertFalse((self.root/'state/outbox.sqlite3').exists())
     def test_bundles_exclude_server_and_query_client(self):
-        for agent in ('codex', 'claude', 'hermes', 'pi'):
+        for agent in ('codex', 'claude', 'hermes', 'pi', 'opencode'):
             package = manage.build(agent, self.root/agent)
             names = {p.name for p in package.rglob('*.py')}
             self.assertNotIn('journal.py', names)
@@ -288,6 +288,55 @@ class InboxTests(unittest.TestCase):
         self.assertEqual(shlex.split(listener[0]['command'])[-1],'listen')
         self.assertGreaterEqual(listener[0]['timeout'],plugin_runtime.LISTEN_CAP)
         self.assertTrue(all(shlex.split(h['command'])[1].endswith('/hooks/run.py') for h in stop))
+
+
+class OpenCodeTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(); self.root=Path(self.tmp.name)
+        self.env={**os.environ,'AXON_ACTIVITY_HOME':str(self.root/'state'),'AXON_MOSQUITTO_PUB':'/missing/axon-pub','PYTHONDONTWRITEBYTECODE':'1'}
+    def tearDown(self):
+        self.tmp.cleanup()
+    def test_bundle_contains_plugin_module_and_runtime(self):
+        package=manage.build('opencode',self.root/'opencode')
+        source=(package/'plugin/axon.js').read_text()
+        self.assertIn('export default',source)  # v2 definition: default {id, setup}
+        self.assertIn('id: "axon-activity"',source)
+        self.assertIn('async setup(ctx)',source)
+        self.assertIn('async server()',source)  # v1 >= 1.18.29 compatibility
+        self.assertTrue((package/'hooks/run.py').is_file())
+        self.assertTrue((package/'skills/axon-activity/SKILL.md').is_file())
+        manage.build('opencode',package)  # recognized package replaces cleanly
+        self.assertTrue((package/'runtime/axon_reporter/report.py').is_file())
+    def test_hook_is_standalone_fails_open_and_never_leaks_prompts(self):
+        package=manage.build('opencode',self.root/'opencode')
+        data={'session_id':'ses_1; echo SECRET','hook_event_name':'UserPromptSubmit','cwd':'/projects/glass',
+              'parts':[{'text':'PRIVATE PROMPT'}],'args':{'command':'PRIVATE COMMAND'}}
+        result=subprocess.run([sys.executable,str(package/'hooks/run.py')],input=json.dumps(data),
+                              text=True,capture_output=True,env=self.env,check=True)
+        output=json.loads(result.stdout)['hookSpecificOutput']
+        self.assertEqual(output['hookEventName'],'UserPromptSubmit')
+        self.assertIn("'ses_1; echo SECRET'",output['additionalContext'])
+        self.assertEqual(result.stderr,'')
+        self.assertNotIn('PRIVATE',result.stdout)
+        with sqlite3.connect(self.root/'state/outbox.sqlite3') as db:
+            self.assertNotIn('PRIVATE',str([row[0] for row in db.execute('SELECT payload FROM outbox')]))
+        result=subprocess.run([sys.executable,str(package/'hooks/run.py')],input='not json',
+                              text=True,capture_output=True,env=self.env)
+        self.assertEqual((result.returncode,result.stdout,result.stderr),(0,'',''))
+    def test_opencode_install_links_plugin_and_skill_idempotently(self):
+        home=self.root/'home'
+        manage.install('opencode',home,apply=True)
+        plugin=home/'.config/opencode/plugins/axon-activity.js'
+        skill=home/'.config/opencode/skills/axon-activity'
+        self.assertTrue(plugin.is_symlink())  # realpath must resolve into the package
+        self.assertIn('axon-activity',plugin.read_text())
+        self.assertTrue((skill/'SKILL.md').is_file())
+        first=(plugin.read_bytes(),skill.resolve())
+        manage.install('opencode',home,apply=True)
+        self.assertEqual((plugin.read_bytes(),skill.resolve()),first)
+        self.assertTrue(list((home/'.local/state/axon/install-backups').iterdir()))
+        # The install never invents or rewrites an opencode config file.
+        self.assertFalse((home/'.config/opencode/opencode.json').exists())
 
 
 if __name__=='__main__': unittest.main()
