@@ -60,29 +60,15 @@ function boardOrder(a,b) {
 }
 
 function options(id, values, label) {
-  const group=$(id), current=group.value || '';
-  let unique=[...new Set(values.filter(Boolean))];
-  if (id !== 'project') unique.sort();
+  const select=$(id), current=select.value || '';
+  const unique=[...new Set(values.filter(Boolean))];
+  if (id!=='project') unique.sort();
   if (current && !unique.includes(current)) unique.push(current);
-  const signature=JSON.stringify([unique,current,!!group.expanded]);
-  if (group.dataset.signature===signature) return;
-  group.dataset.signature=signature;
-  group.replaceChildren();
-  const add=(value,text)=>{
-    const button=node('button','filter-pill'+(id==='agent' && value ? ' agent-'+value : ''),text);
-    button.type='button';button.setAttribute('aria-pressed',String(current===value));
-    button.addEventListener('click',()=>{group.value=current===value?'':value;filtersChanged();});
-    group.append(button);
-  };
-  add('',label);
-  const visible=id==='project' && !group.expanded ? unique.filter((value,index)=>index<5 || value===current) : unique;
-  visible.forEach(value=>add(value,id==='agent'?agentName({agent:value}):value));
-  if (id==='project' && unique.length>5) {
-    const more=node('button','filter-pill overflow-pill',group.expanded?'Less':'…');more.type='button';
-    more.setAttribute('aria-label',group.expanded?'Show fewer projects':'Show older projects');
-    more.setAttribute('aria-expanded',String(!!group.expanded));
-    more.addEventListener('click',()=>{group.expanded=!group.expanded;options(id,values,label);});group.append(more);
-  }
+  const signature=JSON.stringify([...unique].sort());
+  if (select.dataset.signature===signature) return;
+  select.dataset.signature=signature;
+  select.replaceChildren(new Option(label,''),...unique.map(value=>new Option(id==='agent'?agentName({agent:value}):value,value)));
+  select.value=current;
 }
 function periodOptions() {
   const group=$('period');group.replaceChildren();
@@ -273,7 +259,7 @@ function render() {
   for (const value of ACTIVE) $('count-'+value).textContent=counts[value];
   $('live-badge').textContent=state.sessions.filter(row=>!row.archived_at && ACTIVE.includes(row.effective_state)).length;
   document.querySelectorAll('[data-view]').forEach(button=>{button.classList.toggle('selected',button.dataset.view===state.view);button.setAttribute('aria-current',button.dataset.view===state.view ? 'page' : 'false');});
-  document.querySelectorAll('[data-state]').forEach(button=>{button.classList.toggle('active',button.dataset.state===state.filter);button.setAttribute('aria-pressed',String(button.dataset.state===state.filter));});
+  document.querySelectorAll('[data-state]').forEach(button=>{button.classList.toggle('active',button.dataset.state===state.filter);button.setAttribute('aria-pressed',String(button.dataset.state===state.filter));button.setAttribute('aria-label',LABEL[button.dataset.state]+': '+counts[button.dataset.state]);button.title=LABEL[button.dataset.state];});
   $('clear-state').hidden=!state.filter || state.view!=='now';
   $('heartbeat-control').hidden=state.view!=='timeline';
   $('page-title').textContent=state.view==='now' ? 'Live board' : 'Timeline';
@@ -460,7 +446,9 @@ function readRoute() {
   const params=new URLSearchParams(location.hash.slice(1));state.view=params.get('view')==='timeline'?'timeline':'now';state.filter=ACTIVE.includes(params.get('state'))?params.get('state'):'';
   for (const id of ['search','period']) $(id).value=params.get(id)||'';
   for (const id of ['host','project','agent']) {
-    $(id).value=params.get(id)||'';
+    const value=params.get(id)||'';
+    if (value && ![...$(id).options].some(option=>option.value===value)) $(id).append(new Option(value,value));
+    $(id).value=value;
   }
   $('heartbeats').checked=params.get('heartbeats')==='1';
   if (params.get('source') && params.get('session')) openSession({source:params.get('source'),session:params.get('session')});

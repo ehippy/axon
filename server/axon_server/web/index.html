@@ -7,12 +7,8 @@
 </head>
 <body>
 <header class="rail">
-  <a class="brand" href="/" aria-label="Axon home"><span class="brand-mark" aria-hidden="true">a<span>·</span></span>axon</a>
+  <a class="brand" href="/" aria-label="Axon home"><span class="brand-mark" aria-hidden="true">a<span>·</span></span><span class="brand-name">axon</span></a>
   <nav aria-label="Views"><button class="nav-button selected" data-view="now"><span class="nav-icon">◉</span>Board<span id="live-badge" class="nav-count">0</span></button><button class="nav-button" data-view="timeline"><span class="nav-icon">≋</span>Timeline</button></nav>
-</header>
-<main>
-<header class="page-header">
- <div class="header-title"><h1 id="page-title">Live board</h1><p id="page-subtitle">Reporting agents, across hosts and projects.</p></div>
  <section class="metrics" aria-label="Current activity">
   <button class="metric" data-state="working"><i class="status-dot working"></i><span>Working</span><strong id="count-working">—</strong></button>
   <button class="metric" data-state="waiting"><i class="status-dot waiting"></i><span>Waiting</span><strong id="count-waiting">—</strong></button>
@@ -20,11 +16,18 @@
  </section>
  <div class="connection"><span id="sync-dot" class="signal-dot"></span><span id="sync-status" role="status">Connecting…</span><button id="refresh" class="icon-button" aria-label="Refresh activity">↻</button></div>
 </header>
+<main>
+<header class="page-header">
+ <div class="header-title"><h1 id="page-title">Live board</h1><p id="page-subtitle">Reporting agents, across hosts and projects.</p></div>
+
+</header>
 <div id="error" class="error-banner" role="alert" hidden></div>
 <form id="filters" class="pill-filters" aria-label="Filter activity">
- <div class="filter-row identity-filters"><span class="filter-label">Hosts</span><div id="host" class="pill-group" role="group" aria-label="Host"></div><span class="filter-label">Agents</span><div id="agent" class="pill-group" role="group" aria-label="Agent"></div></div>
- <div class="filter-row project-filters"><span class="filter-label">Projects</span><div id="project" class="pill-group" role="group" aria-label="Project"></div></div>
- <div class="filter-row utility-filters"><div id="period" class="pill-group period-pills" role="group" aria-label="Date range"></div><label class="search-field"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search activity…" aria-label="Search activity"></label></div>
+ <label class="nav-filter"><select id="host" aria-label="Host"><option value="">All hosts</option></select></label>
+ <label class="nav-filter"><select id="agent" aria-label="Agent"><option value="">All agents</option></select></label>
+ <label class="nav-filter"><select id="project" aria-label="Project"><option value="">All projects</option></select></label>
+ <div id="period" class="pill-group period-pills" role="group" aria-label="Date range"></div>
+ <label class="search-field"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search activity…" aria-label="Search activity"></label>
 </form>
 <div class="section-heading"><div><span id="section-title">IN THE ROOM</span><span id="result-count" class="muted"></span></div><div class="section-controls"><button id="clear-state" class="text-button" hidden>Clear state filter ×</button><label id="heartbeat-control" class="check-label" hidden><input id="heartbeats" type="checkbox">Include heartbeats</label><span id="view-note">Updates live</span></div></div>
 <div id="archive-notice" class="archive-notice" role="status" hidden><span id="archive-notice-text"></span><button id="archive-undo" class="text-button" type="button">Undo</button></div>
