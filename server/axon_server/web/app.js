@@ -76,10 +76,19 @@ function hostIcon(kind) {
 }
 // Older reporters omit the kind; any session from the same host can supply it.
 function hostKind(sessions) { return [...sessions].sort((a,b)=>Number(b.updated_at)-Number(a.updated_at)).find(row=>row.machine_kind)?.machine_kind; }
+// Minute buckets avoid trading places over near-simultaneous progress reports.
+function activityBucket(row) { return Math.floor(Number(row.activity_at ?? row.updated_at)/60); }
+function sessionOrder(a,b) {
+  return Number(ACTIVE.includes(b.effective_state))-Number(ACTIVE.includes(a.effective_state))
+    || activityBucket(b)-activityBucket(a) || key(a).localeCompare(key(b));
+}
 function boardOrder(a,b) {
-  return hostName(a).localeCompare(hostName(b)) || agentName(a).localeCompare(agentName(b))
-    || Number(ACTIVE.includes(b.effective_state))-Number(ACTIVE.includes(a.effective_state))
-    || Number(b.updated_at)-Number(a.updated_at) || key(a).localeCompare(key(b));
+  return hostName(a).localeCompare(hostName(b)) || sessionOrder(a,b);
+}
+function agentOrder([nameA,rowsA],[nameB,rowsB]) {
+  const live=rows=>rows.some(row=>ACTIVE.includes(row.effective_state));
+  const latest=rows=>Math.max(...rows.map(activityBucket));
+  return Number(live(rowsB))-Number(live(rowsA)) || latest(rowsB)-latest(rowsA) || nameA.localeCompare(nameB);
 }
 
 function options(id, values, label) {
@@ -123,7 +132,8 @@ function card(row, grouped=false) {
   const top=node('div','card-top'), identity=node('h2','agent-identity');
   identity.append(node('span','agent-label',agentName(row)),node('span','on-label',' on '),node('span','host-name',hostName(row)));
   top.append(identity);
-  const time=node('time','card-time',relative(row.updated_at)); time.dataset.at=row.updated_at; time.title=new Date(row.updated_at*1000).toLocaleString();
+  const activity=row.activity_at ?? row.updated_at;
+  const time=node('time','card-time',relative(activity)); time.dataset.at=activity; time.title='Last activity: '+new Date(activity*1000).toLocaleString()+' · Last report: '+new Date(row.updated_at*1000).toLocaleString();
   const project=node('div','project-line');project.append(node('span','project-name',row.project || 'Unassigned project'),time);
   const label=statusName(row.effective_state), bottom=node('div','card-bottom');
   const detail=label==='blocked' ? row.blocker || row.step : label==='finished' ? row.outcome : row.step || row.activity;
@@ -262,10 +272,10 @@ function hostGroups(rows) {
     heading.append(title,node('span','host-count',sessions.filter(row=>ACTIVE.includes(row.effective_state)).length+' live · '+sessions.filter(row=>!ACTIVE.includes(row.effective_state)).length+' recent'));section.append(heading);
     const columns=node('div','agent-columns'), agents=new Map();
     for (const row of sessions) {const name=agentName(row);if(!agents.has(name)) agents.set(name,[]);agents.get(name).push(row);}
-    for (const [name,items] of agents) {
+    for (const [name,items] of [...agents].sort(agentOrder)) {
       const group=node('section','agent-group '+agentClass(items[0]));
       const label=node('div','agent-group-heading');label.append(node('span','agent-dot'),node('h3','',name),node('span','agent-count',items.length));group.append(label);
-      items.forEach(row=>group.append(card(row,true)));columns.append(group);
+      items.sort(sessionOrder).forEach(row=>group.append(card(row,true)));columns.append(group);
     }
     section.append(columns);fragment.append(section);
   }

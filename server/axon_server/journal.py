@@ -195,6 +195,12 @@ class Journal:
             result.append(item)
         return result
 
+    def activity_times(self):
+        """Heartbeat freshness must not reshuffle work; heartbeat-only sessions use first sighting."""
+        with self.connect() as db:
+            rows = db.execute("SELECT source, session, COALESCE(MAX(CASE WHEN kind!='heartbeat' THEN at END), MIN(at)) AS activity_at FROM events GROUP BY source, session").fetchall()
+        return {(row['source'], row['session']): row['activity_at'] for row in rows}
+
     def archive(self, source, session, archived):
         if type(archived) is not bool:
             raise ValueError('archived must be a boolean')
@@ -314,7 +320,8 @@ def handler(journal, web=True, token=None, stop=None):
                     data = {'ok': True, 'retention_days': journal.retention_days}
                 elif url.path == '/sessions':
                     queued = journal.queued()
-                    data = {'sessions': [{**s, 'queued_messages': queued.get((s['source'], s['session']), 0)}
+                    activity = journal.activity_times()
+                    data = {'sessions': [{**s, 'activity_at': activity.get((s['source'], s['session']), s['updated_at']), 'queued_messages': queued.get((s['source'], s['session']), 0)}
                                          for s in journal.sessions(filters)]}
                 elif (parts := session_path(url.path)) and parts[2] == 'messages':
                     data = {'messages': journal.messages(parts[0], parts[1]), 'input': bool(token)}

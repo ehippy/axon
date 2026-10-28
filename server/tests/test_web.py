@@ -41,6 +41,24 @@ class WebTests(unittest.TestCase):
     def get(self,path):
         with urlopen(self.base+path) as response:return json.load(response)
 
+    def test_activity_time_ignores_heartbeats_and_handles_heartbeat_only_sessions(self):
+        self.event(kind='start',agent='claude',goal='Meaningful work')
+        first=self.get('/sessions')['sessions'][0]['activity_at']
+        self.event(kind='heartbeat',activity='running tools')
+        row=self.get('/sessions')['sessions'][0]
+        self.assertEqual(row['activity_at'],first)
+        self.assertGreater(row['updated_at'],first)
+        self.event(step='Real progress')
+        newer=self.get('/sessions')['sessions'][0]['activity_at']
+        self.assertGreater(newer,first)
+        self.event(source='heartbeat-only',kind='heartbeat',agent='pi')
+        initial=next(row['activity_at'] for row in self.get('/sessions')['sessions'] if row['source']=='heartbeat-only')
+        self.event(source='heartbeat-only',kind='heartbeat',activity='Still alive')
+        row=next(row for row in self.get('/sessions')['sessions'] if row['source']=='heartbeat-only')
+        self.assertEqual(row['activity_at'],initial)
+        self.assertGreater(row['updated_at'],initial)
+        self.assertEqual(Journal(self.journal.path).activity_times()[('heartbeat-only','one')],initial)
+
     def test_version_matches_html_api_and_stream_and_ignores_activity(self):
         with urlopen(self.base+'/') as response:
             revision=response.headers['X-Axon-Version']

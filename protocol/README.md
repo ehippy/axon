@@ -96,3 +96,7 @@ Dashboard archiving is server metadata, separate from work state. Authenticated
 carry `archived_at` in `/sessions`; event history is unchanged. Optional boolean
 `data.user_turn` marks an actual user prompt, not agent progress. A fresh marker
 after archiving restores the session; stale delivery and heartbeat do not.
+
+Session API rows include `activity_at`: the latest retained non-heartbeat event
+time, or the first retained heartbeat for heartbeat-only sessions. It separates
+meaningful activity ranking from `updated_at` lease freshness.

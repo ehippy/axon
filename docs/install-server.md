@@ -82,8 +82,10 @@ timeline events. It defaults to one hour and offers 15m, 30m, 1h, 6h, 24h, 7d,
 30d, and Any time. Selecting a longer horizon reveals older sessions without
 changing their reported state or extending their heartbeat lease.
 
-Within each host and agent group, live sessions appear first; sessions in each
-section are ordered by most recent report, with session identity breaking ties.
+Within each host, live agent groups appear first, then groups with the most
+recent meaningful activity. Sessions inside each group follow the same rule.
+Heartbeat renewals update freshness without changing this ordering. Activity is
+ranked in one-minute buckets with deterministic ties to avoid noisy reshuffling.
 
 Hosts occupy side-by-side board columns when space permits. Agent groups and
 session tiles stack vertically inside each host; narrow screens stack hosts.
