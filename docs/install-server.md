@@ -44,6 +44,35 @@ starting this one against the same database/broker. Back up SQLite with its
 backup API (or stop the service before copying); preserve the original and
 validate a copy before switching. Retention applies on startup.
 
+## Automatic updates
+
+A host that runs the server as a systemd user service can follow `main` on its own.
+[axon_update.py](../server/deploy/axon_update.py) keeps each server commit in
+`~/.local/share/axon/server/releases/<version>-<sha>/venv` with `current` pointing
+at the live one, which is what the user unit's `ExecStart` runs. Every five minutes
+it fetches the branch and, for a commit that changes the server or protocol package:
+
+1. waits until every GitHub check on that commit passed (a failed commit is never deployed);
+2. builds a fresh release virtualenv and backs up the database with SQLite's backup API;
+3. switches `current`, restarts `axon-server` and waits for `/health`;
+4. switches back to the previous release if the server does not answer, and skips that commit.
+
+Commits that touch neither are recorded without a restart. It keeps the five newest
+releases and database backups, and each deploy installs the updater's own newest copy.
+
+```sh
+mkdir -p ~/.local/share/axon/updater ~/.config/systemd/user
+cp server/deploy/axon_update.py ~/.local/share/axon/updater/
+cp server/deploy/axon-update.service server/deploy/axon-update.timer ~/.config/systemd/user/
+loginctl enable-linger "$USER"
+systemctl --user daemon-reload && systemctl --user enable --now axon-update.timer
+```
+
+Override defaults (`AXON_UPDATE_BRANCH`, `AXON_UPDATE_KEEP`, `AXON_UPDATE_HEALTH_URL`, ...)
+in `~/.config/axon/update.env`. `journalctl --user -u axon-update` shows each decision;
+`update-state.json` beside `current` records the deployed and any failed commit. Every
+push to the tracked branch reaches the host once CI passes, so keep it to reviewed work.
+
 ## Query client
 
 ```sh

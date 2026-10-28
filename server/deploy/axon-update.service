@@ -1,0 +1,11 @@
+[Unit]
+Description=Deploy new axon-server commits from the tracked branch
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Overrides such as AXON_UPDATE_BRANCH or AXON_UPDATE_KEEP; see axon_update.py --help.
+EnvironmentFile=-%h/.config/axon/update.env
+ExecStart=/usr/bin/python3 %h/.local/share/axon/updater/axon_update.py
+UMask=0077
