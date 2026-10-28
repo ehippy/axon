@@ -28,6 +28,7 @@
  <div class="filter-row"><span class="filter-label">Projects</span><div id="project" class="pill-group" role="group" aria-label="Project"></div><div id="period" class="pill-group period-pills" role="group" aria-label="Date range"></div><label class="search-field"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search activity…" aria-label="Search activity"></label></div>
 </form>
 <div class="section-heading"><div><span id="section-title">IN THE ROOM</span><span id="result-count" class="muted"></span></div><div class="section-controls"><button id="clear-state" class="text-button" hidden>Clear state filter ×</button><label id="heartbeat-control" class="check-label" hidden><input id="heartbeats" type="checkbox">Include heartbeats</label><span id="view-note">Updates live</span></div></div>
+<div id="archive-notice" class="archive-notice" role="status" hidden><span id="archive-notice-text"></span><button id="archive-undo" class="text-button" type="button">Undo</button></div>
 <div id="activity" class="activity" aria-live="off"><div class="empty"><span class="empty-symbol">◌</span><h2>Listening for activity</h2><p>The journal is connecting.</p></div></div>
 <button id="load-more" class="load-more" hidden>Load earlier events ↓</button>
 <footer><span id="footer-note">Agent-reported activity. Completion requires an explicit outcome and evidence.</span><span>AXON / JOURNAL</span></footer>
@@ -42,5 +43,9 @@
   <form id="message-form" class="message-form"><textarea id="message-text" rows="3" maxlength="4000" placeholder="Message this session…" aria-label="Message"></textarea><div class="message-actions"><span id="message-status" role="status"></span><button id="message-send" class="send-button" type="submit">Send</button></div></form>
   <form id="token-form" class="token-form" hidden><input id="token-input" type="password" autocomplete="off" placeholder="Paste the server's input token" aria-label="Input token"><button class="send-button" type="submit">Save token</button></form>
  </section>
+</dialog>
+<dialog id="archive-auth" aria-labelledby="archive-auth-title">
+ <h2 id="archive-auth-title">Archive sessions</h2><p id="archive-token-status"></p>
+ <form id="archive-token-form"><input id="archive-token" type="password" autocomplete="off" aria-label="Archive input token" placeholder="Server input token" required><div class="message-actions"><button id="archive-cancel" type="button" class="text-button">Cancel</button><button type="submit" class="send-button">Continue</button></div></form>
 </dialog>
 </body></html>

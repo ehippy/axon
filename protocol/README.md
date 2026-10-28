@@ -89,3 +89,10 @@ messages with `delivered_at` (null while queued) and `input` (whether sending is
 enabled). Hooks call `POST /sessions/<source>/<session>/inbox/claim?wait=<s>`
 (long-poll, at most 55 s): it atomically marks pending messages delivered and
 returns them. Messages follow the journal retention period.
+
+Dashboard archiving is server metadata, separate from work state. Authenticated
+`POST /sessions/<source>/<session>/archive` with `{"archived": true}` archives;
+`false` restores. It uses the same bearer token as session input. Archived rows
+carry `archived_at` in `/sessions`; event history is unchanged. Optional boolean
+`data.user_turn` marks an actual user prompt, not agent progress. A fresh marker
+after archiving restores the session; stale delivery and heartbeat do not.

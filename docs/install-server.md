@@ -115,3 +115,16 @@ Delivery depends on the session's state:
 - **Otherwise** the message stays queued until the session next runs a hook.
 
 Codex and Hermes sessions cannot receive input yet.
+
+## Archive sessions
+
+Archive on a card hides that session from the board across browsers and restarts.
+Undo restores it immediately; the collapsed Archived section also offers Restore.
+Archiving uses the same server input token as messaging, and does not alter the
+agent's reported state or delete its event history. Archived sessions remain in
+the timeline and session API, identified by `archived_at`.
+
+Background reports, heartbeat renewals, and replays leave the archive in place.
+An updated reporter's next `UserPromptSubmit` emits a `user_turn: true` marker;
+a fresh marker after the archive restores the session automatically. Update the
+installed agent plugins alongside the server to enable this behavior.

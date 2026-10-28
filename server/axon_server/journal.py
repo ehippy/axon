@@ -47,6 +47,9 @@ class Journal:
               CREATE TABLE IF NOT EXISTS sessions (
                 source TEXT, session TEXT, at REAL, payload TEXT,
                 PRIMARY KEY(source, session));
+              CREATE TABLE IF NOT EXISTS session_archives (
+                source TEXT, session TEXT, archived_at REAL NOT NULL,
+                PRIMARY KEY(source, session));
               CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY, source TEXT, session TEXT, at REAL, text TEXT,
                 delivered_at REAL);
@@ -82,6 +85,7 @@ class Journal:
             events = db.execute('DELETE FROM events WHERE at < ?', (cutoff,)).rowcount
             sessions = db.execute('DELETE FROM sessions WHERE at < ?', (cutoff,)).rowcount
             db.execute('DELETE FROM messages WHERE at < ?', (cutoff,))
+            db.execute('DELETE FROM session_archives WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.source=session_archives.source AND s.session=session_archives.session)')
         if events or sessions:
             self.changed()
         return {'events': events, 'sessions': sessions}
@@ -137,7 +141,11 @@ class Journal:
             if v['kind'] == 'start':
                 for key in ('goal', 'step', 'outcome', 'evidence', 'blocker'):
                     current.pop(key, None)
-            current.update(patch)
+            # A fresh user turn may restore a session; replays and background activity cannot.
+            if patch.get('user_turn') is True:
+                db.execute('DELETE FROM session_archives WHERE source=? AND session=? AND archived_at<?',
+                           (v['source'], v['session'], v['at']))
+            current.update({k: value for k, value in patch.items() if k != 'user_turn'})
             state = {'start': 'working', 'waiting': 'waiting', 'blocked': 'blocked',
                      'finished': 'finished', 'stopped': 'stopped', 'interrupted': 'interrupted'}.get(v['kind'])
             # Late lifecycle/tool hooks cannot erase an explicitly recorded result.
@@ -154,10 +162,12 @@ class Journal:
     def sessions(self, filters=None):
         filters = filters or {}
         with self.connect() as db:
-            rows = db.execute('SELECT payload FROM sessions ORDER BY at DESC').fetchall()
+            rows = db.execute('SELECT s.payload, a.archived_at FROM sessions s LEFT JOIN session_archives a ON s.source=a.source AND s.session=a.session ORDER BY s.at DESC').fetchall()
         result = []
         for row in rows:
             item = json.loads(row[0])
+            if row['archived_at'] is not None:
+                item['archived_at'] = row['archived_at']
             item['fresh'] = time.time() - item['updated_at'] <= item['lease_seconds']
             item['effective_state'] = item['state'] if item['fresh'] or item['state'] in TERMINAL else 'lost_contact'
             if any(item.get(k if k != 'state' else 'effective_state') != v for k, v in filters.items() if k in ('source', 'session', 'project', 'agent', 'machine', 'state')):
@@ -166,6 +176,20 @@ class Journal:
                 continue
             result.append(item)
         return result
+
+    def archive(self, source, session, archived):
+        if type(archived) is not bool:
+            raise ValueError('archived must be a boolean')
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if not db.execute('SELECT 1 FROM sessions WHERE source=? AND session=?', (source, session)).fetchone():
+                raise LookupError('unknown session')
+            if archived:
+                db.execute('INSERT OR IGNORE INTO session_archives VALUES(?,?,?)', (source, session, time.time()))
+            else:
+                db.execute('DELETE FROM session_archives WHERE source=? AND session=?', (source, session))
+        self.changed()
+        return {'archived': archived}
 
     def events(self, filters=None):
         filters = filters or {}
@@ -296,10 +320,10 @@ def handler(journal, web=True, token=None, stop=None):
         def do_POST(self):
             url = urlsplit(self.path)
             parts = session_path(url.path)
-            if not parts or parts[2] not in ('messages', 'inbox/claim'):
+            if not parts or parts[2] not in ('messages', 'inbox/claim', 'archive'):
                 self.send_error(501); return
             try:
-                if parts[2] == 'messages':
+                if parts[2] in ('messages', 'archive'):
                     # Input makes agents act, so it always needs the configured token.
                     supplied = self.headers.get('Authorization', '')
                     if not token:
@@ -309,8 +333,11 @@ def handler(journal, web=True, token=None, stop=None):
                     length = int(self.headers.get('Content-Length', 0))
                     if not 0 < length <= 4 * MESSAGE_LIMIT + 1024:
                         raise ValueError('invalid body')
-                    data = journal.send_message(parts[0], parts[1], json.loads(self.rfile.read(length)).get('text'))
-                    status = 201
+                    payload = json.loads(self.rfile.read(length))
+                    if parts[2] == 'archive':
+                        data, status = journal.archive(parts[0], parts[1], payload.get('archived')), 200
+                    else:
+                        data, status = journal.send_message(parts[0], parts[1], payload.get('text')), 201
                 else:
                     wait = float(parse_qs(url.query).get('wait', ['0'])[-1])
                     data, status = {'messages': journal.claim(parts[0], parts[1], wait)}, 200

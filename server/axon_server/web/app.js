@@ -132,12 +132,40 @@ function card(row, grouped=false) {
   button.setAttribute('aria-label',agentName(row)+' on '+hostName(row)+': '+(row.project || 'Unassigned project')+' — '+(row.goal || row.outcome || 'Work session')+' — '+LABEL[label]+' — '+row.session.slice(0,8));
   button.append(project,node('h3','work-title',row.goal || row.outcome || 'Work session'),node('p','card-step',detail || 'No further update reported.'),bottom);
   button.addEventListener('click',()=>openSession(row));
-  if (!INPUT_AGENTS.includes(row.agent)) return button;
   const shell=node('div','card-shell'+(state.compose===key(row)?' composing':''));shell.dataset.composeKey=key(row);
-  const frame=node('div','card-frame');frame.append(button,chatToggle(row));shell.append(frame);
+  const frame=node('div','card-frame'), tools=node('div','card-tools');
+  const archive=node('button','archive-button',row.archived_at?'Restore':'Archive');archive.type='button';
+  archive.setAttribute('aria-label',(row.archived_at?'Restore':'Archive')+' session '+(row.project||row.session.slice(0,8)));
+  archive.addEventListener('click',()=>archiveSession(row,!row.archived_at));tools.append(archive);
+  if (INPUT_AGENTS.includes(row.agent)) tools.append(chatToggle(row));
+  frame.append(button,tools);shell.append(frame);
   if (state.compose===key(row)) shell.append(composer(row));
   return shell;
 }
+let pendingArchive=null;
+async function archiveSession(row, archived) {
+  if (!storedToken()) {
+    pendingArchive={row,archived};$('archive-token-status').textContent='Use the same token as session messaging.';
+    $('archive-auth').showModal();$('archive-token').focus();return;
+  }
+  try {
+    const response=await fetch(sessionPath(row)+'/archive',{method:'POST',cache:'no-store',signal:AbortSignal.timeout(8000),
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+storedToken()},body:JSON.stringify({archived})});
+    if (response.status===401) {storeToken('');return archiveSession(row,archived);}
+    if (!response.ok) throw new Error(response.status===403?'Configure the server input token to archive sessions.':'Could not update session ('+response.status+').');
+    state.lastArchived=archived?row:null;
+    $('archive-notice').hidden=!archived;
+    $('archive-notice-text').textContent='Session archived.';
+    state.compose=null;await refresh();
+  } catch(error) {$('error').textContent=error.message;$('error').hidden=false;}
+}
+$('archive-token-form').addEventListener('submit',event=>{
+  event.preventDefault();const token=$('archive-token').value.trim();if (!token) return;
+  storeToken(token);$('archive-token').value='';$('archive-auth').close();
+  const pending=pendingArchive;pendingArchive=null;if(pending) archiveSession(pending.row,pending.archived);
+});
+$('archive-cancel').addEventListener('click',()=>$('archive-auth').close());
+$('archive-undo').addEventListener('click',()=>{if(state.lastArchived) archiveSession(state.lastArchived,false);});
 function chatToggle(row) {
   const listening=listeningLeft(row), queued=Number(row.queued_messages||0), toggle=node('button','chat-toggle'+(listening?' listening':''));
   toggle.type='button';toggle.setAttribute('aria-expanded',String(state.compose===key(row)));
@@ -241,9 +269,9 @@ function hostGroups(rows) {
   return fragment;
 }
 function render() {
-  const counts=Object.fromEntries(ACTIVE.map(value=>[value,filteredSessions().filter(s=>s.effective_state===value).length]));
+  const counts=Object.fromEntries(ACTIVE.map(value=>[value,filteredSessions().filter(s=>!s.archived_at && s.effective_state===value).length]));
   for (const value of ACTIVE) $('count-'+value).textContent=counts[value];
-  $('live-badge').textContent=state.sessions.filter(row=>ACTIVE.includes(row.effective_state)).length;
+  $('live-badge').textContent=state.sessions.filter(row=>!row.archived_at && ACTIVE.includes(row.effective_state)).length;
   document.querySelectorAll('[data-view]').forEach(button=>{button.classList.toggle('selected',button.dataset.view===state.view);button.setAttribute('aria-current',button.dataset.view===state.view ? 'page' : 'false');});
   document.querySelectorAll('[data-state]').forEach(button=>{button.classList.toggle('active',button.dataset.state===state.filter);button.setAttribute('aria-pressed',String(button.dataset.state===state.filter));});
   $('clear-state').hidden=!state.filter || state.view!=='now';
@@ -256,7 +284,8 @@ function render() {
   if (state.view==='now' && document.activeElement?.closest?.('.card-composer')) return; // never wipe a draft mid-typing
   container.replaceChildren();
   if (state.view==='now') {
-    let rows=filteredSessions();
+    const archived=filteredSessions().filter(row=>row.archived_at);
+    let rows=filteredSessions().filter(row=>!row.archived_at);
     if (state.filter) rows=rows.filter(row=>row.effective_state===state.filter);
     const active=rows.filter(row=>ACTIVE.includes(row.effective_state)), visible=rows.filter(row=>onBoard(row)).sort(boardOrder), recent=rows.filter(row=>!onBoard(row)).slice(0,8);
     $('result-count').textContent=active.length+' live · '+(visible.length-active.length)+' recent';
@@ -266,6 +295,12 @@ function render() {
       const grid=node('div','quiet-grid');recent.forEach(row=>grid.append(card(row)));quiet.append(grid);container.append(quiet);
     }
     if (!visible.length && !recent.length) container.append(empty('Nothing in this view','Change your filters, or let an agent report its next bit of work.'));
+    if (archived.length) {
+      const section=node('details','quiet-group archived-group');section.open=!!state.archivedOpen;
+      section.addEventListener('toggle',()=>{state.archivedOpen=section.open;});
+      section.append(node('summary','','Archived · '+archived.length));
+      const grid=node('div','quiet-grid');archived.forEach(row=>grid.append(card(row)));section.append(grid);container.append(section);
+    }
     $('load-more').hidden=true;
   } else {
     $('result-count').textContent=state.events.length+' events';

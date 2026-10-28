@@ -94,6 +94,8 @@ class PluginTests(unittest.TestCase):
             self.assertEqual(self.hook(package,event,tool_name='exec_command').stdout,'')
         self.hook(package,'Stop')
         self.assertEqual([e['kind'] for e in self.events()],['progress','heartbeat','waiting'])
+        self.assertTrue(self.events()[0]['data']['user_turn'])
+        self.assertNotIn('user_turn',self.events()[1]['data'])
     def test_prompt_followup_does_not_erase_goal_and_missing_cwd_does_not_erase_project(self):
         with patch.dict(os.environ,self.env), patch.object(report,'drain'):
             report.report('hermes','a','start',{'project':'axon','goal':'Build plugin','step':'Test hooks'})
