@@ -48,8 +48,13 @@ function renderResources(values=[]) {
   for(const provider of ['codex','claude']) if(!rows.some(row=>row.provider===provider)) rows.push({provider,account:'primary',windows:[]});
   rows.sort((a,b)=>['codex','claude'].indexOf(a.provider)-['codex','claude'].indexOf(b.provider) || a.account.localeCompare(b.account));
   const now=Date.now()/1000;
+  // Codex is polled every minute, so a quiet collector means trouble. Claude reports only
+  // while in use and its windows barely move when idle: stale once a reset has passed.
+  const stale=row=>!!row.observed_at && (row.provider==='claude'
+    ? row.windows.some(window=>window.resets_at!=null && window.resets_at<=now)
+    : now-row.observed_at>300);
   const view=rows.map(row=>({provider:row.provider,account:row.account,
-    stale:!!row.observed_at && now-row.observed_at>300,
+    stale:stale(row),
     updated:row.observed_at ? relative(row.observed_at) : null,
     windows:['short','weekly'].map(name=>{
       const window=row.windows.find(item=>item.name===name), expired=window?.resets_at!=null && window.resets_at<=now;

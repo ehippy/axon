@@ -142,7 +142,8 @@ across the reload in that tab's session storage. An in-flight send finishes firs
 The standing Codex and Claude panels show remaining short-window and weekly
 allowance, reset countdowns and observation age. They are account-level snapshots,
 independent of board filters and sessions. A missing window is Unknown, a passed
-reset is Awaiting update, and observations older than five minutes are Stale.
+reset is Awaiting update. Codex observations older than five minutes are Stale;
+Claude reports only while in use, so its observations are Stale once a reset passes.
 Credentials remain on the collecting machine.
 
 Install the reporter wheel and configure its
