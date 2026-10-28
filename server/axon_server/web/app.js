@@ -92,17 +92,30 @@ function renderResources(values=[]) {
     const header=node('div','resource-heading');
     header.append(node('h2','',row.account+' · Inference'),node('span','resource-age',stale?'Stale · '+inferenceAge(row.observed_at):row.online?'Live':'Endpoint offline'));
     panel.append(header);
+    const bars=node('div','inference-bars');
+    const gpus=row.gpus||[];
+    if(gpus.length){
+      // A host collector reports real device utilization, so the bar is the same headroom reading as a quota bar.
+      for(const gpu of gpus){
+        const detail=[gpu.utilization_percent==null?null:fmt(gpu.utilization_percent,'% busy'),
+          gpu.power_watts==null?null:fmt(gpu.power_watts,' W'),
+          gpu.temperature_c==null?null:fmt(gpu.temperature_c,' °C')].filter(Boolean);
+        bars.append(capacityBar(row,gpu.utilization_percent,gpu.name||'GPU',detail.join(' · ')||'Utilization not reported'));
+      }
+    }else{
+      // Polling reaches only the endpoint, which never reports hardware; KV cache is the one occupancy share it does give.
+      bars.append(capacityBar(row,row.online?row.metrics.kv_cache_percent:null,'KV cache',
+        row.online?'Cache occupancy: no host telemetry for GPU use':'Endpoint offline'));
+    }
+    panel.append(bars);
     const stats=node('div','inference-stats');
     const show=(label,value)=>stats.append(node('div','inference-stat',label+' '+value));
-    const fmt=(v,suffix='')=>v==null?'Unknown':Number(v).toFixed(1)+suffix;
     if(row.online){
       show('Running',row.metrics.running??'Unknown');show('Queued',row.metrics.queued??'Unknown');
       show('Generation',fmt(row.metrics.generation_tps,' tok/s'));show('Prompt',fmt(row.metrics.prompt_tps,' tok/s'));
-      show('KV cache',fmt(row.metrics.kv_cache_percent,'%'));
+      if(gpus.length)show('KV cache',fmt(row.metrics.kv_cache_percent,'%'));
     }
-    for(const gpu of row.gpus){
-      show(gpu.name,fmt(gpu.utilization_percent,'% busy'));
-      show('Power',fmt(gpu.power_watts,' W'));show('Temperature',fmt(gpu.temperature_c,' °C'));
+    for(const gpu of gpus){
       const memory=(used,total)=>used==null||total==null?'Unknown':fmt(used/1073741824)+' / '+fmt(total/1073741824)+' GiB';
       show('VRAM',memory(gpu.memory_used_bytes,gpu.memory_total_bytes));
       if(gpu.shared_total_bytes!=null)show('Shared GPU memory',memory(gpu.shared_used_bytes,gpu.shared_total_bytes));
@@ -123,6 +136,20 @@ function relative(at) {
   if (seconds < 3600) return Math.floor(seconds/60)+'m ago';
   if (seconds < 86400) return Math.floor(seconds/3600)+'h ago';
   return Math.floor(seconds/86400)+'d ago';
+}
+function fmt(value, suffix='') { return value==null ? 'Unknown' : Number(value).toFixed(1)+suffix; }
+function capacityBar(row, used, label, note) {
+  // Same reading as the quota bars: the bar shows headroom, so a shrinking bar always means pressure.
+  const free = used==null ? null : Math.max(0, Math.min(100, 100-used));
+  const box = node('div','resource-window'), caption = node('div','quota-label');
+  caption.append(node('span','',label), node('strong','',free===null?'Unknown':Math.floor(free)+'% free'));
+  const bar = node('div','quota-bar'+(free===null?' unknown':free<=10?' low':free<=25?' limited':''));
+  bar.setAttribute('role','progressbar'); bar.setAttribute('aria-label',row.account+' '+label+' capacity free');
+  bar.setAttribute('aria-valuemin','0'); bar.setAttribute('aria-valuemax','100');
+  if (free!==null) { bar.setAttribute('aria-valuenow',String(free)); const fill = node('span','quota-fill'); fill.style.width = free+'%'; bar.append(fill); }
+  else bar.setAttribute('aria-valuetext','Unknown');
+  box.append(caption, bar, node('div','quota-reset',note));
+  return box;
 }
 function inferenceAge(at) {
   // Inference turns stale in 30s, too soon for relative()'s minute floor to read as stale.
