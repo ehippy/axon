@@ -339,4 +339,49 @@ class OpenCodeTests(unittest.TestCase):
         self.assertFalse((home/'.config/opencode/opencode.json').exists())
 
 
+class SyncTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(); self.root=Path(self.tmp.name)
+        self.home=self.root/'home'
+        for d in ('opencode/bin','npm-global/bin'):
+            (self.home/('.local' if d.startswith('local') else f'.{d.split("/")[0]}')/d.split('/')[1]).mkdir(parents=True,exist_ok=True)
+        fake=self.home/'.opencode/bin/opencode'
+        fake.write_text('#!/bin/sh\n'); fake.chmod(0o755)
+        self.env={'AXON_ACTIVITY_HOME':str(self.root/'state'),'PATH':str(self.home/'.opencode/bin')}
+    def tearDown(self):
+        self.tmp.cleanup()
+    def test_sync_installs_detected_agents_stamps_and_skips(self):
+        with patch.dict(os.environ,self.env):
+            report=manage.sync(self.home,apply=True)
+            self.assertEqual(report['agents'],['opencode'])
+            self.assertEqual(report['installed'],['opencode']); self.assertEqual(report['failed'],{})
+            self.assertTrue((self.home/'.config/opencode/plugins/axon-activity.js').is_symlink())
+            stamp=Path(self.env['AXON_ACTIVITY_HOME'])/'hooks-synced'
+            self.assertTrue(stamp.is_file())
+            again=manage.sync(self.home,apply=True)
+            self.assertTrue(again['skipped'])
+            forced=manage.sync(self.home,apply=True,force=True)
+            self.assertFalse(forced['skipped'])
+            self.assertEqual(forced['installed'],['opencode'])
+    def test_sync_dry_run_writes_nothing(self):
+        with patch.dict(os.environ,self.env):
+            report=manage.sync(self.home,apply=False)
+            self.assertEqual(report['installed'],[])
+        self.assertFalse((self.home/'.config/opencode').exists())
+        self.assertFalse((Path(self.env['AXON_ACTIVITY_HOME'])/'hooks-synced').exists())
+    def test_sync_failure_is_isolated_and_blocks_the_stamp(self):
+        # Malformed agent settings fail only that agent (read before any
+        # change); the stamp stays unwritten so the next run retries.
+        (self.home/'.codex').mkdir(parents=True)
+        fake=self.home/'.local/bin/codex'; fake.parent.mkdir(parents=True,exist_ok=True)
+        fake.write_text('#!/bin/sh\n'); fake.chmod(0o755)
+        (self.home/'.codex/hooks.json').write_text('not json at all')
+        with patch.dict(os.environ,self.env):
+            report=manage.sync(self.home,apply=True)
+            self.assertEqual(sorted(report['agents']),['codex','opencode'])
+            self.assertIn('codex',report['failed'])
+            self.assertEqual(report['installed'],['opencode'])
+        self.assertFalse((Path(self.env['AXON_ACTIVITY_HOME'])/'hooks-synced').exists())
+
+
 if __name__=='__main__': unittest.main()

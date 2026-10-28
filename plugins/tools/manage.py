@@ -3,6 +3,7 @@
 import argparse
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import shlex
 import shutil
@@ -165,6 +166,51 @@ def install(agent, home, apply=False, enable=True, hermes_command='hermes'):
             'hook_review_required':agent=='codex'}
 
 
+# Install locations agents use that user shells add late (or cron never adds).
+EXTRA_BIN_DIRS = ('.local/bin', '.npm-global/bin', '.opencode/bin')
+
+
+def detect_agents(home=Path.home()):
+    """Agents whose binary exists on PATH or in a well-known user bin dir."""
+    home = Path(home).expanduser()
+    path = os.environ.get('PATH', '') + os.pathsep + os.pathsep.join(str(home/d) for d in EXTRA_BIN_DIRS)
+    return [agent for agent in AGENTS if shutil.which(agent, path=path)]
+
+
+def sync(home=Path.home(), apply=False, force=False):
+    """Install hooks for every detected agent; skip cleanly when nothing moved.
+
+    A stamp under the activity state dir records the checkout revision plus
+    the detected agent set, so machine-bootstrap loops (cron, chezmoi
+    run_after) can invoke this on every run and pay only for real changes.
+    """
+    home = Path(home).expanduser().resolve()
+    try:
+        revision = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'],
+                                  capture_output=True, text=True).stdout.strip() or 'unknown'
+    except OSError:
+        revision = 'unknown'
+    agents = detect_agents(home)
+    state = Path(os.environ.get('AXON_ACTIVITY_HOME', home/'.local/state/axon'))
+    stamp = state/'hooks-synced'
+    want = f'{revision} {" ".join(agents)}\n'
+    if not force and agents and stamp.exists() and stamp.read_text() == want:
+        return {'revision': revision, 'agents': agents, 'skipped': True}
+    installed, failed = [], {}
+    for agent in agents:
+        try:
+            install(agent, home, apply=apply)
+            if apply:
+                installed.append(agent)
+        except Exception as error:  # noqa: BLE001 — one bad agent must not stop the rest
+            failed[agent] = str(error)
+    if apply and not failed:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(want)
+    return {'revision': revision, 'agents': agents, 'apply': apply,
+            'installed': installed, 'failed': failed, 'skipped': False}
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     sub=p.add_subparsers(dest='command',required=True)
@@ -172,10 +218,18 @@ def main():
     i=sub.add_parser('install'); i.add_argument('agent',choices=AGENTS); i.add_argument('--home',type=Path,default=Path.home())
     i.add_argument('--apply',action='store_true'); i.add_argument('--no-enable',action='store_true')
     i.add_argument('--hermes-command',default='hermes')
+    s=sub.add_parser('sync',help='install every detected agent; stamp-skipped when unchanged')
+    s.add_argument('--home',type=Path,default=Path.home())
+    s.add_argument('--apply',action='store_true'); s.add_argument('--force',action='store_true')
     args=p.parse_args()
     try:
         if args.command=='build':
             print(json.dumps({a:str(build(a,args.output/f'axon-{a}')) for a in AGENTS},indent=2))
+        elif args.command=='sync':
+            report=sync(args.home,args.apply,args.force)
+            print(json.dumps(report,indent=2))
+            if report['failed']:
+                p.exit(2)
         else:
             print(json.dumps(install(args.agent,args.home,args.apply,not args.no_enable,args.hermes_command),indent=2))
     except (ValueError,OSError,subprocess.CalledProcessError) as error:

@@ -39,6 +39,29 @@ you intend to enable the plugin in the active Hermes profile. Use
 agents or edit Codex trust state. Review/trust changed hooks and reload agents.
 Choose native loading or the managed installer for each agent, not both.
 
+## Keeping machines current
+
+`sync` is the canonical way to keep every machine's agents reporting after
+the checkout moves or a new agent appears. Keep a dedicated clone (never a
+working checkout), then run sync from your bootstrap loop — chezmoi
+`run_after`, cron, login hook — as often as you like:
+
+```sh
+SRC="$HOME/.local/share/axon/src"
+git -C "$SRC" pull -q --ff-only 2>/dev/null || git clone -q https://github.com/ehippy/axon "$SRC"
+python3 "$SRC/plugins/tools/manage.py" sync --apply
+```
+
+Sync detects installed agents (PATH plus `~/.local/bin`,
+`~/.npm-global/bin`, `~/.opencode/bin`), installs for each, and stamps
+`~/.local/state/axon/hooks-synced` (honors `AXON_ACTIVITY_HOME`) with the
+checkout revision plus the detected set — later runs skip when it matches,
+so the cost of frequency is one `git pull`. A failing agent does not block
+the others; the stamp is only written when all succeed, so the next run
+retries. Exit code 2 means something failed; `--force` reinstalls, and
+without `--apply` sync only reports the plan. Restart agents to load hooks;
+Codex will ask to trust changed ones.
+
 Configuration: Python 3.10+, `mosquitto_pub`, `AXON_BROKER`, `AXON_PORT`,
 `AXON_ACTIVITY_HOME`, optional `AXON_MOSQUITTO_PUB`, `AXON_MACHINE`, `AXON_SOURCE`.
 See [reporter documentation](../packages/python/axon_reporter/README.md).
