@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Axon's durable session journal. Standard library + Mosquitto CLI only."""
 from contextlib import contextmanager
+from importlib.resources import files
 import argparse
 import json
 import logging
@@ -125,7 +126,7 @@ class Journal:
             item = json.loads(row[0])
             item['fresh'] = time.time() - item['updated_at'] <= item['lease_seconds']
             item['effective_state'] = item['state'] if item['fresh'] or item['state'] in TERMINAL else 'lost_contact'
-            if any(item.get(k if k != 'state' else 'effective_state') != v for k, v in filters.items() if k in ('source', 'session', 'project', 'agent', 'state')):
+            if any(item.get(k if k != 'state' else 'effective_state') != v for k, v in filters.items() if k in ('source', 'session', 'project', 'agent', 'machine', 'state')):
                 continue
             if filters.get('q', '').lower() not in json.dumps(item).lower():
                 continue
@@ -143,30 +144,52 @@ class Journal:
         for key, op in [('since', '>='), ('until', '<')]:
             if filters.get(key):
                 clauses.append('at' + op + '?'); args.append(float(filters[key]))
-        if filters.get('project'):
-            clauses.append("EXISTS (SELECT 1 FROM sessions s WHERE s.source=events.source AND s.session=events.session AND json_extract(s.payload, '$.project')=?)")
-            args.append(filters['project'])
+        for field in ('project', 'agent', 'machine'):
+            if filters.get(field):
+                clauses.append("EXISTS (SELECT 1 FROM sessions s WHERE s.source=events.source AND s.session=events.session AND json_extract(s.payload, '$." + field + "')=?)")
+                args.append(filters[field])
+        if filters.get('q'):
+            clauses.append('instr(lower(payload), lower(?))>0'); args.append(filters['q'])
+        if filters.get('exclude_kind'):
+            clauses.append('kind<>?'); args.append(filters['exclude_kind'])
+        order = filters.get('order', 'asc')
+        if order not in ('asc', 'desc'):
+            raise ValueError('invalid event order')
+        if filters.get('before'):
+            clauses.append('seq<?'); args.append(max(0, int(filters['before'])))
         after = max(0, int(filters.get('after', 0)))
         limit = min(500, max(1, int(filters.get('limit', 100))))
         clauses.append('seq>?'); args.append(after)
         with self.connect() as db:
-            rows = db.execute('SELECT * FROM events WHERE ' + ' AND '.join(clauses) + ' ORDER BY seq LIMIT ?', args + [limit]).fetchall()
+            rows = db.execute('SELECT * FROM events WHERE ' + ' AND '.join(clauses) + ' ORDER BY seq ' + order.upper() + ' LIMIT ?', args + [limit]).fetchall()
         return [{'seq': r['seq'], 'received_at': r['received'], **json.loads(r['payload'])} for r in rows]
 
 
-def handler(journal):
+def handler(journal, web=True):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             url = urlsplit(self.path)
             filters = {k: v[-1] for k, v in parse_qs(url.query).items()}
             try:
+                assets = {'/': ('index.html', 'text/html; charset=utf-8'),
+                          '/ui/app.css': ('app.css', 'text/css; charset=utf-8'),
+                          '/ui/app.js': ('app.js', 'text/javascript; charset=utf-8')}
+                if web and url.path in assets:
+                    asset, content_type = assets[url.path]
+                    body = files('axon_server').joinpath('web', asset).read_bytes()
+                    self.send_response(200)
+                    self.send_header('Content-Type', content_type)
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers(); self.wfile.write(body); return
                 if url.path == '/health':
                     data = {'ok': True, 'retention_days': journal.retention_days}
                 elif url.path == '/sessions':
                     data = {'sessions': journal.sessions(filters)}
                 elif url.path == '/events':
                     events = journal.events(filters)
-                    data = {'events': events, 'next_after': events[-1]['seq'] if events else int(filters.get('after', 0))}
+                    data = {'events': events, 'next_after': max(e['seq'] for e in events) if events else int(filters.get('after', 0))}
+                    if filters.get('order') == 'desc':
+                        data['next_before'] = events[-1]['seq'] if events else None
                 else:
                     self.send_error(404); return
                 body = json.dumps(data).encode()
@@ -176,6 +199,13 @@ def handler(journal):
                 self.end_headers(); self.wfile.write(body)
             except (ValueError, TypeError):
                 self.send_error(400, 'Invalid query')
+        def end_headers(self):
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.send_header('Referrer-Policy', 'no-referrer')
+            self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+            super().end_headers()
+
         def log_message(self, *_):
             pass
     return Handler
@@ -261,6 +291,7 @@ def main():
     p.add_argument('--port', type=int, default=8510)
     p.add_argument('--retention-days', type=int, default=30, help='History lifetime in days (default 30; 0 disables cleanup)')
     p.add_argument('--no-mqtt', action='store_true')
+    p.add_argument('--no-web', action='store_true', help='Disable the read-only browser UI')
     args = p.parse_args()
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
     if not 1 <= args.broker_port <= 65535:
@@ -276,7 +307,7 @@ def main():
         for target in (mqtt, publish_view):
             thread = threading.Thread(target=target, args=(journal, args.broker, stop, args.broker_port), daemon=True)
             thread.start(); threads.append(thread)
-    server = ThreadingHTTPServer((args.listen, args.port), handler(journal))
+    server = ThreadingHTTPServer((args.listen, args.port), handler(journal, web=not args.no_web))
     def shutdown(*_):
         stop.set()
         threading.Thread(target=server.shutdown, daemon=True).start()

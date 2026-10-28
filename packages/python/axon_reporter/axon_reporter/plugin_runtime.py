@@ -1,6 +1,7 @@
 """Shared, fail-open integration runtime for Axon agent plugins."""
 from contextlib import closing
 import json
+import os
 from pathlib import Path
 import shlex
 import sqlite3
@@ -14,7 +15,8 @@ from . import report
 def context(agent, session):
     if not session:
         return ''
-    command = shlex.join([sys.executable, str(Path(report.__file__).resolve()), '--agent', agent, '--session', str(session)])
+    settings = [f'{name}={os.environ[name]}' for name in ('AXON_BROKER', 'AXON_PORT', 'AXON_MACHINE', 'AXON_SOURCE', 'AXON_ACTIVITY_HOME') if name in os.environ]
+    command = shlex.join((['/usr/bin/env', *settings] if settings else []) + [sys.executable, str(Path(report.__file__).resolve()), '--agent', agent, '--session', str(session)])
     return (
         'Axon activity reporting is enabled for this session. Report a short semantic goal before substantive work, '
         'then significant milestones, direction changes, or blockers. Use your existing terminal tool with this command prefix: '

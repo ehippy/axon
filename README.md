@@ -4,7 +4,8 @@ Axon turns agent activity into a small physical status display. Its components
 can run on different machines or together on one device.
 
 - **[Server](docs/install-server.md):** stores session activity, retains history,
-  and publishes the current session view. No display hardware required.
+  and publishes the current session view. Includes a read-only browser UI for
+  live work, the event timeline, and session details. No display hardware required.
 - **[Handset](docs/install-handset.md):** a Rust application for the PiSugar
   Whisplay display, buttons, battery, and LEDs. No journal database required.
 - **[Agent plugins](docs/install-plugins.md):** self-contained Codex, Claude Code,

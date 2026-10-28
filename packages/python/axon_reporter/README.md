@@ -34,3 +34,9 @@ installations unless you deliberately want them to share an identity.
 The transport is plain MQTT; secure the surrounding deployment as described in
 [architecture](../../../docs/architecture.md). There is no aggregate machine
 status publisher in this release: plugins emit activity events only.
+
+Reporters also read literal `KEY=value` or `export KEY=value` settings from
+`~/.config/axon/env` (or `AXON_CONFIG_FILE`). Environment variables take precedence.
+Set `AXON_BROKER`, `AXON_PORT`, and an explicit friendly `AXON_MACHINE` there.
+The file is read for each report, so label changes need no restart. Changing the
+machine label preserves the generated source identity. Hostnames are never inferred.

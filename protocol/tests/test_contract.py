@@ -32,7 +32,7 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(journal.sessions(), [expected])
 
     def test_reporter_identity_is_stable_private_and_explicitly_overridable(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'AXON_ACTIVITY_HOME':tmp}, clear=True):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'AXON_ACTIVITY_HOME':tmp, 'HOME':tmp}, clear=True):
             first = report.identity('codex', 'chat')
             self.assertEqual(report.identity('codex', 'chat'), first)
             self.assertRegex(first[2], r'^[0-9a-f]{16}$')
@@ -42,6 +42,20 @@ class ContractTests(unittest.TestCase):
                 self.assertEqual(report.identity('codex', 'chat')[::2], ('example-source','example-installation'))
             with patch.dict(os.environ, AXON_SOURCE='bad/topic'):
                 with self.assertRaises(ValueError): report.identity('codex', 'chat')
+
+    def test_saved_settings_refresh_labels_without_changing_source(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'AXON_ACTIVITY_HOME':tmp, 'HOME':tmp}, clear=True):
+            first=report.identity('codex','chat')
+            config=Path(tmp)/'.config/axon/env';config.parent.mkdir(parents=True)
+            config.write_text('export AXON_MACHINE=workstation\nexport AXON_BROKER=journal.example\nAXON_PORT=1884\n')
+            second=report.identity('codex','chat')
+            self.assertEqual(second[:2],first[:2])
+            self.assertEqual(second[2],'workstation')
+            self.assertEqual(report.setting('AXON_BROKER'),'journal.example')
+            config.write_text('AXON_MACHINE=renamed\n')
+            self.assertEqual(report.identity('codex','chat')[2],'renamed')
+            with patch.dict(os.environ,AXON_MACHINE='override'):
+                self.assertEqual(report.identity('codex','chat')[2],'override')
 
     def test_reporter_uses_existing_outbox_without_aggregate_publication(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, AXON_ACTIVITY_HOME=tmp, AXON_MACHINE='example'):

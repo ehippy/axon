@@ -64,3 +64,14 @@ Handset POST `/event` accepts `{"button":"single"}`; valid gestures are single,
 double, long. The GET form is retained for button controllers that cannot quote
 JSON. Long press invokes local shutdown; protect access to this control API.
 The former no-op POST `/status` endpoint is removed.
+
+### Browser timeline queries
+
+`/events` defaults to its original ascending sequence order. Add `order=desc`
+for the newest reported events; the response includes `next_before`. Pass it as
+`before` for the next older page. The original `after` cursor remains available
+for ascending consumers; `next_after` is the highest sequence in the returned
+page. Optional `agent`, `project`, `q`, `since`, `until`, and `exclude_kind`
+filters support the browser timeline. Project/agent filters refer to the current
+session association. Text search treats its query literally. Sequence order is
+arrival order; event timestamps retain the publisher's reported time.

@@ -38,6 +38,9 @@ def verify(release):
             if component == 'reporter':
                 result = subprocess.run([str(target/'bin'/entry),'--session','release-chat','start','--goal','Verify install'],cwd=tmp,env=env,check=True,capture_output=True,text=True)
                 assert json.loads(result.stdout)['queued']
+            if component == 'server':
+                script = "from importlib.resources import files; root=files('axon_server').joinpath('web'); assert all(root.joinpath(name).read_bytes() for name in ('index.html','app.js','app.css'))"
+                subprocess.run([str(executable),'-c',script],cwd=tmp,env=env,check=True)
             print(f'Independent {component} installation passed', flush=True)
     print('Release checksums and independent installs passed')
 

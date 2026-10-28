@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark"><title>Axon — Activity</title>
+<link rel="stylesheet" href="/ui/app.css"><script src="/ui/app.js" defer></script>
+</head>
+<body>
+<aside class="rail">
+  <a class="brand" href="/" aria-label="Axon home"><span class="brand-mark" aria-hidden="true">a<span>·</span></span>axon</a>
+  <div class="rail-caption">ACTIVITY JOURNAL</div>
+  <nav aria-label="Views"><button class="nav-button selected" data-view="now"><span class="nav-icon">◉</span>Board<span id="live-badge" class="nav-count">0</span></button><button class="nav-button" data-view="timeline"><span class="nav-icon">≋</span>Timeline</button></nav>
+  <div class="rail-bottom"><span class="signal-dot"></span><span>Observe, don’t interrupt.</span><div class="read-only">READ-ONLY / V1</div></div>
+</aside>
+<main>
+<header class="page-header">
+ <div class="header-title"><h1 id="page-title">Live board</h1><p id="page-subtitle">Reporting agents, across hosts and projects.</p></div>
+ <section class="metrics" aria-label="Current activity">
+  <button class="metric" data-state="working"><i class="status-dot working"></i><span>Working</span><strong id="count-working">—</strong></button>
+  <button class="metric" data-state="waiting"><i class="status-dot waiting"></i><span>Waiting</span><strong id="count-waiting">—</strong></button>
+  <button class="metric" data-state="blocked"><i class="status-dot blocked"></i><span>Blocked</span><strong id="count-blocked">—</strong></button>
+ </section>
+ <div class="connection"><span id="sync-dot" class="signal-dot"></span><span id="sync-status" role="status">Connecting…</span><button id="refresh" class="icon-button" aria-label="Refresh activity">↻</button></div>
+</header>
+<div id="error" class="error-banner" role="alert" hidden></div>
+<form id="filters" class="pill-filters" aria-label="Filter activity">
+ <div class="filter-row"><span class="filter-label">Hosts</span><div id="host" class="pill-group" role="group" aria-label="Host"></div><span class="filter-label">Agents</span><div id="agent" class="pill-group" role="group" aria-label="Agent"></div></div>
+ <div class="filter-row"><span class="filter-label">Projects</span><div id="project" class="pill-group" role="group" aria-label="Project"></div><div id="period" class="pill-group period-pills" role="group" aria-label="Date range"></div><label class="search-field"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search activity…" aria-label="Search activity"></label></div>
+</form>
+<div class="section-heading"><div><span id="section-title">IN THE ROOM</span><span id="result-count" class="muted"></span></div><div class="section-controls"><button id="clear-state" class="text-button" hidden>Clear state filter ×</button><label id="heartbeat-control" class="check-label" hidden><input id="heartbeats" type="checkbox">Include heartbeats</label><span id="view-note">Refreshes every 5 seconds</span></div></div>
+<div id="activity" class="activity" aria-live="off"><div class="empty"><span class="empty-symbol">◌</span><h2>Listening for activity</h2><p>The journal is connecting.</p></div></div>
+<button id="load-more" class="load-more" hidden>Load earlier events ↓</button>
+<footer><span id="footer-note">Agent-reported activity. Completion requires an explicit outcome and evidence.</span><span>AXON / JOURNAL</span></footer>
+</main>
+<dialog id="session-dialog" aria-labelledby="detail-title">
+ <div class="detail-top"><span class="eyebrow">SESSION / DETAIL</span><button id="close-detail" class="icon-button" aria-label="Close session details">×</button></div>
+ <div id="detail-content"><h2 id="detail-title">Loading session…</h2></div>
+</dialog>
+</body></html>

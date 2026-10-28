@@ -65,6 +65,22 @@ class PluginTests(unittest.TestCase):
         self.assertTrue(json.loads(result.stdout)['queued'])
         self.assertEqual(self.events()[-1]['data']['outcome'], 'Verified bundle')
 
+    def test_report_command_retains_hook_settings_in_clean_shell(self):
+        self.env.update(AXON_BROKER='journal.example', AXON_PORT='1884', AXON_MACHINE='workstation', AXON_SOURCE='codex-stable', UNRELATED_SECRET='never-copy')
+        package=manage.build('codex',self.root/'codex')
+        text=json.loads(self.hook(package,'SessionStart').stdout)['hookSpecificOutput']['additionalContext']
+        command=text.split('command prefix: ',1)[1].split('. Append:',1)[0]
+        self.assertNotIn('never-copy',command)
+        args=shlex.split(command)+['progress','--step','Clean shell delivery']
+        clean={k:v for k,v in self.env.items() if not k.startswith('AXON_')}
+        clean['AXON_MOSQUITTO_PUB']='/missing/axon-pub'
+        subprocess.run(args,cwd=self.root,env=clean,capture_output=True,text=True,check=True)
+        event=self.events()[-1]
+        self.assertEqual(event['source'],'codex-stable')
+        self.assertEqual(event['data']['machine'],'workstation')
+        self.assertIn('AXON_BROKER=journal.example',command)
+        self.assertIn('AXON_PORT=1884',command)
+
     def test_tools_throttled_but_waiting_lifecycle_not_throttled(self):
         package=manage.build('codex',self.root/'codex')
         self.hook(package,'UserPromptSubmit')

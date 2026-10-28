@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import shlex
 import sqlite3
 import subprocess
 import time
@@ -24,12 +25,33 @@ if not __package__:
 from axon_protocol import validate
 
 
+def setting(name, default=None):
+    """Read literal host-local settings without executing shell code; env wins."""
+    if name in os.environ:
+        return os.environ[name]
+    path = Path(os.environ.get('AXON_CONFIG_FILE', Path.home()/'.config/axon/env'))
+    try:
+        for line in path.read_text().splitlines():
+            words = shlex.split(line, comments=True)
+            if words[:1] == ['export']:
+                words = words[1:]
+            if len(words) == 1 and words[0].startswith(name+'='):
+                return words[0].split('=',1)[1]
+    except (OSError, ValueError):
+        pass
+    return default
+
+
 def machine_identity():
-    alias = os.environ.get('AXON_MACHINE')
+    alias = setting('AXON_MACHINE')
     if alias is not None:
         if not re.fullmatch(r'[a-zA-Z0-9_.-]{1,80}', alias):
             raise ValueError('AXON_MACHINE must contain 1..80 letters, digits, dots, underscores or hyphens')
         return alias
+    return installation_identity()
+
+
+def installation_identity():
     path = spool_path().with_name('identity.sqlite3')
     fd = os.open(path, os.O_CREAT | os.O_WRONLY, 0o600)
     os.close(fd)
@@ -41,7 +63,7 @@ def machine_identity():
 
 def identity(agent, raw_session):
     machine = machine_identity()
-    source = os.environ.get('AXON_SOURCE') or agent.lower() + '-' + machine
+    source = setting('AXON_SOURCE') or agent.lower() + '-' + installation_identity()
     if not re.fullmatch(r'[a-zA-Z0-9_.-]{1,128}', source):
         raise ValueError('AXON_SOURCE must contain 1..128 letters, digits, dots, underscores or hyphens')
     session = hashlib.sha256(raw_session.encode()).hexdigest()[:24]
@@ -90,8 +112,8 @@ def drain(path=None):
             if remaining <= 0:
                 break
             try:
-                result = subprocess.run([binary, '-h', os.environ.get('AXON_BROKER', 'localhost'),
-                        '-p', os.environ.get('AXON_PORT', '1883'), '-t', row[1], '-m', row[2], '-q', '1'], timeout=remaining,
+                result = subprocess.run([binary, '-h', setting('AXON_BROKER', 'localhost'),
+                        '-p', setting('AXON_PORT', '1883'), '-t', row[1], '-m', row[2], '-q', '1'], timeout=remaining,
                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 if result.returncode:
                     break

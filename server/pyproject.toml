@@ -13,3 +13,6 @@ axon-server = "axon_server.journal:main"
 
 [tool.setuptools]
 packages = ['axon_server']
+
+[tool.setuptools.package-data]
+axon_server = ["web/*.html", "web/*.css", "web/*.js"]
