@@ -47,14 +47,14 @@ def claude_snapshot(data, now=None):
 def publish(value):
     validate_resource(value)
     path=report.spool_path();fd=os.open(path,os.O_CREAT|os.O_WRONLY,0o600);os.close(fd)
-    signature=json.dumps(value['windows'],sort_keys=True)
+    signature=json.dumps({k:v for k,v in value.items() if k!='observed_at'},sort_keys=True)
     queued=False
     with closing(sqlite3.connect(path,timeout=.2)) as db,db:
         db.execute('CREATE TABLE IF NOT EXISTS outbox(seq INTEGER PRIMARY KEY,topic TEXT,payload TEXT)')
         db.execute('CREATE TABLE IF NOT EXISTS resource_samples(provider TEXT,account TEXT,signature TEXT,sent_at REAL,PRIMARY KEY(provider,account))')
         db.execute('BEGIN IMMEDIATE')
         prior=db.execute('SELECT signature,sent_at FROM resource_samples WHERE provider=? AND account=?',(value['provider'],value['account'])).fetchone()
-        if not prior or prior[0]!=signature or value['observed_at']-prior[1]>=60:
+        if not prior or prior[0]!=signature or value['observed_at']-prior[1]>=(10 if value['provider']=='inference' else 60):
             db.execute('INSERT INTO outbox(topic,payload) VALUES(?,?)',
                 ('axon/resources/'+value['provider']+'/'+value['account'],json.dumps(value)))
             db.execute('INSERT OR REPLACE INTO resource_samples VALUES(?,?,?,?)',

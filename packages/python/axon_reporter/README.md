@@ -86,3 +86,33 @@ For macOS, a user LaunchAgent with `StartInterval=60`, `RunAtLoad=true` and
 Use a PATH containing your Codex installation, or set `AXON_CODEX_BIN`. On Linux,
 a user systemd timer can invoke the same command. Claude readings update after each turn
 while it is in use; inactive accounts can become stale.
+
+## Shared inference servers
+
+Run one `axon-inference --server neuralforge` collector on each inference host.
+Use distinct stable labels (e.g. `neuralforge`, `moar`); each gets its own panel.
+The default GUFO metrics URL is `http://127.0.0.1:13308/metrics`; override with
+`--metrics-url`. Snapshots publish every ten seconds through the existing broker
+settings. `--once --print` inspects a snapshot without publishing.
+
+The collector reads GUFO/llama.cpp request, throughput and KV-cache gauges,
+AMD Linux sysfs GPU counters, and NVIDIA `nvidia-smi` when available. AMD GTT
+(shared GPU allocation) is displayed separately from dedicated VRAM; it is not
+system memory usage. Throughput gauges are backend-reported processing speeds,
+not a guarantee of current wall-clock throughput when the endpoint is idle.
+An unreachable inference endpoint is explicitly offline; a missing collector
+becomes stale after thirty seconds. Unsupported hardware metrics remain Unknown.
+
+Example user systemd unit (adjust the executable path):
+
+```ini
+[Unit]
+Description=Axon inference telemetry
+After=network-online.target
+[Service]
+ExecStart=%h/.local/share/axon/inference/venv/bin/axon-inference --server neuralforge
+Restart=on-failure
+RestartSec=5
+[Install]
+WantedBy=default.target
+```

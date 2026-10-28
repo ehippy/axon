@@ -44,7 +44,8 @@ function quotaCountdown(seconds) {
   return days ? days+'d '+hours%24+'h' : hours ? hours+'h '+minutes%60+'m' : minutes+'m';
 }
 function renderResources(values=[]) {
-  const rows=[...values];
+  const inference=values.filter(row=>row.provider==='inference');
+  const rows=values.filter(row=>row.provider!=='inference');
   for(const provider of ['codex','claude']) if(!rows.some(row=>row.provider===provider)) rows.push({provider,account:'primary',windows:[]});
   rows.sort((a,b)=>['codex','claude'].indexOf(a.provider)-['codex','claude'].indexOf(b.provider) || a.account.localeCompare(b.account));
   const now=Date.now()/1000;
@@ -58,7 +59,7 @@ function renderResources(values=[]) {
       return {name,label:name==='weekly'?'Weekly':minutes<60?minutes+'m':minutes/60+'h',remaining,
         reset:expired?'Awaiting update':window?.resets_at ? 'Resets in '+quotaCountdown(window.resets_at-now) : 'Reset unknown'};
     })}));
-  const signature=JSON.stringify(view);if(state.resourceSignature===signature)return;state.resourceSignature=signature;
+  const signature=JSON.stringify([view,inference.map(row=>({...row,stale:now-row.observed_at>30}))]);if(state.resourceSignature===signature)return;state.resourceSignature=signature;
   const fragment=document.createDocumentFragment();
   for(const row of view){
     const panel=node('article','resource-panel agent-'+row.provider+(row.stale?' stale':''));
@@ -73,6 +74,29 @@ function renderResources(values=[]) {
       box.append(label,bar,node('div','quota-reset',window.reset));windows.append(box);
     }
     panel.append(windows);fragment.append(panel);
+  }
+  for(const row of inference){
+    const stale=now-row.observed_at>30;
+    const panel=node('article','resource-panel inference-panel'+(stale?' stale':''));
+    const header=node('div','resource-heading');
+    header.append(node('h2','',row.account+' · Inference'),node('span','resource-age',stale?'Stale · '+relative(row.observed_at):row.online?'Live':'Endpoint offline'));
+    panel.append(header);
+    const stats=node('div','inference-stats');
+    const show=(label,value)=>stats.append(node('div','inference-stat',label+' '+value));
+    const fmt=(v,suffix='')=>v==null?'Unknown':Number(v).toFixed(1)+suffix;
+    if(row.online){
+      show('Running',row.metrics.running??'Unknown');show('Queued',row.metrics.queued??'Unknown');
+      show('Generation',fmt(row.metrics.generation_tps,' tok/s'));show('Prompt',fmt(row.metrics.prompt_tps,' tok/s'));
+      show('KV cache',fmt(row.metrics.kv_cache_percent,'%'));
+    }
+    for(const gpu of row.gpus){
+      show(gpu.name,fmt(gpu.utilization_percent,'% busy'));
+      show('Power',fmt(gpu.power_watts,' W'));show('Temperature',fmt(gpu.temperature_c,' °C'));
+      const memory=(used,total)=>used==null||total==null?'Unknown':fmt(used/1073741824)+' / '+fmt(total/1073741824)+' GiB';
+      show('VRAM',memory(gpu.memory_used_bytes,gpu.memory_total_bytes));
+      if(gpu.shared_total_bytes!=null)show('Shared GPU memory',memory(gpu.shared_used_bytes,gpu.shared_total_bytes));
+    }
+    panel.append(stats);fragment.append(panel);
   }
   $('resources').replaceChildren(fragment);
 }

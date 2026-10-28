@@ -9,6 +9,7 @@ requires-python = ">=3.10"
 dependencies = ['axon-protocol==0.3.0']
 
 [project.scripts]
+axon-inference = "axon_reporter.inference:main"
 axon-report = "axon_reporter.report:main"
 axon-resources = "axon_reporter.resources:main"
 

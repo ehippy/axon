@@ -137,7 +137,7 @@ live stream reconnects, when a tab becomes visible, and periodically as a fallba
 The URL preserves the view and filters; unsent card/detail messages are carried
 across the reload in that tab's session storage. An in-flight send finishes first.
 
-## Inference resources
+## Account quota resources
 
 The standing Codex and Claude panels show remaining short-window and weekly
 allowance, reset countdowns and observation age. They are account-level snapshots,
@@ -150,3 +150,22 @@ Install the reporter wheel and configure its
 The server's MQTT collector subscribes to `axon/resources/+/+`; `/resources` serves
 the latest durable snapshot per provider/account and resource changes signal SSE.
 There is no additional browser polling service or provider login on the server.
+
+## Shared inference servers
+
+Every shared inference host runs one `axon-inference --server <label>` collector and
+displays its own panel: running and queued requests, generation and prompt speed,
+KV-cache use, then per-GPU utilization, power, temperature and memory. The label is
+a stable identity (`neuralforge`, `moar`), so another server means another panel
+rather than another integration.
+
+Hardware counters are read on the host: AMD sysfs (`gpu_busy_percent`, VRAM and GTT
+counters, hwmon temperature and power) and `nvidia-smi` where present. Dedicated
+VRAM and GTT allocation are shown separately because an APU keeps its weights in
+GTT; neither is a spending limit. Request and throughput figures come from the
+GUFO/llama.cpp metrics endpoint, `http://127.0.0.1:13308/metrics` by default.
+
+A snapshot publishes about every ten seconds and its panel turns Stale after thirty
+seconds without one; an unreachable endpoint reports Offline while hardware readings
+carry on. Load stays aggregate: it cannot say which of Hermes, Pi or OpenCode caused
+it. See the reporter [inference collectors](../packages/python/axon_reporter/README.md#shared-inference-servers).
