@@ -18,7 +18,7 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import urlopen
 
 from axon_protocol import STATES, FIELDS, TERMINAL, validate
@@ -351,7 +351,7 @@ def request_update(root):
     return update_status(root)
 
 
-def handler(journal, web=True, token=None, stop=None, updater=None):
+def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_url=None, inference=()):
     revision = server_revision()
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -373,6 +373,14 @@ def handler(journal, web=True, token=None, stop=None, updater=None):
                     data = {'ok': True, 'retention_days': journal.retention_days}
                 elif url.path == '/resources':
                     data = {'resources': journal.resources()}
+                elif url.path == '/resources/history':
+                    if not prometheus_url or filters.get('account') not in inference:
+                        self.send_error(404); return
+                    span = int(filters.get('range', 3600))
+                    try:
+                        data = inference_history(prometheus_url, filters['account'], span)
+                    except (OSError, ValueError, LookupError, TypeError):
+                        self.send_error(502, 'Prometheus unavailable'); return
                 elif url.path == '/update' and updater:
                     data = update_status(updater)
                 elif url.path == '/sessions':
@@ -574,18 +582,112 @@ def held_gpus(journal, label, hold=GPU_HOLD):
     return prior['gpus'] if 0 <= time.time() - prior['observed_at'] <= hold else []
 
 
-def poll_inference(journal, endpoints, stop, interval=10, timeout=4):
-    """Pull what each inference server already reports about itself; nothing runs on that host."""
+# llama.cpp-style servers reset their tokens-per-second gauges on every /metrics read, so a second
+# reader beside Prometheus garbles both. Rates over the running counters stay right for any reader.
+PROMETHEUS_LIVE = {
+    'running': 'sum(llamacpp:requests_processing{{{sel}}})',
+    'queued': 'sum(llamacpp:requests_deferred{{{sel}}})',
+    'generation_tps': 'sum(rate(llamacpp:tokens_predicted_total{{{sel}}}[1m]))/sum(rate(llamacpp:tokens_predicted_seconds_total{{{sel}}}[1m]))',
+    'prompt_tps': 'sum(rate(llamacpp:prompt_tokens_total{{{sel}}}[1m]))/sum(rate(llamacpp:prompt_seconds_total{{{sel}}}[1m]))',
+    'kv_cache_percent': '100*max(llamacpp:kv_cache_usage_ratio{{{sel}}})',
+    'device_losses': 'sum(gufo_device_lost_total{{{sel}}})',
+}
+# Each trend is one aggregate per step: peaks for load, averages for hardware, so a step never hides a burst.
+AMD_HWMON = '* on(instance,chip) group_left node_hwmon_chip_names{{chip_name="amdgpu"}}'
+PROMETHEUS_HISTORY = {
+    'output_tps': 'sum(rate(llamacpp:tokens_predicted_total{{{sel}}}[{window}]))',
+    'running': 'sum(max_over_time(llamacpp:requests_processing{{{sel}}}[{window}]))',
+    'queued': 'sum(max_over_time(llamacpp:requests_deferred{{{sel}}}[{window}]))',
+    'kv_cache_percent': '100*max(max_over_time(llamacpp:kv_cache_usage_ratio{{{sel}}}[{window}]))',
+    'gpu_busy_percent': 'avg(avg_over_time(node_drm_gpu_busy_percent{{{sel}}}[{window}]))',
+    'gpu_power_watts': 'max(avg_over_time(node_hwmon_power_average_watt{{{sel}}}[{window}]) '+AMD_HWMON+')',
+    'gpu_temperature_c': 'max(avg_over_time(node_hwmon_temp_celsius{{{sel}}}[{window}]) '+AMD_HWMON+')',
+}
+HISTORY_RANGE = (900, 30*86400)
+HISTORY_POINTS = 120
+
+
+class Unscraped(LookupError):
+    """Prometheus answers but holds no fresh sample of this server."""
+
+
+def prometheus(base, path, params, timeout=4):
+    """One Prometheus API call; labels are already restricted to INFERENCE_LABEL, so selectors stay literal."""
+    with urlopen(base.rstrip('/')+path+'?'+urlencode(params), timeout=timeout) as response:
+        body = json.loads(response.read(8388608).decode('utf-8', 'replace'))
+    if body.get('status') != 'success':
+        raise ValueError('Prometheus refused the query')
+    return body['data']['result']
+
+
+def finite(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number and number not in (float('inf'), float('-inf')) else None
+
+
+def prometheus_metrics(base, label, timeout=4):
+    """Read one server's live load from Prometheus. No series means Prometheus has no fresh scrape of it."""
+    sel = f'instance="{label}"'
+    metrics = {}
+    for field, query in PROMETHEUS_LIVE.items():
+        result = prometheus(base, '/api/v1/query', {'query': query.format(sel=sel)}, timeout)
+        if not result:
+            if field == 'running':
+                raise Unscraped(label)
+            continue
+        value = finite(result[0]['value'][1])
+        # 0/0 is a minute with nothing generated, which the endpoint itself reports as zero.
+        if value is None and field.endswith('_tps'):
+            value = 0.0
+        if value is not None and value >= 0:
+            metrics[field] = min(value, 100.0) if field.endswith('_percent') else value
+    return metrics
+
+
+def inference_history(base, label, seconds, end=None, timeout=8):
+    """Trends for one server over the requested span, at most HISTORY_POINTS steps each."""
+    seconds = max(HISTORY_RANGE[0], min(HISTORY_RANGE[1], int(seconds)))
+    step = max(15, seconds // HISTORY_POINTS)
+    end = int(end or time.time()) // step * step
+    window = f'{max(step, 60)}s'
+    sel = f'instance="{label}"'
+    series = {}
+    for name, query in PROMETHEUS_HISTORY.items():
+        result = prometheus(base, '/api/v1/query_range', {'query': query.format(sel=sel, window=window),
+            'start': end-seconds, 'end': end, 'step': step}, timeout)
+        if result:
+            series[name] = [[float(at), finite(value)] for at, value in result[0]['values']]
+    return {'account': label, 'range': seconds, 'step': step, 'series': series}
+
+
+def endpoint_metrics(url, timeout=4):
+    with urlopen(url, timeout=timeout) as response:
+        return parse_inference_metrics(response.read(1048576).decode('utf-8', 'replace'))
+
+
+def poll_inference(journal, endpoints, stop, interval=10, timeout=4, source=None):
+    """Pull what each inference server already reports about itself; nothing runs on that host.
+    With a Prometheus source, read it there and touch the endpoint only when Prometheus cannot answer."""
     while not stop.is_set():
         for label, url in endpoints.items():
             online, metrics = False, {}
             try:
-                with urlopen(url, timeout=timeout) as response:
-                    metrics = parse_inference_metrics(response.read(1048576).decode('utf-8', 'replace'))
+                metrics = prometheus_metrics(source, label, timeout) if source else endpoint_metrics(url, timeout)
                 online = True
-            except (OSError, ValueError):
-                # Requested endpoint failing is normal operation; the URL may carry a token, so log the label.
-                logging.warning('Inference server %s is not serving usable metrics', label)
+            except (OSError, ValueError, LookupError, TypeError) as exc:
+                if source and not isinstance(exc, Unscraped):
+                    logging.warning('Prometheus could not report %s; asking the server directly', label)
+                if source:
+                    try:
+                        metrics = endpoint_metrics(url, timeout); online = True
+                    except (OSError, ValueError):
+                        pass
+                if not online:
+                    # Requested endpoint failing is normal operation; the URL may carry a token, so log the label.
+                    logging.warning('Inference server %s is not serving usable metrics', label)
             try:
                 journal.ingest_resource(dict(version=1, provider='inference', account=label,
                     observed_at=time.time(), online=online, metrics=metrics, gpus=held_gpus(journal, label)))
@@ -621,6 +723,8 @@ def main():
                    help='Poll the metrics an inference server exposes and report them as LABEL; repeat per server')
     p.add_argument('--inference-interval', type=float, default=10,
                    help='Seconds between inference polls (default 10; minimum 5)')
+    p.add_argument('--prometheus', metavar='URL',
+                   help='Prometheus that scrapes the --inference servers under instance=LABEL; read live load there and serve its history')
     p.add_argument('--updater', type=Path, default=os.environ.get('AXON_UPDATER_ROOT'),
                    help='Deploy root kept by axon_update.py; enables GET /update and token-protected POST /update')
     args = p.parse_args()
@@ -633,6 +737,8 @@ def main():
         inference = inference_endpoints(args.inference)
     except ValueError as exc:
         p.error(str(exc))
+    if args.prometheus and (urlsplit(args.prometheus).scheme not in ('http', 'https') or not urlsplit(args.prometheus).netloc):
+        p.error('--prometheus must be a complete http(s) URL')
     if not args.inference_interval >= 5:
         p.error('--inference-interval must be at least 5 seconds')
     token = Path(args.input_token_file).read_text().strip() if args.input_token_file else None
@@ -648,10 +754,11 @@ def main():
             thread = threading.Thread(target=target, args=(journal, args.broker, stop, args.broker_port), daemon=True)
             thread.start(); threads.append(thread)
     if inference:
-        poller = threading.Thread(target=poll_inference, args=(journal, inference, stop, args.inference_interval), daemon=True)
+        poller = threading.Thread(target=poll_inference, args=(journal, inference, stop, args.inference_interval, 4, args.prometheus), daemon=True)
         poller.start(); threads.append(poller)
-        logging.info('Polling inference servers: %s', ', '.join(sorted(inference)))
-    server = ThreadingHTTPServer((args.listen, args.port), handler(journal, web=not args.no_web, token=token, stop=stop, updater=args.updater))
+        logging.info('Polling inference servers%s: %s', ' through Prometheus' if args.prometheus else '', ', '.join(sorted(inference)))
+    server = ThreadingHTTPServer((args.listen, args.port), handler(journal, web=not args.no_web, token=token, stop=stop, updater=args.updater,
+        prometheus_url=args.prometheus, inference=inference))
     def shutdown(*_):
         stop.set()
         journal.changed()  # release open streams

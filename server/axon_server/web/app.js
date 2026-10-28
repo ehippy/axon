@@ -64,7 +64,7 @@ function renderResources(values=[]) {
       return {name,label:name==='weekly'?'Weekly':minutes<60?minutes+'m':minutes/60+'h',remaining,
         reset:expired?'Awaiting update':window?.resets_at ? 'Resets in '+quotaCountdown(window.resets_at-now) : 'Reset unknown'};
     })};});
-  const signature=JSON.stringify([view,inference.map(row=>({...row,stale:now-row.observed_at>30}))]);if(state.resourceSignature===signature)return;state.resourceSignature=signature;
+  const signature=JSON.stringify([view,inference.map(row=>({...row,stale:now-row.observed_at>30})),state.historyStamp]);if(state.resourceSignature===signature)return;state.resourceSignature=signature;
   const fragment=document.createDocumentFragment();
   for(const row of view){
     const panel=node('article','resource-panel agent-'+row.provider+(row.stale?' stale':'')+(row.unavailable?' unavailable':''));
@@ -120,11 +120,15 @@ function renderResources(values=[]) {
       show('VRAM',memory(gpu.memory_used_bytes,gpu.memory_total_bytes));
       if(gpu.shared_total_bytes!=null)show('Shared GPU memory',memory(gpu.shared_used_bytes,gpu.shared_total_bytes));
     }
-    panel.append(stats);fragment.append(panel);
+    panel.append(stats);
+    if(state.history?.[row.account]) panel.append(trendCharts(state.history[row.account]));
+    fragment.append(panel);
   }
   // Every quota and inference panel gets its own column: one row, however many there are.
   const row=$('resources');
   row.style.setProperty('--resource-count',String(Math.max(1,fragment.children.length)));
+  // Phones give inference panels their own full rows, so only the quota panels share the first.
+  row.style.setProperty('--quota-count',String(Math.max(1,view.length)));
   row.replaceChildren(fragment);
 }
 function statusName(value) { return Object.hasOwn(LABEL, value) ? value : 'lost_contact'; }
@@ -153,6 +157,67 @@ function capacityBar(row, used, label, note) {
   else bar.setAttribute('aria-valuetext','Unknown');
   box.append(caption, bar, node('div','quota-reset',note));
   return box;
+}
+// One small chart per measure, each on its own zero-based scale; a percentage keeps its full 0-100 scale.
+const TRENDS=[['output_tps','Output',' tok/s'],['running','Running',''],['queued','Queued',''],['kv_cache_percent','KV cache','%',100],
+  ['gpu_busy_percent','GPU busy','%',100],['gpu_power_watts','GPU power',' W'],['gpu_temperature_c','GPU temp',' °C']];
+function trendCharts(history) {
+  const box=node('div','inference-trends');
+  const end=Math.max(...Object.values(history.series).flatMap(points=>points.map(point=>point[0])));
+  const start=end-history.range;
+  for (const [name,label,unit,ceiling] of TRENDS) {
+    const points=(history.series[name]||[]).filter(point=>point[1]!=null);
+    // An idle queue is the normal case; a flat zero chart there is noise.
+    if (!points.length || (name==='queued' && !points.some(point=>point[1]>0))) continue;
+    const peak=Math.max(...points.map(point=>point[1])), top=ceiling ?? (peak>0 ? peak*1.1 : 1);
+    const value=v=>(v>=100||Number.isInteger(v) ? Math.round(v) : v.toFixed(1))+unit;
+    // Live readings sit in the stats above; a long span's last step is an average, so the chart leads with its peak.
+    const resting='peak '+value(peak), span='last '+horizonName(history.range);
+    const chart=node('figure','trend'), caption=node('figcaption','trend-label'), reading=node('strong','',resting);
+    caption.append(node('span','',label),reading);
+    const W=240, H=34, x=at=>(at-start)/(end-start||1)*W, y=v=>H-1-Math.min(v,top)/top*(H-2);
+    // Break the line where Prometheus has no sample instead of drawing across the gap.
+    const runs=[];let run=[];
+    for (const [i,point] of points.entries()) {
+      if (i && point[0]-points[i-1][0]>history.step*1.5) {runs.push(run);run=[];}
+      run.push(point);
+    }
+    runs.push(run);
+    const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+    svg.setAttribute('viewBox',`0 0 ${W} ${H}`);svg.setAttribute('preserveAspectRatio','none');
+    svg.setAttribute('role','img');svg.setAttribute('aria-label',`${label}, ${span}: ${resting}`);
+    const draw=(tag,cls,attrs)=>{const el=document.createElementNS('http://www.w3.org/2000/svg',tag);el.setAttribute('class',cls);for(const k in attrs)el.setAttribute(k,attrs[k]);svg.append(el);return el;};
+    draw('line','trend-base',{x1:0,x2:W,y1:H-.5,y2:H-.5});
+    for (const part of runs) {
+      const line=part.map(point=>x(point[0]).toFixed(1)+','+y(point[1]).toFixed(1)).join(' ');
+      draw('polygon','trend-area',{points:`${x(part[0][0]).toFixed(1)},${H} ${line} ${x(part[part.length-1][0]).toFixed(1)},${H}`});
+      draw('polyline','trend-line',{points:part.length>1 ? line : line+' '+(x(part[0][0])+1).toFixed(1)+','+y(part[0][1]).toFixed(1)});
+    }
+    const cursor=draw('line','trend-cursor',{x1:0,x2:0,y1:0,y2:H});
+    const note=node('div','trend-note',span);
+    svg.addEventListener('pointermove',event=>{
+      const box=svg.getBoundingClientRect(), at=start+(event.clientX-box.left)/box.width*(end-start);
+      const point=points.reduce((best,p)=>Math.abs(p[0]-at)<Math.abs(best[0]-at)?p:best);
+      cursor.setAttribute('x1',x(point[0]));cursor.setAttribute('x2',x(point[0]));chart.classList.add('hover');
+      reading.textContent=value(point[1]);note.textContent=history.range>86400 ? new Date(point[0]*1000).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : clock(point[0]);
+    });
+    svg.addEventListener('pointerleave',()=>{chart.classList.remove('hover');reading.textContent=resting;note.textContent=span;});
+    chart.append(caption,svg,note);box.append(chart);
+  }
+  return box;
+}
+function horizonName(seconds) { return seconds>=86400 ? seconds/86400+'d' : seconds>=3600 ? seconds/3600+'h' : seconds/60+'m'; }
+// Trends come from the server's Prometheus; a server without one answers 404 and the panel keeps its live readings only.
+async function loadHistory() {
+  const accounts=(state.resources||[]).filter(row=>row.provider==='inference').map(row=>row.account);
+  if (state.historyOff || !accounts.length) return;
+  state.historyAt=Date.now();
+  const range=$('period').value==='all' ? 2592000 : Number($('period').value), history={};
+  for (const account of accounts) {
+    try { history[account]=await api('/resources/history',new URLSearchParams({account,range})); }
+    catch (error) { if (/ 404\./.test(error.message)) state.historyOff=true; }
+  }
+  state.history=history;state.historyStamp=state.historyAt;renderResources(state.resources);
 }
 function inferenceAge(at) {
   // Inference turns stale in 30s, too soon for relative()'s minute floor to read as stale.
@@ -448,6 +513,7 @@ async function refresh() {
     state.sessions=sessions.sessions;
     if(resources) state.resources=resources.resources;
     renderResources(state.resources);
+    if (!state.historyAt) loadHistory();
     options('host',state.sessions.map(s=>s.machine),'All hosts'); options('project',[...state.sessions].sort((a,b)=>b.updated_at-a.updated_at).map(s=>s.project),'All projects'); options('agent',state.sessions.map(s=>s.agent),'All agents');
     if (events) { state.events=events.events;state.before=events.next_before;state.more=events.events.length===PAGE; }
     state.synced=Date.now(); $('error').hidden=true; $('sync-dot').classList.remove('offline'); $('sync-status').textContent=state.live ? 'Live' : 'Polling · just synced';
@@ -571,6 +637,7 @@ $('nav-search').addEventListener('toggle',()=>{if($('nav-search').open) $('searc
 $('nav-search').addEventListener('keydown',event=>{if(event.key==='Escape') {event.preventDefault();$('nav-search').open=false;$('nav-search').querySelector('summary').focus();}});
 $('search').addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(filtersChanged,250);});
 for (const id of ['host','project','agent','period','heartbeats']) $(id).addEventListener('change',filtersChanged);
+$('period').addEventListener('change',loadHistory);
 document.querySelectorAll('[data-view]').forEach(button=>button.addEventListener('click',()=>{state.view=button.dataset.view;state.filter='';filtersChanged();}));
 document.querySelectorAll('[data-state]').forEach(button=>button.addEventListener('click',()=>{state.view='now';state.filter=state.filter===button.dataset.state?'':button.dataset.state;route();render();}));
 $('clear-state').addEventListener('click',()=>{state.filter='';route();render();});
@@ -612,6 +679,7 @@ document.addEventListener('visibilitychange',()=>{if (!document.hidden) {checkVe
 setInterval(()=>{
   renderResources(state.resources);
   if (!state.versionChecked || Date.now()-state.versionChecked>=60000) checkVersion();
+  if (!document.hidden && state.historyAt && Date.now()-state.historyAt>=60000) loadHistory();
   document.querySelectorAll('time[data-at]').forEach(el=>{el.textContent=relative(el.dataset.at);});
   if (document.hidden || historyPaused() || state.refreshing) return;
   // Poll while the stream is down; when live, a slow refresh still catches lease expiry, which no event announces.

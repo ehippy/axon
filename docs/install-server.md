@@ -218,6 +218,32 @@ temperature and power) and `nvidia-smi` where present. Dedicated VRAM and GTT
 allocation are shown separately because an APU keeps its weights in GTT; neither is a
 spending limit. One host may report both ways; whichever read arrived last wins.
 
+### Through Prometheus
+
+If a Prometheus already scrapes those servers, point Axon at it instead:
+
+```sh
+axon-server --inference neuralforge=http://neuralforge:13308/metrics \
+  --prometheus http://localhost:9090
+```
+
+Prometheus must label each server's series `instance="<label>"`, the same label
+given to `--inference`. llama.cpp-style servers reset their tokens-per-second gauges
+whenever `/metrics` is read, so two readers garble each other's speed. With
+`--prometheus`, Axon stops reading the endpoint and computes speed from the running
+counters (`rate()` over a minute). It reads the endpoint directly only when Prometheus
+is unreachable or holds no fresh scrape of that label.
+
+Prometheus also adds trends. Each panel shows small charts for output tokens per
+second, running and queued requests, KV cache, and GPU busy, power and temperature
+over the top bar's time horizon (Any time shows 30 days). These come from
+`GET /resources/history?account=<label>&range=<seconds>` in at most 120 steps. Load
+charts show each step's peak and hardware charts its average. GPU power and
+temperature come from node-exporter's `amdgpu` hwmon sensors on the same `instance`.
+GPU busy appears once node-exporter runs with `--collector.drm`. A chart with no
+series is left out, and without `--prometheus` the endpoint returns 404 and panels
+show live readings only.
+
 A panel turns Stale thirty seconds after the last reading. An endpoint that answers
 with anything other than usable metrics is Offline, not a row of zeros. Load stays
 aggregate: it cannot say which of Hermes, Pi or OpenCode caused it. See the reporter
