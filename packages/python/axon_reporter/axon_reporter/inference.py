@@ -8,23 +8,10 @@ import subprocess
 import sys
 import time
 from urllib.request import urlopen
-from axon_protocol.resources import validate_resource
+from axon_protocol.resources import parse_inference_metrics, validate_resource
 from .resources import publish
 
-NAMES={'llamacpp:requests_processing':'running','llamacpp:requests_deferred':'queued',
-       'llamacpp:prompt_tokens_seconds':'prompt_tps','llamacpp:predicted_tokens_seconds':'generation_tps',
-       'llamacpp:kv_cache_usage_ratio':'kv_cache_percent','gufo_device_lost_total':'device_losses'}
-
-def parse_metrics(text):
-    result={}
-    for line in text.splitlines():
-        parts=line.split()
-        if len(parts)<2 or parts[0] not in NAMES:continue
-        try:v=float(parts[1])
-        except ValueError:continue
-        if math.isfinite(v) and v>=0:result[NAMES[parts[0]]]=v*(100 if NAMES[parts[0]]=='kv_cache_percent' else 1)
-    if not result:raise ValueError('No supported inference metrics')
-    return result
+parse_metrics=parse_inference_metrics
 
 def read_number(path, scale=1):
     try:return float(path.read_text().strip())/scale

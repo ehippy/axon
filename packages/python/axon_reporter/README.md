@@ -96,11 +96,17 @@ while it is in use; inactive accounts can become stale.
 
 ## Shared inference servers
 
-Run one `axon-inference --server neuralforge` collector on each inference host.
-Use distinct stable labels (e.g. `neuralforge`, `moar`); each gets its own panel.
-The default GUFO metrics URL is `http://127.0.0.1:13308/metrics`; override with
-`--metrics-url`. Snapshots publish every ten seconds through the existing broker
-settings. `--once --print` inspects a snapshot without publishing.
+Run this collector on the inference host when you want **GPU hardware** numbers.
+Requests, throughput and KV cache do not need it: the Axon server can poll the same
+metrics endpoint itself with `--inference label=url`, so see the
+[server guide](../../../docs/install-server.md#shared-inference-servers) before
+installing anything on the GPU machine.
+
+Use one stable label per server (`neuralforge`, `moar`); the same label as a polling
+option means the panel keeps one identity whichever read arrived last. The default
+GUFO metrics URL is `http://127.0.0.1:13308/metrics`; override with `--metrics-url`.
+Snapshots publish every ten seconds through the existing broker settings. `--once
+--print` inspects a snapshot without publishing.
 
 The collector reads GUFO/llama.cpp request, throughput and KV-cache gauges,
 AMD Linux sysfs GPU counters, and NVIDIA `nvidia-smi` when available. AMD GTT
