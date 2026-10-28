@@ -123,6 +123,28 @@ class PluginTests(unittest.TestCase):
             self.assertFalse(any('/home/me/.local/share/axon/' in c for c in commands))
             self.assertTrue((home/f'.{agent}/skills/axon-activity/SKILL.md').exists())
             self.assertTrue(list((home/'.local/state/axon/install-backups').iterdir()))
+    def test_install_opts_the_host_into_a_readable_label_once(self):
+        config=self.root/'reporter-env'
+        home=self.root/'pinned'
+        settings=home/'.codex/hooks.json'; settings.parent.mkdir(parents=True); settings.write_text('{"hooks":{}}')
+        with patch.dict(os.environ,{'AXON_CONFIG_FILE':str(config),'AXON_ACTIVITY_HOME':str(self.root/'state')}):
+            # A dry run reports the label it would add and writes nothing.
+            plan=manage.install('codex',home,apply=False)
+            self.assertEqual(plan['machine_label'],{'value':'auto','path':str(config),'written':False,'hostname':plan['machine_label']['hostname']})
+            self.assertFalse(config.exists())
+            manage.install('codex',home,apply=True)
+            self.assertEqual(config.read_text(),'AXON_MACHINE=auto\n')
+            self.assertEqual(config.stat().st_mode & 0o777,0o600)
+            # Repeat installs never duplicate the setting.
+            manage.install('codex',home,apply=True)
+            self.assertEqual(config.read_text(),'AXON_MACHINE=auto\n')
+            # A pinned label and unrelated settings are left exactly as written.
+            original='export AXON_BROKER=journal.example\nAXON_MACHINE=workstation\n'
+            config.write_text(original)
+            self.assertEqual(manage.install('codex',home,apply=True)['machine_label'],
+                             {'value':'workstation','path':str(config),'written':False,'hostname':manage.hostname_preview()})
+            self.assertEqual(config.read_text(),original)
+
     def test_invalid_settings_leave_configuration_and_package_untouched(self):
         settings=self.root/'.codex/hooks.json'; settings.parent.mkdir(); settings.write_text('{"hooks":{"Stop":"invalid"}}')
         with self.assertRaises(ValueError): manage.install('codex',self.root,apply=True)
@@ -382,6 +404,18 @@ class SyncTests(unittest.TestCase):
             self.assertIn('codex',report['failed'])
             self.assertEqual(report['installed'],['opencode'])
         self.assertFalse((Path(self.env['AXON_ACTIVITY_HOME'])/'hooks-synced').exists())
+
+    def test_sync_adds_the_host_label_even_when_hooks_are_current(self):
+        config=self.root/'reporter-env'
+        with patch.dict(os.environ,{**self.env,'AXON_CONFIG_FILE':str(config)}):
+            manage.sync(self.home,apply=True)
+            config.unlink()
+            self.assertTrue(manage.sync(self.home,apply=True)['skipped'])
+            self.assertEqual(manage.read_machine_label(config),'auto')
+            # A dry run adds nothing, so a bootstrap loop cannot write unexpectedly.
+            config.unlink()
+            self.assertTrue(manage.sync(self.home,apply=False)['skipped'])
+            self.assertFalse(config.exists())
 
     def test_sync_cli_skip_path_exits_zero(self):
         # main() must tolerate the 'skipped' report shape (no failure map).

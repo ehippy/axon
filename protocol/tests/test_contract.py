@@ -75,6 +75,30 @@ class ContractTests(unittest.TestCase):
                 config.unlink()
                 self.assertIsNone(report.machine_kind())
 
+    def test_auto_machine_label_uses_the_hostname_and_never_breaks_reporting(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'AXON_ACTIVITY_HOME':tmp, 'HOME':tmp, 'AXON_MACHINE':'auto'}, clear=True):
+            with patch.object(report.socket, 'gethostname', return_value='Dev-Box.example'):
+                source, session, machine = report.identity('codex', 'chat')
+                self.assertEqual(machine, 'Dev-Box')
+                # Only the host label changes; source identity stays the private install ID.
+                self.assertEqual(source, 'codex-'+report.installation_identity())
+                self.assertEqual(session, report.identity('codex', 'chat')[1])
+            for alias in ('AUTO', ' auto '):
+                with patch.dict(os.environ, AXON_MACHINE=alias), patch.object(report.socket, 'gethostname', return_value='Dev-Box'):
+                    self.assertEqual(report.machine_identity(), 'Dev-Box')
+            # An unusable or undeterminable host name falls back instead of failing.
+            for broken in ('', '   ', '!!!', '.', '-', '@#$%'):
+                with patch.object(report.socket, 'gethostname', return_value=broken):
+                    self.assertEqual(report.machine_identity(), report.installation_identity())
+            with patch.object(report.socket, 'gethostname', side_effect=OSError):
+                self.assertEqual(report.machine_identity(), report.installation_identity())
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'AXON_ACTIVITY_HOME':tmp, 'HOME':tmp}, clear=True):
+            # No label set at all still means a private random identity.
+            self.assertRegex(report.machine_identity(), r'^[0-9a-f]{16}$')
+            with patch.dict(os.environ, AXON_MACHINE='bad label!'):
+                with self.assertRaisesRegex(ValueError, 'auto'):
+                    report.machine_identity()
+
     def test_reporter_uses_existing_outbox_without_aggregate_publication(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, AXON_ACTIVITY_HOME=tmp, AXON_MACHINE='example'):
             db = Path(tmp)/'outbox.sqlite3'

@@ -23,7 +23,10 @@ that directory yourself. Restart Pi (or `/reload`) afterwards.
 
 Reporter settings come from the Pi process environment: `AXON_BROKER`,
 `AXON_PORT`, `AXON_MACHINE`, `AXON_SOURCE`, `AXON_ACTIVITY_HOME`, and
-optionally `AXON_PYTHON` (defaults to `python3`).
+optionally `AXON_PYTHON` (defaults to `python3`). `AXON_MACHINE=auto` labels
+events with the host name and is what the managed installer writes when no label
+exists; saved settings in `~/.config/axon/env` are read per report, so changing
+one needs no Pi restart.
 
 Pitfall: launching Pi from a terminal that already exports `AXON_SOURCE`
 (for example a Hermes or Claude Code session with Axon reporting) makes the

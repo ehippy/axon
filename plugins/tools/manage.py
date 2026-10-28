@@ -12,6 +12,12 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
+for project in ('packages/python/axon_protocol', 'packages/python/axon_reporter'):
+    path = str(ROOT/project)
+    if path not in sys.path:
+        sys.path.insert(0, path)
+from axon_reporter.report import MACHINE_ALIAS_AUTO, detected_machine_alias
+
 AGENTS = ('codex','claude','hermes','pi','opencode')
 
 
@@ -96,6 +102,61 @@ def write_json(path,value):
     tmp.replace(path)
 
 
+MACHINE_LABEL = 'AXON_MACHINE'
+
+
+def machine_label_path(home):
+    """Reporter settings file the reporter itself reads, honouring its override."""
+    override = os.environ.get('AXON_CONFIG_FILE')
+    return Path(override).expanduser() if override else Path(home).expanduser()/'.config/axon/env'
+
+
+def read_machine_label(path):
+    """Current AXON_MACHINE value, or None when the setting is absent."""
+    try:
+        lines = path.read_text().splitlines()
+    except (OSError, ValueError):
+        return None
+    for line in lines:
+        words = shlex.split(line, comments=True)
+        if words[:1] == ['export']:
+            words = words[1:]
+        if len(words) == 1 and words[0].startswith(MACHINE_LABEL+'='):
+            return words[0].split('=', 1)[1]
+    return None
+
+
+def ensure_machine_label(home, apply=False):
+    """Give this machine a readable host label without overriding an explicit choice.
+
+    Unset means the reporter keeps its private random label, so an install is the
+    deliberate opt-in to host names; `auto` resolves the host name per report and
+    tracks renames, while a literal value pins one. Existing settings are never
+    rewritten, and a label change only ever affects events reported afterwards.
+    """
+    path = machine_label_path(home)
+    current = read_machine_label(path)
+    if current is not None:
+        return {'value': current, 'path': str(path), 'written': False, 'hostname': hostname_preview()}
+    if apply:
+        created = not path.parent.exists()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if created:
+            path.parent.chmod(0o700)
+        previous = path.read_text() if path.exists() else ''
+        tmp = path.with_name(path.name+'.axon-tmp')
+        tmp.write_text((previous.rstrip('\n')+'\n' if previous.strip() else '')+MACHINE_LABEL+'=auto\n')
+        tmp.chmod(path.stat().st_mode & 0o777 if path.exists() else 0o600)
+        tmp.replace(path)
+    return {'value': MACHINE_ALIAS_AUTO, 'path': str(path), 'written': bool(apply),
+            'hostname': hostname_preview()}
+
+
+def hostname_preview():
+    """Resolved host name for install output, or None when it cannot be determined."""
+    return detected_machine_alias()
+
+
 def install(agent, home, apply=False, enable=True, hermes_command='hermes'):
     home=Path(home).expanduser().resolve()
     package=home/'.local/share/axon/plugins'/agent
@@ -107,7 +168,8 @@ def install(agent, home, apply=False, enable=True, hermes_command='hermes'):
     if agent not in ('hermes','pi','opencode') and (not isinstance(current,dict) or not isinstance(current.get('hooks',{}),dict)):
         raise ValueError('Invalid existing settings; nothing changed')
     proposed=merged_config(current,agent,package) if agent not in ('hermes','pi','opencode') else None
-    plan={'agent':agent,'package':str(package),'settings':str(settings),'apply':apply}
+    plan={'agent':agent,'package':str(package),'settings':str(settings),'apply':apply,
+          'machine_label':ensure_machine_label(home)}
     if not apply:
         return plan
     stamp=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
@@ -162,8 +224,8 @@ def install(agent, home, apply=False, enable=True, hermes_command='hermes'):
         if skill.exists() or skill.is_symlink():
             skill.rename(backup/'skill')
         skill.symlink_to(package/'skills/axon-activity',target_is_directory=True)
-    return {**plan,'backup':str(backup),'restart_required':True,
-            'hook_review_required':agent=='codex'}
+    return {**plan,'machine_label':ensure_machine_label(home,apply),'backup':str(backup),
+            'restart_required':True,'hook_review_required':agent=='codex'}
 
 
 # Install locations agents use that user shells add late (or cron never adds).
@@ -194,8 +256,9 @@ def sync(home=Path.home(), apply=False, force=False):
     state = Path(os.environ.get('AXON_ACTIVITY_HOME', home/'.local/state/axon'))
     stamp = state/'hooks-synced'
     want = f'{revision} {" ".join(agents)}\n'
+    label = ensure_machine_label(home, apply)
     if not force and agents and stamp.exists() and stamp.read_text() == want:
-        return {'revision': revision, 'agents': agents, 'skipped': True}
+        return {'revision': revision, 'agents': agents, 'machine_label': label, 'skipped': True}
     installed, failed = [], {}
     for agent in agents:
         try:
@@ -208,6 +271,7 @@ def sync(home=Path.home(), apply=False, force=False):
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.write_text(want)
     return {'revision': revision, 'agents': agents, 'apply': apply,
+            'machine_label': ensure_machine_label(home, apply),
             'installed': installed, 'failed': failed, 'skipped': False}
 
 

@@ -22,9 +22,12 @@ queues events and hook heartbeat timestamps. Existing outbox rows can be retried
 old aggregate tables, if present, are ignored. `axon-report retry` drains queued
 events. A later report retries too; there is no autonomous retry daemon.
 
-`AXON_MACHINE` sets an explicit installation label and `AXON_SOURCE` overrides
-agent-plus-installation source identity. Defaults never read the hostname. Use
-unique labels per installation. Labels contain letters/digits/dots/underscores/
+`AXON_MACHINE` sets an explicit installation label; `AXON_MACHINE=auto` resolves
+the machine's short host name for every report and follows renames. `AXON_SOURCE`
+overrides agent-plus-installation source identity. With neither set, the hostname
+is never read and the reporter keeps its random private label. An unusable or
+undeterminable host name falls back to that private label rather than failing.
+Use unique labels per installation. Labels contain letters/digits/dots/underscores/
 hyphens. Session IDs are hashed, but source labels/project/branch/explicit semantic
 fields are visible to broker/server readers. Keep secrets, raw transcripts, and
 personal details out of those fields. Do not copy identity state to independent
@@ -37,9 +40,13 @@ status publisher in this release: plugins emit activity events only.
 
 Reporters also read literal `KEY=value` or `export KEY=value` settings from
 `~/.config/axon/env` (or `AXON_CONFIG_FILE`). Environment variables take precedence.
-Set `AXON_BROKER`, `AXON_PORT`, and an explicit friendly `AXON_MACHINE` there.
-The file is read for each report, so label changes need no restart. Changing the
-machine label preserves the generated source identity. Hostnames are never inferred.
+Set `AXON_BROKER`, `AXON_PORT`, and a friendly `AXON_MACHINE` (a name, or `auto`
+for the host name) there. The file is read for each report, so label changes need
+no restart. Changing the machine label preserves the generated source identity and
+only affects later events: earlier rows keep the label they were reported with,
+so a rename shows old and new host values until normal retention clears them.
+`manage.py install`/`sync` add `AXON_MACHINE=auto` to this file when no label is
+set, and never rewrite an existing value or unrelated settings.
 
 Each report also carries `machine_kind` (`laptop`, `desktop`, or `server`) for the
 browser UI's host icon.

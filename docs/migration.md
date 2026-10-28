@@ -20,7 +20,8 @@ Do not point existing services at removed `software/` paths.
    manually installed old source-tree hooks or gateway-only Hermes hook; the
    installer only replaces its recognized managed-package hook commands.
    Do not leave native loading and managed hooks enabled together.
-6. Choose `AXON_MACHINE` / `AXON_SOURCE` labels or let each installation generate
+6. Choose `AXON_MACHINE` / `AXON_SOURCE` labels, let the installer write
+   `AXON_MACHINE=auto` for host-named boards, or let each installation generate
    a private random identity. Existing host-derived records remain history and
    age through the normal leases/retention; no private database rewrite occurs.
    Label changes can temporarily show old and new rows until old leases expire.

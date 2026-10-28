@@ -64,6 +64,14 @@ Codex will ask to trust changed ones.
 
 Configuration: Python 3.10+, `mosquitto_pub`, `AXON_BROKER`, `AXON_PORT`,
 `AXON_ACTIVITY_HOME`, optional `AXON_MOSQUITTO_PUB`, `AXON_MACHINE`, `AXON_SOURCE`.
+Install and sync add `AXON_MACHINE=auto` to `~/.config/axon/env` (or
+`AXON_CONFIG_FILE`) when no label exists, so the board shows host names instead of
+the private install ID; `auto` re-resolves per report, a literal label pins one.
+Nothing is written when a label already exists, on a dry run, or when the agent
+install itself fails. Labels only affect later events, so adopting one leaves
+earlier rows under the previous host value until retention clears them. `sync`
+ensures the label on every applied run, including stamp-skipped ones, so existing
+machines pick it up without `--force`.
 See [reporter documentation](../packages/python/axon_reporter/README.md).
 Hooks receive the environment of the host agent process; reload it after changing
 configuration. Agent commands name their exact session; no global latest-session
