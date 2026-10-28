@@ -299,8 +299,10 @@ class OpenCodeTests(unittest.TestCase):
     def test_bundle_contains_plugin_module_and_runtime(self):
         package=manage.build('opencode',self.root/'opencode')
         source=(package/'plugin/axon.js').read_text()
-        self.assertIn('export const AxonPlugin',source)
-        self.assertNotIn('export default',source)  # a second export would double-register
+        self.assertIn('export default',source)  # v2 definition: default {id, setup}
+        self.assertIn('id: "axon-activity"',source)
+        self.assertIn('async setup(ctx)',source)
+        self.assertIn('async server()',source)  # v1 >= 1.18.29 compatibility
         self.assertTrue((package/'hooks/run.py').is_file())
         self.assertTrue((package/'skills/axon-activity/SKILL.md').is_file())
         manage.build('opencode',package)  # recognized package replaces cleanly
@@ -321,13 +323,13 @@ class OpenCodeTests(unittest.TestCase):
         result=subprocess.run([sys.executable,str(package/'hooks/run.py')],input='not json',
                               text=True,capture_output=True,env=self.env)
         self.assertEqual((result.returncode,result.stdout,result.stderr),(0,'',''))
-    def test_opencode_install_copies_plugin_and_links_skill_idempotently(self):
+    def test_opencode_install_links_plugin_and_skill_idempotently(self):
         home=self.root/'home'
         manage.install('opencode',home,apply=True)
         plugin=home/'.config/opencode/plugins/axon-activity.js'
         skill=home/'.config/opencode/skills/axon-activity'
-        self.assertTrue(plugin.is_file())
-        self.assertIn('AxonPlugin',plugin.read_text())
+        self.assertTrue(plugin.is_symlink())  # realpath must resolve into the package
+        self.assertIn('axon-activity',plugin.read_text())
         self.assertTrue((skill/'SKILL.md').is_file())
         first=(plugin.read_bytes(),skill.resolve())
         manage.install('opencode',home,apply=True)

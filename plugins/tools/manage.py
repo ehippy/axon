@@ -146,7 +146,9 @@ def install(agent, home, apply=False, enable=True, hermes_command='hermes'):
         target.parent.mkdir(parents=True,exist_ok=True)
         if target.exists() or target.is_symlink():
             target.rename(backup/'opencode-plugin')
-        shutil.copy2(package/'plugin/axon.js',target)
+        # Symlink, not copy: the plugin resolves its own realpath to find
+        # hooks/run.py inside this package.
+        target.symlink_to(package/'plugin/axon.js')
         skill=home/'.config/opencode/skills/axon-activity'
         skill.parent.mkdir(parents=True,exist_ok=True)
         if skill.exists() or skill.is_symlink():
