@@ -19,11 +19,13 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+from urllib.request import urlopen
 
 from axon_protocol import STATES, FIELDS, TERMINAL, validate
-from axon_protocol.resources import validate_resource
+from axon_protocol.resources import parse_inference_metrics, validate_resource
 
 IDENTITY = re.compile(r'[a-zA-Z0-9_.-]{1,128}')
+INFERENCE_LABEL = re.compile(r'[a-zA-Z0-9_.-]{1,80}')
 MESSAGE_LIMIT = 4000
 CLAIM_WAIT_LIMIT = 55
 STREAM_PING = 15
@@ -499,6 +501,42 @@ def publish_view(journal, broker, stop, port=1883):
         stop.wait(5)
 
 
+def inference_endpoints(values):
+    """Turn repeated --inference label=url options into a label/URL map."""
+    endpoints = {}
+    for value in values:
+        label, separator, url = value.partition('=')
+        if not separator or not INFERENCE_LABEL.fullmatch(label):
+            raise ValueError('--inference expects label=url')
+        location = urlsplit(url)
+        if location.scheme not in ('http', 'https') or not location.netloc:
+            raise ValueError('--inference URL must be a complete http(s) URL')
+        if label in endpoints:
+            raise ValueError(f'duplicate inference server label: {label}')
+        endpoints[label] = url
+    return endpoints
+
+
+def poll_inference(journal, endpoints, stop, interval=10, timeout=4):
+    """Pull what each inference server already reports about itself; nothing runs on that host."""
+    while not stop.is_set():
+        for label, url in endpoints.items():
+            online, metrics = False, {}
+            try:
+                with urlopen(url, timeout=timeout) as response:
+                    metrics = parse_inference_metrics(response.read(1048576).decode('utf-8', 'replace'))
+                online = True
+            except (OSError, ValueError):
+                # Requested endpoint failing is normal operation; the URL may carry a token, so log the label.
+                logging.warning('Inference server %s is not serving usable metrics', label)
+            try:
+                journal.ingest_resource(dict(version=1, provider='inference', account=label,
+                    observed_at=time.time(), online=online, metrics=metrics, gpus=[]))
+            except ValueError:
+                logging.warning('Rejected inference snapshot for %s', label)
+        stop.wait(interval)
+
+
 def maintain(journal, stop):
     # Startup pruning runs in Journal(); repeat even when no events arrive.
     while not stop.wait(3600):
@@ -522,12 +560,22 @@ def main():
     p.add_argument('--no-web', action='store_true', help='Disable the browser UI')
     p.add_argument('--input-token-file', default=os.environ.get('AXON_INPUT_TOKEN_FILE'),
                    help='File holding the bearer token that allows sending input to sessions; input is disabled without it')
+    p.add_argument('--inference', action='append', default=[], metavar='LABEL=URL',
+                   help='Poll the metrics an inference server exposes and report them as LABEL; repeat per server')
+    p.add_argument('--inference-interval', type=float, default=10,
+                   help='Seconds between inference polls (default 10; minimum 5)')
     args = p.parse_args()
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
     if not 1 <= args.broker_port <= 65535:
         p.error('--broker-port must be between 1 and 65535')
     if args.retention_days < 0:
         p.error('--retention-days must be nonnegative')
+    try:
+        inference = inference_endpoints(args.inference)
+    except ValueError as exc:
+        p.error(str(exc))
+    if not args.inference_interval >= 5:
+        p.error('--inference-interval must be at least 5 seconds')
     token = Path(args.input_token_file).read_text().strip() if args.input_token_file else None
     if args.input_token_file and len(token or '') < 16:
         p.error('--input-token-file must hold a token of at least 16 characters')
@@ -540,6 +588,10 @@ def main():
         for target in (mqtt, publish_view):
             thread = threading.Thread(target=target, args=(journal, args.broker, stop, args.broker_port), daemon=True)
             thread.start(); threads.append(thread)
+    if inference:
+        poller = threading.Thread(target=poll_inference, args=(journal, inference, stop, args.inference_interval), daemon=True)
+        poller.start(); threads.append(poller)
+        logging.info('Polling inference servers: %s', ', '.join(sorted(inference)))
     server = ThreadingHTTPServer((args.listen, args.port), handler(journal, web=not args.no_web, token=token, stop=stop))
     def shutdown(*_):
         stop.set()

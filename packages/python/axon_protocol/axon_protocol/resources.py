@@ -39,6 +39,23 @@ def validate_resource(value):
 
 
 INFERENCE_METRICS={'running','queued','prompt_tps','generation_tps','kv_cache_percent','device_losses'}
+GUFO_METRICS={'llamacpp:requests_processing':'running','llamacpp:requests_deferred':'queued',
+    'llamacpp:prompt_tokens_seconds':'prompt_tps','llamacpp:predicted_tokens_seconds':'generation_tps',
+    'llamacpp:kv_cache_usage_ratio':'kv_cache_percent','gufo_device_lost_total':'device_losses'}
+
+def parse_inference_metrics(text):
+    """Read the names an inference endpoint already exposes about itself into Axon fields."""
+    result={}
+    for line in text.splitlines():
+        parts=line.split()
+        if len(parts)<2 or parts[0] not in GUFO_METRICS:continue
+        try:value=float(parts[1])
+        except ValueError:continue
+        if not number(value) or value<0:continue
+        field=GUFO_METRICS[parts[0]]
+        result[field]=value*100 if field=='kv_cache_percent' else value
+    if not result:raise ValueError('No supported inference metrics')
+    return result
 GPU_METRICS={'utilization_percent','memory_used_bytes','memory_total_bytes','shared_used_bytes','shared_total_bytes','power_watts','temperature_c'}
 
 def validate_inference(value):

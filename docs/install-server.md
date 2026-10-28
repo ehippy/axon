@@ -154,19 +154,28 @@ There is no additional browser polling service or provider login on the server.
 
 ## Shared inference servers
 
-Every shared inference host runs one `axon-inference --server <label>` collector and
-displays its own panel: running and queued requests, generation and prompt speed,
-KV-cache use, then per-GPU utilization, power, temperature and memory. The label is
-a stable identity (`neuralforge`, `moar`), so another server means another panel
-rather than another integration.
+An inference server already reports its own load, so the server can simply poll it.
+Name each server with a stable label and repeat the option:
 
-Hardware counters are read on the host: AMD sysfs (`gpu_busy_percent`, VRAM and GTT
-counters, hwmon temperature and power) and `nvidia-smi` where present. Dedicated
-VRAM and GTT allocation are shown separately because an APU keeps its weights in
-GTT; neither is a spending limit. Request and throughput figures come from the
-GUFO/llama.cpp metrics endpoint, `http://127.0.0.1:13308/metrics` by default.
+```sh
+axon-server --inference neuralforge=http://neuralforge:13308/metrics \
+  --inference moar=http://moar:13308/metrics --inference-interval 10
+```
 
-A snapshot publishes about every ten seconds and its panel turns Stale after thirty
-seconds without one; an unreachable endpoint reports Offline while hardware readings
-carry on. Load stays aggregate: it cannot say which of Hermes, Pi or OpenCode caused
-it. See the reporter [inference collectors](../packages/python/axon_reporter/README.md#shared-inference-servers).
+Each label gets its own panel showing running and queued requests, generation and
+prompt speed and KV-cache use. Another inference server is another option, not
+another integration. Nothing is installed on the inference host and it publishes
+nothing; this reads the metrics endpoint it already exposes.
+
+**Polling cannot show hardware.** GUFO and llama.cpp report requests, speed, KV cache
+and confirmed GPU context losses, never utilization, power, temperature or memory.
+For those, also run the reporter's `axon-inference --server <label>` collector on the
+inference host: AMD sysfs (`gpu_busy_percent`, VRAM and GTT counters, hwmon
+temperature and power) and `nvidia-smi` where present. Dedicated VRAM and GTT
+allocation are shown separately because an APU keeps its weights in GTT; neither is a
+spending limit. One host may report both ways; whichever read arrived last wins.
+
+A panel turns Stale thirty seconds after the last reading. An endpoint that answers
+with anything other than usable metrics is Offline, not a row of zeros. Load stays
+aggregate: it cannot say which of Hermes, Pi or OpenCode caused it. See the reporter
+[inference collectors](../packages/python/axon_reporter/README.md#shared-inference-servers).
