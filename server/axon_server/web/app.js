@@ -79,7 +79,7 @@ function renderResources(values=[]) {
     const stale=now-row.observed_at>30;
     const panel=node('article','resource-panel inference-panel'+(stale?' stale':''));
     const header=node('div','resource-heading');
-    header.append(node('h2','',row.account+' · Inference'),node('span','resource-age',stale?'Stale · '+relative(row.observed_at):row.online?'Live':'Endpoint offline'));
+    header.append(node('h2','',row.account+' · Inference'),node('span','resource-age',stale?'Stale · '+inferenceAge(row.observed_at):row.online?'Live':'Endpoint offline'));
     panel.append(header);
     const stats=node('div','inference-stats');
     const show=(label,value)=>stats.append(node('div','inference-stat',label+' '+value));
@@ -112,6 +112,11 @@ function relative(at) {
   if (seconds < 3600) return Math.floor(seconds/60)+'m ago';
   if (seconds < 86400) return Math.floor(seconds/3600)+'h ago';
   return Math.floor(seconds/86400)+'d ago';
+}
+function inferenceAge(at) {
+  // Inference turns stale in 30s, too soon for relative()'s minute floor to read as stale.
+  const seconds = Math.max(0, Math.floor(Date.now()/1000-Number(at)));
+  return seconds < 60 ? seconds+'s ago' : relative(at);
 }
 function clock(at) { return new Date(Number(at)*1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); }
 function date(at) { return new Date(Number(at)*1000).toLocaleDateString([], {month:'long', day:'numeric', year:'numeric'}); }
