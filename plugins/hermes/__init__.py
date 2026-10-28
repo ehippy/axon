@@ -18,7 +18,7 @@ if name not in sys.modules:
     package = importlib.util.module_from_spec(spec)
     sys.modules[name] = package
     spec.loader.exec_module(package)
-from _axon_hermes_runtime.plugin_runtime import context, lifecycle, report
+from _axon_hermes_runtime.plugin_runtime import claim, context, delivery, inbox_due, lifecycle, report
 
 
 def safely(callback, *args, **kwargs):
@@ -33,7 +33,29 @@ def before_turn(session_id=None, parent_session_id=None, **_):
         return None
     safely(lifecycle,'hermes',{'session_id':session_id,'parent_session_id':parent_session_id,
                               'hook_event_name':'UserPromptSubmit'})
-    return {'context':context('hermes',session_id)}
+    notes = [context('hermes',session_id)]
+    # Drain dashboard input queued since the last turn alongside the fresh prompt.
+    messages = safely(claim,'hermes',session_id,timeout=.5) or []
+    if messages:
+        notes.append(delivery(messages))
+    return {'context':'\n\n'.join(notes)}
+
+
+def tool_result(result=None, session_id=None, **_):
+    """Mid-turn dashboard input: piggyback the next tool result the model reads (throttled)."""
+    if not session_id or not isinstance(result,str) or not safely(inbox_due,'hermes',session_id):
+        return None
+    messages = safely(claim,'hermes',session_id,timeout=.5) or []
+    return result + '\n\n' + delivery(messages) if messages else None
+
+
+def verify(session_id=None, **_):
+    """Input that arrives just as a turn finishes deserves an answer: keep the turn alive once
+    (core only fires this hook while nudge budget remains, so a claimed message is never dropped)."""
+    if not session_id:
+        return None
+    messages = safely(claim,'hermes',session_id,timeout=.5) or []
+    return {'action':'continue','message':delivery(messages)} if messages else None
 
 
 def after_tool(session_id=None, tool_name='', **_):
@@ -76,6 +98,7 @@ def child_stop(child_session_id=None,child_status=None,**_):
 
 def register(ctx):
     for name, callback in {'pre_llm_call':before_turn,'post_tool_call':after_tool,
+            'transform_tool_result':tool_result,'pre_verify':verify,
             'on_session_start':session_start,'on_session_end':turn_end,
             'on_session_finalize':session_finalize,'subagent_start':child_start,
             'subagent_stop':child_stop}.items():

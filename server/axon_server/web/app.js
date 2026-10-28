@@ -239,7 +239,7 @@ function agentClass(row) { return ['codex','claude','hermes','pi','opencode'].in
 function agentName(row) { return ({codex:'Codex',claude:'Claude',hermes:'Hermes',pi:'Pi',opencode:'OpenCode'})[row.agent] || row.agent || 'Agent'; }
 function hostName(row) { return row.machine || 'Host not reported'; }
 const HOST_KINDS = ['laptop', 'desktop', 'server'];
-const INPUT_AGENTS = ['claude'];
+const INPUT_AGENTS = ['claude','hermes'];
 const TOKEN_KEY = 'axon-input-token';
 function storedToken() { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } }
 function storeToken(value) { try { value ? localStorage.setItem(TOKEN_KEY,value) : localStorage.removeItem(TOKEN_KEY); } catch {} }
