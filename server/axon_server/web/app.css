@@ -56,3 +56,4 @@
 .token-line strong{font:500 11px var(--mono);color:var(--text);white-space:pre}
 @media(max-width:650px){.resources{grid-template-columns:repeat(var(--quota-count,2),minmax(0,1fr))}
 .inference-panel{grid-column:1/-1}}
+.activity-bar.idle .quota-fill{opacity:.45}

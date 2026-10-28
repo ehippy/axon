@@ -99,14 +99,14 @@ function renderResources(values=[]) {
     const body=node('div','inference-body'), current=node('div','inference-now');
     const gpus=row.gpus||[];
     if(gpus.length){
-      // A host collector reports real device utilization, so the bar is the same headroom reading as a quota bar.
+      // A host collector reports real device utilization; the bar says whether the GPU is idle or working.
       for(const gpu of gpus){
         const detail=[gpu.power_watts==null?null:fmt(gpu.power_watts,' W'),gpu.temperature_c==null?null:fmt(gpu.temperature_c,' °C')].filter(Boolean);
-        current.append(capacityBar(row,gpu.utilization_percent,gpu.name||'GPU',detail.join(' · ')||'Power not reported'));
+        current.append(activityBar(row,gpu.utilization_percent,gpu.name||'GPU','busy',detail.join(' · ')||'Power not reported'));
       }
     }else{
       // Polling reaches only the endpoint, which never reports hardware; KV cache is the one occupancy share it does give.
-      current.append(capacityBar(row,row.online?row.metrics.kv_cache_percent:null,'KV cache',row.online?'No host GPU telemetry':'Endpoint offline'));
+      current.append(activityBar(row,row.online?row.metrics.kv_cache_percent:null,'KV cache','used',row.online?'No host GPU telemetry':'Endpoint offline'));
     }
     const stats=node('div','inference-stats');
     const show=(value,label)=>{const stat=node('div','inference-stat');stat.append(node('strong','',value),node('span','',label));stats.append(stat);};
@@ -148,15 +148,15 @@ function relative(at) {
   return Math.floor(seconds/86400)+'d ago';
 }
 function fmt(value, suffix='') { return value==null ? 'Unknown' : Number(value).toFixed(1)+suffix; }
-function capacityBar(row, used, label, note) {
-  // Same reading as the quota bars: the bar shows headroom, so a shrinking bar always means pressure.
-  const free = used==null ? null : Math.max(0, Math.min(100, 100-used));
+function activityBar(row, used, label, verb, note) {
+  // Activity, not headroom: the bar fills as the device works, so idle reads as empty at a glance.
+  const busy = used==null ? null : Math.max(0, Math.min(100, used));
   const box = node('div','resource-window'), caption = node('div','quota-label');
-  caption.append(node('span','',label), node('strong','',free===null?'Unknown':Math.floor(free)+'% free'));
-  const bar = node('div','quota-bar'+(free===null?' unknown':free<=10?' low':free<=25?' limited':''));
-  bar.setAttribute('role','progressbar'); bar.setAttribute('aria-label',row.account+' '+label+' capacity free');
+  caption.append(node('span','',label), node('strong','',busy===null?'Unknown':Math.round(busy)+'% '+verb));
+  const bar = node('div','quota-bar activity-bar'+(busy===null?' unknown':busy<5?' idle':''));
+  bar.setAttribute('role','progressbar'); bar.setAttribute('aria-label',row.account+' '+label+' '+verb);
   bar.setAttribute('aria-valuemin','0'); bar.setAttribute('aria-valuemax','100');
-  if (free!==null) { bar.setAttribute('aria-valuenow',String(free)); const fill = node('span','quota-fill'); fill.style.width = free+'%'; bar.append(fill); }
+  if (busy!==null) { bar.setAttribute('aria-valuenow',String(busy)); const fill = node('span','quota-fill'); fill.style.width = busy+'%'; bar.append(fill); }
   else bar.setAttribute('aria-valuetext','Unknown');
   box.append(caption, bar, node('div','quota-reset',note));
   return box;
