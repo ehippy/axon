@@ -1,0 +1,8 @@
+{
+  "name": "axon-activity",
+  "version": "0.3.0",
+  "description": "Report Pi coding agent session activity to Axon.",
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}

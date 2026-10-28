@@ -125,6 +125,28 @@ class PluginTests(unittest.TestCase):
             self.assertFalse(any('/home/me/.local/share/axon/' in c for c in commands))
             self.assertTrue((home/f'.{agent}/skills/axon-activity/SKILL.md').exists())
             self.assertTrue(list((home/'.local/state/axon/install-backups').iterdir()))
+    def test_install_opts_the_host_into_a_readable_label_once(self):
+        config=self.root/'reporter-env'
+        home=self.root/'pinned'
+        settings=home/'.codex/hooks.json'; settings.parent.mkdir(parents=True); settings.write_text('{"hooks":{}}')
+        with patch.dict(os.environ,{'AXON_CONFIG_FILE':str(config),'AXON_ACTIVITY_HOME':str(self.root/'state')}):
+            # A dry run reports the label it would add and writes nothing.
+            plan=manage.install('codex',home,apply=False)
+            self.assertEqual(plan['machine_label'],{'value':'auto','path':str(config),'written':False,'hostname':plan['machine_label']['hostname']})
+            self.assertFalse(config.exists())
+            manage.install('codex',home,apply=True)
+            self.assertEqual(config.read_text(),'AXON_MACHINE=auto\n')
+            self.assertEqual(config.stat().st_mode & 0o777,0o600)
+            # Repeat installs never duplicate the setting.
+            manage.install('codex',home,apply=True)
+            self.assertEqual(config.read_text(),'AXON_MACHINE=auto\n')
+            # A pinned label and unrelated settings are left exactly as written.
+            original='export AXON_BROKER=journal.example\nAXON_MACHINE=workstation\n'
+            config.write_text(original)
+            self.assertEqual(manage.install('codex',home,apply=True)['machine_label'],
+                             {'value':'workstation','path':str(config),'written':False,'hostname':manage.hostname_preview()})
+            self.assertEqual(config.read_text(),original)
+
     def test_invalid_settings_leave_configuration_and_package_untouched(self):
         settings=self.root/'.codex/hooks.json'; settings.parent.mkdir(); settings.write_text('{"hooks":{"Stop":"invalid"}}')
         with self.assertRaises(ValueError): manage.install('codex',self.root,apply=True)
@@ -140,7 +162,7 @@ class PluginTests(unittest.TestCase):
                 report.report('codex','a','finished',{'outcome':'Done'})
         self.assertFalse((self.root/'state/outbox.sqlite3').exists())
     def test_bundles_exclude_server_and_query_client(self):
-        for agent in ('codex', 'claude', 'hermes'):
+        for agent in ('codex', 'claude', 'hermes', 'pi', 'opencode'):
             package = manage.build(agent, self.root/agent)
             names = {p.name for p in package.rglob('*.py')}
             self.assertNotIn('journal.py', names)
@@ -207,6 +229,54 @@ class HermesTests(unittest.TestCase):
             self.assertNotIn('SECRET',str(emit.call_args))
 
 
+class PiTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(); self.root=Path(self.tmp.name)
+        self.env={**os.environ,'AXON_ACTIVITY_HOME':str(self.root/'state'),'AXON_MOSQUITTO_PUB':'/missing/axon-pub','PYTHONDONTWRITEBYTECODE':'1'}
+    def tearDown(self):
+        self.tmp.cleanup()
+    def test_bundle_is_a_discoverable_pi_package(self):
+        package=manage.build('pi',self.root/'pi')
+        manifest=json.loads((package/'package.json').read_text())
+        self.assertEqual(manifest['pi']['extensions'],['./index.ts'])
+        self.assertTrue((package/'index.ts').is_file())
+        self.assertTrue((package/'hooks/run.py').is_file())
+        self.assertTrue((package/'skills/axon-activity/SKILL.md').is_file())
+        manage.build('pi',package)  # recognized package replaces cleanly
+        self.assertTrue((package/'runtime/axon_reporter/report.py').is_file())
+    def test_hook_is_standalone_fails_open_and_never_leaks_prompts(self):
+        package=manage.build('pi',self.root/'pi')
+        data={'session_id':'pi; echo SECRET','hook_event_name':'SessionStart','cwd':'/projects/glass',
+              'prompt':'PRIVATE PROMPT','systemPrompt':'PRIVATE','event':{'message':'PRIVATE'}}
+        result=subprocess.run([sys.executable,str(package/'hooks/run.py')],input=json.dumps(data),
+                              text=True,capture_output=True,env=self.env,check=True)
+        output=json.loads(result.stdout)['hookSpecificOutput']
+        self.assertEqual(output['hookEventName'],'SessionStart')
+        self.assertIn("'pi; echo SECRET'",output['additionalContext'])
+        self.assertIn(str(package/'runtime/axon_reporter/report.py'),output['additionalContext'])
+        self.assertEqual(result.stderr,'')
+        self.assertNotIn('PRIVATE',result.stdout)
+        with sqlite3.connect(self.root/'state/outbox.sqlite3') as db:
+            self.assertNotIn('PRIVATE',str([row[0] for row in db.execute('SELECT payload FROM outbox')]))
+        result=subprocess.run([sys.executable,str(package/'hooks/run.py')],input='not json',
+                              text=True,capture_output=True,env=self.env)
+        self.assertEqual((result.returncode,result.stdout,result.stderr),(0,'',''))
+    def test_pi_install_symlinks_extension_and_skill_idempotently(self):
+        home=self.root/'home'
+        manage.install('pi',home,apply=True)
+        extension=home/'.pi/agent/extensions/axon-activity'
+        skill=home/'.pi/agent/skills/axon-activity'
+        self.assertTrue(extension.is_symlink())
+        self.assertTrue((extension/'index.ts').is_file())
+        self.assertTrue((skill/'SKILL.md').is_file())
+        first=(extension.resolve(),skill.resolve())
+        manage.install('pi',home,apply=True)
+        self.assertEqual((extension.resolve(),skill.resolve()),first)
+        self.assertTrue(list((home/'.local/state/axon/install-backups').iterdir()))
+        # The install never invents or rewrites a Pi settings file.
+        self.assertFalse((home/'.pi/agent/settings.json').exists())
+
+
 class InboxTests(unittest.TestCase):
     """Dashboard input reaches Claude sessions through hooks, using a real journal server."""
     hook=PluginTests.hook
@@ -269,6 +339,122 @@ class InboxTests(unittest.TestCase):
         self.assertEqual(shlex.split(listener[0]['command'])[-1],'listen')
         self.assertGreaterEqual(listener[0]['timeout'],plugin_runtime.LISTEN_CAP)
         self.assertTrue(all(shlex.split(h['command'])[1].endswith('/hooks/run.py') for h in stop))
+
+
+class OpenCodeTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(); self.root=Path(self.tmp.name)
+        self.env={**os.environ,'AXON_ACTIVITY_HOME':str(self.root/'state'),'AXON_MOSQUITTO_PUB':'/missing/axon-pub','PYTHONDONTWRITEBYTECODE':'1'}
+    def tearDown(self):
+        self.tmp.cleanup()
+    def test_bundle_contains_plugin_module_and_runtime(self):
+        package=manage.build('opencode',self.root/'opencode')
+        source=(package/'plugin/axon.js').read_text()
+        self.assertIn('export default',source)  # v2 definition: default {id, setup}
+        self.assertIn('id: "axon-activity"',source)
+        self.assertIn('async setup(ctx)',source)
+        self.assertIn('async server()',source)  # v1 >= 1.18.29 compatibility
+        self.assertTrue((package/'hooks/run.py').is_file())
+        self.assertTrue((package/'skills/axon-activity/SKILL.md').is_file())
+        manage.build('opencode',package)  # recognized package replaces cleanly
+        self.assertTrue((package/'runtime/axon_reporter/report.py').is_file())
+    def test_hook_is_standalone_fails_open_and_never_leaks_prompts(self):
+        package=manage.build('opencode',self.root/'opencode')
+        data={'session_id':'ses_1; echo SECRET','hook_event_name':'UserPromptSubmit','cwd':'/projects/glass',
+              'parts':[{'text':'PRIVATE PROMPT'}],'args':{'command':'PRIVATE COMMAND'}}
+        result=subprocess.run([sys.executable,str(package/'hooks/run.py')],input=json.dumps(data),
+                              text=True,capture_output=True,env=self.env,check=True)
+        output=json.loads(result.stdout)['hookSpecificOutput']
+        self.assertEqual(output['hookEventName'],'UserPromptSubmit')
+        self.assertIn("'ses_1; echo SECRET'",output['additionalContext'])
+        self.assertEqual(result.stderr,'')
+        self.assertNotIn('PRIVATE',result.stdout)
+        with sqlite3.connect(self.root/'state/outbox.sqlite3') as db:
+            self.assertNotIn('PRIVATE',str([row[0] for row in db.execute('SELECT payload FROM outbox')]))
+        result=subprocess.run([sys.executable,str(package/'hooks/run.py')],input='not json',
+                              text=True,capture_output=True,env=self.env)
+        self.assertEqual((result.returncode,result.stdout,result.stderr),(0,'',''))
+    def test_opencode_install_links_plugin_and_skill_idempotently(self):
+        home=self.root/'home'
+        manage.install('opencode',home,apply=True)
+        plugin=home/'.config/opencode/plugins/axon-activity.js'
+        skill=home/'.config/opencode/skills/axon-activity'
+        self.assertTrue(plugin.is_symlink())  # realpath must resolve into the package
+        self.assertIn('axon-activity',plugin.read_text())
+        self.assertTrue((skill/'SKILL.md').is_file())
+        first=(plugin.read_bytes(),skill.resolve())
+        manage.install('opencode',home,apply=True)
+        self.assertEqual((plugin.read_bytes(),skill.resolve()),first)
+        self.assertTrue(list((home/'.local/state/axon/install-backups').iterdir()))
+        # The install never invents or rewrites an opencode config file.
+        self.assertFalse((home/'.config/opencode/opencode.json').exists())
+
+
+class SyncTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(); self.root=Path(self.tmp.name)
+        self.home=self.root/'home'
+        for d in ('opencode/bin','npm-global/bin'):
+            (self.home/('.local' if d.startswith('local') else f'.{d.split("/")[0]}')/d.split('/')[1]).mkdir(parents=True,exist_ok=True)
+        fake=self.home/'.opencode/bin/opencode'
+        fake.write_text('#!/bin/sh\n'); fake.chmod(0o755)
+        self.env={'AXON_ACTIVITY_HOME':str(self.root/'state'),'PATH':str(self.home/'.opencode/bin')}
+    def tearDown(self):
+        self.tmp.cleanup()
+    def test_sync_installs_detected_agents_stamps_and_skips(self):
+        with patch.dict(os.environ,self.env):
+            report=manage.sync(self.home,apply=True)
+            self.assertEqual(report['agents'],['opencode'])
+            self.assertEqual(report['installed'],['opencode']); self.assertEqual(report['failed'],{})
+            self.assertTrue((self.home/'.config/opencode/plugins/axon-activity.js').is_symlink())
+            stamp=Path(self.env['AXON_ACTIVITY_HOME'])/'hooks-synced'
+            self.assertTrue(stamp.is_file())
+            again=manage.sync(self.home,apply=True)
+            self.assertTrue(again['skipped'])
+            forced=manage.sync(self.home,apply=True,force=True)
+            self.assertFalse(forced['skipped'])
+            self.assertEqual(forced['installed'],['opencode'])
+    def test_sync_dry_run_writes_nothing(self):
+        with patch.dict(os.environ,self.env):
+            report=manage.sync(self.home,apply=False)
+            self.assertEqual(report['installed'],[])
+        self.assertFalse((self.home/'.config/opencode').exists())
+        self.assertFalse((Path(self.env['AXON_ACTIVITY_HOME'])/'hooks-synced').exists())
+    def test_sync_failure_is_isolated_and_blocks_the_stamp(self):
+        # Malformed agent settings fail only that agent (read before any
+        # change); the stamp stays unwritten so the next run retries.
+        (self.home/'.codex').mkdir(parents=True)
+        fake=self.home/'.local/bin/codex'; fake.parent.mkdir(parents=True,exist_ok=True)
+        fake.write_text('#!/bin/sh\n'); fake.chmod(0o755)
+        (self.home/'.codex/hooks.json').write_text('not json at all')
+        with patch.dict(os.environ,self.env):
+            report=manage.sync(self.home,apply=True)
+            self.assertEqual(sorted(report['agents']),['codex','opencode'])
+            self.assertIn('codex',report['failed'])
+            self.assertEqual(report['installed'],['opencode'])
+        self.assertFalse((Path(self.env['AXON_ACTIVITY_HOME'])/'hooks-synced').exists())
+
+    def test_sync_adds_the_host_label_even_when_hooks_are_current(self):
+        config=self.root/'reporter-env'
+        with patch.dict(os.environ,{**self.env,'AXON_CONFIG_FILE':str(config)}):
+            manage.sync(self.home,apply=True)
+            config.unlink()
+            self.assertTrue(manage.sync(self.home,apply=True)['skipped'])
+            self.assertEqual(manage.read_machine_label(config),'auto')
+            # A dry run adds nothing, so a bootstrap loop cannot write unexpectedly.
+            config.unlink()
+            self.assertTrue(manage.sync(self.home,apply=False)['skipped'])
+            self.assertFalse(config.exists())
+
+    def test_sync_cli_skip_path_exits_zero(self):
+        # main() must tolerate the 'skipped' report shape (no failure map).
+        env={**os.environ,'PATH':str(self.home/'.opencode/bin'),'AXON_ACTIVITY_HOME':str(self.root/'state')}
+        run=lambda: subprocess.run([sys.executable,str(ROOT/'plugins/tools/manage.py'),'sync','--apply','--home',str(self.home)],
+                                   capture_output=True,text=True,env=env)
+        first=run(); self.assertEqual(first.returncode,0,first.stderr)
+        self.assertEqual(json.loads(first.stdout)['installed'],['opencode'])
+        second=run(); self.assertEqual(second.returncode,0,second.stderr)
+        self.assertTrue(json.loads(second.stdout)['skipped'])
 
 
 if __name__=='__main__': unittest.main()

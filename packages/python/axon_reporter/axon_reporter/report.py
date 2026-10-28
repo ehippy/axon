@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shutil
 import shlex
+import socket
 import sqlite3
 import subprocess
 import time
@@ -42,13 +43,31 @@ def setting(name, default=None):
     return default
 
 
+# Sentinel label: resolve the host name at report time instead of storing one.
+MACHINE_ALIAS_AUTO = 'auto'
+
+
+def detected_machine_alias():
+    """Short host name reduced to a dashboard-safe label, or None when unusable."""
+    try:
+        name = socket.gethostname().split('.')[0]
+    except OSError:
+        return None
+    name = re.sub(r'[^a-zA-Z0-9_.-]', '-', name)[:80].strip('-._')
+    return name if re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}', name) else None
+
+
 def machine_identity():
+    """Host label: a literal AXON_MACHINE, 'auto' for the host name, else a private ID."""
     alias = setting('AXON_MACHINE')
-    if alias is not None:
-        if not re.fullmatch(r'[a-zA-Z0-9_.-]{1,80}', alias):
-            raise ValueError('AXON_MACHINE must contain 1..80 letters, digits, dots, underscores or hyphens')
-        return alias
-    return installation_identity()
+    if alias is None:
+        return installation_identity()
+    if alias.strip().lower() == MACHINE_ALIAS_AUTO:
+        # Opting in to host names must never stop reporting, so fall back silently.
+        return detected_machine_alias() or installation_identity()
+    if not re.fullmatch(r'[a-zA-Z0-9_.-]{1,80}', alias):
+        raise ValueError('AXON_MACHINE must be auto or 1..80 letters, digits, dots, underscores or hyphens')
+    return alias
 
 
 # SMBIOS chassis types; anything else (tablet, handheld, unknown) stays unreported.

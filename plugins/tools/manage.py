@@ -12,7 +12,13 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
-AGENTS = ('codex','claude','hermes')
+for project in ('packages/python/axon_protocol', 'packages/python/axon_reporter'):
+    path = str(ROOT/project)
+    if path not in sys.path:
+        sys.path.insert(0, path)
+from axon_reporter.report import MACHINE_ALIAS_AUTO, detected_machine_alias
+
+AGENTS = ('codex','claude','hermes','pi','opencode')
 
 
 def build(agent, destination):
@@ -23,13 +29,16 @@ def build(agent, destination):
     # Only replace recognized generated packages, never arbitrary user directories.
     if destination.exists() and any(destination.iterdir()) and not (
             (destination/'runtime').is_dir() and any((destination/name).is_file()
-            for name in ('plugin.json', '.claude-plugin/plugin.json', 'plugin.yaml'))):
+            for name in ('plugin.json', '.claude-plugin/plugin.json', 'plugin.yaml', 'package.json', 'plugin/axon.js'))):
         raise ValueError('Build destination must be empty or an existing Axon package')
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.axon-build-', dir=destination.parent) as tmp:
         staged = Path(tmp)/'package'
         staged.mkdir()
-        selected = ['README.md','__init__.py','plugin.yaml'] if agent == 'hermes' else ['README.md','hooks','skills', 'plugin.json' if agent=='codex' else '.claude-plugin']
+        selected = ['README.md','__init__.py','plugin.yaml'] if agent == 'hermes' else \
+            ['README.md','index.ts','package.json','hooks','skills'] if agent == 'pi' else \
+            ['README.md','plugin','hooks','skills'] if agent == 'opencode' else \
+            ['README.md','hooks','skills', 'plugin.json' if agent=='codex' else '.claude-plugin']
         if agent == 'claude':
             selected.append('usage')
         for name in selected:
@@ -108,16 +117,74 @@ def write_json(path,value):
     tmp.replace(path)
 
 
+MACHINE_LABEL = 'AXON_MACHINE'
+
+
+def machine_label_path(home):
+    """Reporter settings file the reporter itself reads, honouring its override."""
+    override = os.environ.get('AXON_CONFIG_FILE')
+    return Path(override).expanduser() if override else Path(home).expanduser()/'.config/axon/env'
+
+
+def read_machine_label(path):
+    """Current AXON_MACHINE value, or None when the setting is absent."""
+    try:
+        lines = path.read_text().splitlines()
+    except (OSError, ValueError):
+        return None
+    for line in lines:
+        words = shlex.split(line, comments=True)
+        if words[:1] == ['export']:
+            words = words[1:]
+        if len(words) == 1 and words[0].startswith(MACHINE_LABEL+'='):
+            return words[0].split('=', 1)[1]
+    return None
+
+
+def ensure_machine_label(home, apply=False):
+    """Give this machine a readable host label without overriding an explicit choice.
+
+    Unset means the reporter keeps its private random label, so an install is the
+    deliberate opt-in to host names; `auto` resolves the host name per report and
+    tracks renames, while a literal value pins one. Existing settings are never
+    rewritten, and a label change only ever affects events reported afterwards.
+    """
+    path = machine_label_path(home)
+    current = read_machine_label(path)
+    if current is not None:
+        return {'value': current, 'path': str(path), 'written': False, 'hostname': hostname_preview()}
+    if apply:
+        created = not path.parent.exists()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if created:
+            path.parent.chmod(0o700)
+        previous = path.read_text() if path.exists() else ''
+        tmp = path.with_name(path.name+'.axon-tmp')
+        tmp.write_text((previous.rstrip('\n')+'\n' if previous.strip() else '')+MACHINE_LABEL+'=auto\n')
+        tmp.chmod(path.stat().st_mode & 0o777 if path.exists() else 0o600)
+        tmp.replace(path)
+    return {'value': MACHINE_ALIAS_AUTO, 'path': str(path), 'written': bool(apply),
+            'hostname': hostname_preview()}
+
+
+def hostname_preview():
+    """Resolved host name for install output, or None when it cannot be determined."""
+    return detected_machine_alias()
+
+
 def install(agent, home, apply=False, enable=True, hermes_command='hermes'):
     home=Path(home).expanduser().resolve()
     package=home/'.local/share/axon/plugins'/agent
-    settings=home/f'.{agent}'/('hooks.json' if agent=='codex' else 'settings.json' if agent=='claude' else 'config.yaml')
+    settings=home/'.pi/agent/settings.json' if agent=='pi' else \
+        home/'.config/opencode/opencode.json' if agent=='opencode' else \
+        home/f'.{agent}'/('hooks.json' if agent=='codex' else 'settings.json' if agent=='claude' else 'config.yaml')
     # Read malformed configuration before making any changes.
-    current=json.loads(settings.read_text()) if agent!='hermes' and settings.exists() else {}
-    if agent!='hermes' and (not isinstance(current,dict) or not isinstance(current.get('hooks',{}),dict)):
+    current=json.loads(settings.read_text()) if agent not in ('hermes','pi','opencode') and settings.exists() else {}
+    if agent not in ('hermes','pi','opencode') and (not isinstance(current,dict) or not isinstance(current.get('hooks',{}),dict)):
         raise ValueError('Invalid existing settings; nothing changed')
-    proposed=merged_config(current,agent,package) if agent!='hermes' else None
-    plan={'agent':agent,'package':str(package),'settings':str(settings),'apply':apply}
+    proposed=merged_config(current,agent,package) if agent not in ('hermes','pi','opencode') else None
+    plan={'agent':agent,'package':str(package),'settings':str(settings),'apply':apply,
+          'machine_label':ensure_machine_label(home)}
     if not apply:
         return plan
     stamp=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
@@ -137,6 +204,34 @@ def install(agent, home, apply=False, enable=True, hermes_command='hermes'):
         if enable:
             # Hermes owns its configuration format and preserves other enabled plugins.
             subprocess.run([hermes_command,'plugins','enable','axon-activity'],check=True)
+    elif agent=='pi':
+        # Pi auto-discovers extension directories; the package.json manifest
+        # points at index.ts. No configuration file is rewritten.
+        target=home/'.pi/agent/extensions/axon-activity'
+        target.parent.mkdir(parents=True,exist_ok=True)
+        if target.exists() or target.is_symlink():
+            target.rename(backup/'pi-extension')
+        target.symlink_to(package,target_is_directory=True)
+        skill=home/'.pi/agent/skills/axon-activity'
+        skill.parent.mkdir(parents=True,exist_ok=True)
+        if skill.exists() or skill.is_symlink():
+            skill.rename(backup/'skill')
+        skill.symlink_to(package/'skills/axon-activity',target_is_directory=True)
+    elif agent=='opencode':
+        # opencode auto-loads JS/TS modules from the global plugins directory;
+        # skills live under skills/<name>/SKILL.md. No config file is rewritten.
+        target=home/'.config/opencode/plugins/axon-activity.js'
+        target.parent.mkdir(parents=True,exist_ok=True)
+        if target.exists() or target.is_symlink():
+            target.rename(backup/'opencode-plugin')
+        # Symlink, not copy: the plugin resolves its own realpath to find
+        # hooks/run.py inside this package.
+        target.symlink_to(package/'plugin/axon.js')
+        skill=home/'.config/opencode/skills/axon-activity'
+        skill.parent.mkdir(parents=True,exist_ok=True)
+        if skill.exists() or skill.is_symlink():
+            skill.rename(backup/'skill')
+        skill.symlink_to(package/'skills/axon-activity',target_is_directory=True)
     else:
         write_json(settings,proposed)
         skill=home/f'.{agent}/skills/axon-activity'
@@ -144,8 +239,55 @@ def install(agent, home, apply=False, enable=True, hermes_command='hermes'):
         if skill.exists() or skill.is_symlink():
             skill.rename(backup/'skill')
         skill.symlink_to(package/'skills/axon-activity',target_is_directory=True)
-    return {**plan,'backup':str(backup),'restart_required':True,
-            'hook_review_required':agent=='codex'}
+    return {**plan,'machine_label':ensure_machine_label(home,apply),'backup':str(backup),
+            'restart_required':True,'hook_review_required':agent=='codex'}
+
+
+# Install locations agents use that user shells add late (or cron never adds).
+EXTRA_BIN_DIRS = ('.local/bin', '.npm-global/bin', '.opencode/bin')
+
+
+def detect_agents(home=Path.home()):
+    """Agents whose binary exists on PATH or in a well-known user bin dir."""
+    home = Path(home).expanduser()
+    path = os.environ.get('PATH', '') + os.pathsep + os.pathsep.join(str(home/d) for d in EXTRA_BIN_DIRS)
+    return [agent for agent in AGENTS if shutil.which(agent, path=path)]
+
+
+def sync(home=Path.home(), apply=False, force=False):
+    """Install hooks for every detected agent; skip cleanly when nothing moved.
+
+    A stamp under the activity state dir records the checkout revision plus
+    the detected agent set, so machine-bootstrap loops (cron, chezmoi
+    run_after) can invoke this on every run and pay only for real changes.
+    """
+    home = Path(home).expanduser().resolve()
+    try:
+        revision = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'],
+                                  capture_output=True, text=True).stdout.strip() or 'unknown'
+    except OSError:
+        revision = 'unknown'
+    agents = detect_agents(home)
+    state = Path(os.environ.get('AXON_ACTIVITY_HOME', home/'.local/state/axon'))
+    stamp = state/'hooks-synced'
+    want = f'{revision} {" ".join(agents)}\n'
+    label = ensure_machine_label(home, apply)
+    if not force and agents and stamp.exists() and stamp.read_text() == want:
+        return {'revision': revision, 'agents': agents, 'machine_label': label, 'skipped': True}
+    installed, failed = [], {}
+    for agent in agents:
+        try:
+            install(agent, home, apply=apply)
+            if apply:
+                installed.append(agent)
+        except Exception as error:  # noqa: BLE001 — one bad agent must not stop the rest
+            failed[agent] = str(error)
+    if apply and not failed:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(want)
+    return {'revision': revision, 'agents': agents, 'apply': apply,
+            'machine_label': ensure_machine_label(home, apply),
+            'installed': installed, 'failed': failed, 'skipped': False}
 
 
 def main():
@@ -155,10 +297,19 @@ def main():
     i=sub.add_parser('install'); i.add_argument('agent',choices=AGENTS); i.add_argument('--home',type=Path,default=Path.home())
     i.add_argument('--apply',action='store_true'); i.add_argument('--no-enable',action='store_true')
     i.add_argument('--hermes-command',default='hermes')
+    s=sub.add_parser('sync',help='install every detected agent; stamp-skipped when unchanged')
+    s.add_argument('--home',type=Path,default=Path.home())
+    s.add_argument('--apply',action='store_true'); s.add_argument('--force',action='store_true')
     args=p.parse_args()
     try:
         if args.command=='build':
             print(json.dumps({a:str(build(a,args.output/f'axon-{a}')) for a in AGENTS},indent=2))
+        elif args.command=='sync':
+            report=sync(args.home,args.apply,args.force)
+            print(json.dumps(report,indent=2))
+            if report.get('failed'):
+                # 'skipped' reports carry no failure map
+                p.exit(2)
         else:
             print(json.dumps(install(args.agent,args.home,args.apply,not args.no_enable,args.hermes_command),indent=2))
     except (ValueError,OSError,subprocess.CalledProcessError) as error:

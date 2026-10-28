@@ -56,8 +56,9 @@ The query client uses only HTTP and is separately installable.
 ## Identity and privacy
 
 Reporter installations generate a stable random machine label in private local
-state. `AXON_MACHINE` and `AXON_SOURCE` allow explicit labels; hostnames are not
-read automatically. Reporters also send a coarse `machine_kind` (laptop, desktop,
+state. `AXON_MACHINE` and `AXON_SOURCE` allow explicit labels; `AXON_MACHINE=auto`
+resolves the host name instead. Hostnames are never read unless that label is set
+explicitly, and the managed installer sets it as a deliberate opt-in. Reporters also send a coarse `machine_kind` (laptop, desktop,
 or server) from local hardware facts, overridable with `AXON_MACHINE_KIND`. Session IDs are hashed. Lifecycle hooks never copy prompts,
 responses, or tool arguments. Explicit goals, branch/project labels, outcomes,
 and evidence are still application data: choose what to report accordingly.
