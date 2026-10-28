@@ -5,6 +5,33 @@ const ACTIVE = ['working', 'waiting', 'blocked'];
 const LABEL = {working:'Working', waiting:'Waiting', blocked:'Blocked', finished:'Finished', stopped:'Stopped', interrupted:'Interrupted', lost_contact:'Lost contact'};
 const state = {compose:null, drafts:{}, view:'now', filter:'', sessions:[], events:[], before:null, more:false, selected:null, detailEvents:[], detailBefore:null, detailMore:false, synced:null, live:false, request:0, detailRequest:0};
 let timer;
+const loadedVersion=document.documentElement.dataset.axonVersion;
+const RELOAD_STATE='axon:reload-state';
+let restoredDraft=null;
+try {
+  const saved=JSON.parse(sessionStorage.getItem(RELOAD_STATE)||'null');
+  if (saved) {state.drafts=saved.drafts||{};state.compose=saved.compose||null;restoredDraft=saved.detail||null;}
+  sessionStorage.removeItem(RELOAD_STATE);
+} catch {}
+function observeVersion(response) {
+  const version=response.headers.get('X-Axon-Version');
+  if (!loadedVersion || !version || loadedVersion===version || state.reloading) return;
+  // Let an in-flight send settle before capturing its draft or navigating away.
+  if (document.querySelector('.message-form button:disabled, .card-composer .send-button:disabled')) return;
+  const detail=state.selected ? {...state.selected,text:$('message-text').value} : null;
+  const saved={drafts:state.drafts,compose:state.compose,detail};
+  try {sessionStorage.setItem(RELOAD_STATE,JSON.stringify(saved));}
+  catch {if(detail?.text || Object.values(state.drafts).some(Boolean)) return;}
+  state.reloading=true;route();location.reload();
+}
+async function checkVersion() {
+  if (document.hidden || state.versionChecking) return;
+  state.versionChecking=true;state.versionChecked=Date.now();
+  try {observeVersion(await fetch('/health',{cache:'no-store',signal:AbortSignal.timeout(8000)}));}
+  catch {} // Normal activity refresh handles outage messages and retry.
+  finally {state.versionChecking=false;}
+}
+
 
 function node(tag, className, text) {
   const element = document.createElement(tag);
@@ -84,6 +111,7 @@ function route() {
 }
 async function api(path, params) {
   const response = await fetch(path+(params ? '?'+params : ''), {cache:'no-store',signal:AbortSignal.timeout(8000)});
+  observeVersion(response);
   if (!response.ok) throw new Error('The journal returned '+response.status+'.');
   return response.json();
 }
@@ -255,7 +283,8 @@ function render() {
   $('nav-search').classList.toggle('has-query',!!$('search').value.trim());
   $('page-title').textContent=state.view==='now' ? 'Live board' : 'Timeline';
   $('page-subtitle').textContent=state.view==='now' ? 'Hosts → agents → work.' : 'Reported work, across hosts, agents and projects.';
-  $('section-title').textContent=state.view==='now' ? 'IN THE ROOM' : 'LATEST RECEIVED';
+  $('result-count').hidden=state.view==='now';
+  document.querySelector('.section-heading').hidden=state.view==='now' && !state.filter;
   const container=$('activity');container.classList.toggle('board',state.view==='now');
   const focused=document.activeElement?.dataset?.sessionKey;
   if (state.view==='now' && document.activeElement?.closest?.('.card-composer')) return; // never wipe a draft mid-typing
@@ -360,7 +389,7 @@ function renderDetail(row) {
 }
 async function openSession(row) {
   state.selected={source:row.source,session:row.session};state.detailEvents=[];state.detailBefore=null;state.detailMore=false;state.detailRendered='';
-  state.thread='';$('message-thread').replaceChildren();$('message-text').value='';$('message-status').textContent='';$('session-input').hidden=true;
+  state.thread='';$('message-thread').replaceChildren();$('message-text').value=restoredDraft && key(restoredDraft)===key(row) ? restoredDraft.text : '';restoredDraft=null;$('message-status').textContent='';$('session-input').hidden=true;
   $('detail-content').replaceChildren(node('h2','','Loading session…'));
   if (!$('session-dialog').open) $('session-dialog').showModal();
   route();await loadDetail(false);
@@ -453,15 +482,16 @@ let streamTimer;
 function connectStream() {
   if (!window.EventSource) return;
   const stream=new EventSource('/stream');
-  stream.onopen=()=>{state.live=true;};
+  stream.onopen=()=>{state.live=true;checkVersion();};
   stream.onerror=()=>{state.live=false;};
   stream.onmessage=()=>{
     clearTimeout(streamTimer);
     streamTimer=setTimeout(()=>{if (!document.hidden && !historyPaused()) refresh();},150);
   };
 }
-document.addEventListener('visibilitychange',()=>{if (!document.hidden && !historyPaused()) refresh();});
+document.addEventListener('visibilitychange',()=>{if (!document.hidden) {checkVersion();if (!historyPaused()) refresh();}});
 setInterval(()=>{
+  if (!state.versionChecked || Date.now()-state.versionChecked>=60000) checkVersion();
   document.querySelectorAll('time[data-at]').forEach(el=>{el.textContent=relative(el.dataset.at);});
   if (document.hidden || historyPaused() || state.refreshing) return;
   // Poll while the stream is down; when live, a slow refresh still catches lease expiry, which no event announces.

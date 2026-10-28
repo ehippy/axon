@@ -128,3 +128,9 @@ Background reports, heartbeat renewals, and replays leave the archive in place.
 An updated reporter's next `UserPromptSubmit` emits a `user_turn: true` marker;
 a fresh marker after the archive restores the session automatically. Update the
 installed agent plugins alongside the server to enable this behavior.
+
+The browser detects code/UI deployments from the server's `X-Axon-Version`
+fingerprint and reloads automatically on a changed version. It checks when the
+live stream reconnects, when a tab becomes visible, and periodically as a fallback.
+The URL preserves the view and filters; unsent card/detail messages are carried
+across the reload in that tab's session storage. An in-flight send finishes first.

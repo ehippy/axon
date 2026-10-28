@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from http.server import ThreadingHTTPServer
 from urllib.error import HTTPError
 from urllib.parse import urlencode
@@ -14,7 +15,7 @@ from urllib.request import Request, urlopen
 ROOT = Path(__file__).resolve().parents[2]
 for project in ('server', 'packages/python/axon_protocol'):
     sys.path.insert(0, str(ROOT/project))
-from axon_server.journal import Journal, handler
+from axon_server.journal import Journal, handler, server_revision
 
 
 class WebTests(unittest.TestCase):
@@ -39,6 +40,32 @@ class WebTests(unittest.TestCase):
 
     def get(self,path):
         with urlopen(self.base+path) as response:return json.load(response)
+
+    def test_version_matches_html_api_and_stream_and_ignores_activity(self):
+        with urlopen(self.base+'/') as response:
+            revision=response.headers['X-Axon-Version']
+            self.assertRegex(revision,r'^[a-f0-9]{64}$')
+            self.assertIn(f'data-axon-version="{revision}"',response.read().decode())
+        self.event(goal='Activity must not force a page reload')
+        for path in ('/health','/sessions','/ui/app.js'):
+            with urlopen(self.base+path) as response:self.assertEqual(response.headers['X-Axon-Version'],revision)
+        with urlopen(self.base+'/stream',timeout=5) as response:
+            self.assertEqual(response.headers['X-Axon-Version'],revision)
+        self.assertEqual(server_revision(),revision)
+
+    def test_version_changes_when_shipped_asset_changes(self):
+        from importlib.resources import files as actual_files
+        original=server_revision()
+        class ChangedAsset:
+            def __init__(self,parts):self.parts=parts
+            def read_bytes(self):
+                content=actual_files('axon_server').joinpath(*self.parts).read_bytes()
+                return content+b'/* updated */' if self.parts==('web','app.css') else content
+        class ChangedRoot:
+            def joinpath(self,*parts):return ChangedAsset(parts)
+        with patch('axon_server.journal.files',return_value=ChangedRoot()):
+            self.assertNotEqual(server_revision(),original)
+        self.assertEqual(server_revision(),original)
 
     def test_packaged_assets_have_security_headers(self):
         for path, kind in [('/', 'text/html'),('/ui/app.js','text/javascript'),('/ui/app.css','text/css'),('/ui/favicon.svg','image/svg+xml')]:

@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from importlib.resources import files
 import argparse
 import hmac
+import hashlib
 import json
 import logging
 import re
@@ -25,6 +26,23 @@ IDENTITY = re.compile(r'[a-zA-Z0-9_.-]{1,128}')
 MESSAGE_LIMIT = 4000
 CLAIM_WAIT_LIMIT = 55
 STREAM_PING = 15
+
+
+WEB_ASSETS = {'/': ('index.html', 'text/html; charset=utf-8'),
+                          '/ui/app.css': ('app.css', 'text/css; charset=utf-8'),
+                          '/ui/app.js': ('app.js', 'text/javascript; charset=utf-8'),
+                          '/ui/favicon.svg': ('favicon.svg', 'image/svg+xml'),
+                          **{f'/ui/icons/{name}.svg': (f'icons/{name}.svg', 'image/svg+xml')
+                             for name in ('laptop', 'pc-display', 'hdd-rack', 'chat-dots')}}
+
+
+def server_revision():
+    """Fingerprint code and shipped UI, independent of data and deployment paths."""
+    digest = hashlib.sha256(Path(__file__).read_bytes())
+    for name in sorted({asset[0] for asset in WEB_ASSETS.values()}):
+        digest.update(name.encode())
+        digest.update(files('axon_server').joinpath('web', *name.split('/')).read_bytes())
+    return digest.hexdigest()
 
 
 class Journal:
@@ -275,6 +293,7 @@ class Journal:
 
 
 def handler(journal, web=True, token=None, stop=None):
+    revision = server_revision()
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             url = urlsplit(self.path)
@@ -282,15 +301,11 @@ def handler(journal, web=True, token=None, stop=None):
             if url.path == '/stream':
                 self.stream(); return
             try:
-                assets = {'/': ('index.html', 'text/html; charset=utf-8'),
-                          '/ui/app.css': ('app.css', 'text/css; charset=utf-8'),
-                          '/ui/app.js': ('app.js', 'text/javascript; charset=utf-8'),
-                          '/ui/favicon.svg': ('favicon.svg', 'image/svg+xml'),
-                          **{f'/ui/icons/{name}.svg': (f'icons/{name}.svg', 'image/svg+xml')
-                             for name in ('laptop', 'pc-display', 'hdd-rack', 'chat-dots')}}
-                if web and url.path in assets:
-                    asset, content_type = assets[url.path]
+                if web and url.path in WEB_ASSETS:
+                    asset, content_type = WEB_ASSETS[url.path]
                     body = files('axon_server').joinpath('web', *asset.split('/')).read_bytes()
+                    if asset == 'index.html':
+                        body = body.replace(b'<html lang="en"', ('<html lang="en" data-axon-version="'+revision+'"').encode(), 1)
                     self.send_response(200)
                     self.send_header('Content-Type', content_type)
                     self.send_header('Content-Length', str(len(body)))
@@ -369,6 +384,7 @@ def handler(journal, web=True, token=None, stop=None):
                 pass  # the page went away
 
         def end_headers(self):
+            self.send_header('X-Axon-Version', revision)
             self.send_header('Cache-Control', 'no-store')
             self.send_header('X-Content-Type-Options', 'nosniff')
             self.send_header('Referrer-Policy', 'no-referrer')
