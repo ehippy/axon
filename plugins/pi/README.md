@@ -24,3 +24,8 @@ that directory yourself. Restart Pi (or `/reload`) afterwards.
 Reporter settings come from the Pi process environment: `AXON_BROKER`,
 `AXON_PORT`, `AXON_MACHINE`, `AXON_SOURCE`, `AXON_ACTIVITY_HOME`, and
 optionally `AXON_PYTHON` (defaults to `python3`).
+
+Pitfall: launching Pi from a terminal that already exports `AXON_SOURCE`
+(for example a Hermes or Claude Code session with Axon reporting) makes the
+Pi session report under the parent agent source. Start Pi from a clean shell,
+or unset `AXON_SOURCE` for it, so it falls back to `pi-<installation-id>`.
