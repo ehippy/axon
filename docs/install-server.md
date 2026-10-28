@@ -77,10 +77,10 @@ address and authentication model: keep it on loopback or behind authenticated
 access, since activity can contain personal project details. Agent-reported text
 is displayed as text; evidence becomes a link only for explicit HTTP(S) URLs.
 
-The board keeps sessions in their host/agent groups for one hour after their last
-report, including finished and disconnected sessions. Live state still follows
-the reported lease; keeping a tile visible does not extend that lease. Older
-sessions are available in the collapsed older-session section and timeline.
+The top bar's time horizon controls both board sessions (by last report) and
+timeline events. It defaults to one hour and offers 15m, 30m, 1h, 6h, 24h, 7d,
+30d, and Any time. Selecting a longer horizon reveals older sessions without
+changing their reported state or extending their heartbeat lease.
 
 Within each host and agent group, live sessions appear first; sessions in each
 section are ordered by most recent report, with session identity breaking ties.

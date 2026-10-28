@@ -2,10 +2,6 @@
 const $ = id => document.getElementById(id);
 const PAGE = 50;
 const ACTIVE = ['working', 'waiting', 'blocked'];
-const BOARD_RECENCY = 60 * 60;
-function onBoard(row, now=Date.now()/1000) {
-  return ACTIVE.includes(row.effective_state) || now-Number(row.updated_at) <= BOARD_RECENCY;
-}
 const LABEL = {working:'Working', waiting:'Waiting', blocked:'Blocked', finished:'Finished', stopped:'Stopped', interrupted:'Interrupted', lost_contact:'Lost contact'};
 const state = {compose:null, drafts:{}, view:'now', filter:'', sessions:[], events:[], before:null, more:false, selected:null, detailEvents:[], detailBefore:null, detailMore:false, synced:null, live:false, request:0, detailRequest:0};
 let timer;
@@ -70,19 +66,12 @@ function options(id, values, label) {
   select.replaceChildren(new Option(label,''),...unique.map(value=>new Option(id==='agent'?agentName({agent:value}):value,value)));
   select.value=current;
 }
-function periodOptions() {
-  const group=$('period');group.replaceChildren();
-  for (const [value,label] of [['','Any time'],['86400','24h'],['604800','7d'],['2592000','30d']]) {
-    const button=node('button','filter-pill',label);button.type='button';button.setAttribute('aria-pressed',String((group.value||'')===value));
-    button.addEventListener('click',()=>{group.value=group.value===value?'':value;filtersChanged();});group.append(button);
-  }
-}
 function query(extra={}) {
   const params = new URLSearchParams(extra);
   for (const name of ['project','agent']) if ($(name).value) params.set(name, $(name).value);
   if ($('host').value) params.set('machine',$('host').value);
   if ($('search').value.trim()) params.set('q', $('search').value.trim());
-  if ($('period').value) params.set('since', String(Math.floor(Date.now()/1000-Number($('period').value))));
+  if ($('period').value!=='all') params.set('since', String(Math.floor(Date.now()/1000-Number($('period').value))));
   return params;
 }
 function route() {
@@ -230,7 +219,7 @@ function filteredSessions() {
     .filter(row=>!$('agent').value || row.agent===$('agent').value);
   const search=$('search').value.trim().toLowerCase();
   if (search) rows=rows.filter(row=>JSON.stringify(row).toLowerCase().includes(search));
-  if ($('period').value) rows=rows.filter(row=>row.updated_at>=Date.now()/1000-Number($('period').value));
+  if ($('period').value!=='all') rows=rows.filter(row=>row.updated_at>=Date.now()/1000-Number($('period').value));
   return rows;
 }
 function hostGroups(rows) {
@@ -262,6 +251,7 @@ function render() {
   document.querySelectorAll('[data-state]').forEach(button=>{button.classList.toggle('active',button.dataset.state===state.filter);button.setAttribute('aria-pressed',String(button.dataset.state===state.filter));button.setAttribute('aria-label',LABEL[button.dataset.state]+': '+counts[button.dataset.state]);button.title=LABEL[button.dataset.state];});
   $('clear-state').hidden=!state.filter || state.view!=='now';
   $('heartbeat-control').hidden=state.view!=='timeline';
+  $('nav-search').classList.toggle('has-query',!!$('search').value.trim());
   $('page-title').textContent=state.view==='now' ? 'Live board' : 'Timeline';
   $('page-subtitle').textContent=state.view==='now' ? 'Hosts → agents → work.' : 'Reported work, across hosts, agents and projects.';
   $('section-title').textContent=state.view==='now' ? 'IN THE ROOM' : 'LATEST RECEIVED';
@@ -273,14 +263,10 @@ function render() {
     const archived=filteredSessions().filter(row=>row.archived_at);
     let rows=filteredSessions().filter(row=>!row.archived_at);
     if (state.filter) rows=rows.filter(row=>row.effective_state===state.filter);
-    const active=rows.filter(row=>ACTIVE.includes(row.effective_state)), visible=rows.filter(row=>onBoard(row)).sort(boardOrder), recent=rows.filter(row=>!onBoard(row)).slice(0,8);
+    const active=rows.filter(row=>ACTIVE.includes(row.effective_state)), visible=rows.sort(boardOrder);
     $('result-count').textContent=active.length+' live · '+(visible.length-active.length)+' recent';
     container.append(hostGroups(visible));
-    if (recent.length) {
-      const quiet=node('details','quiet-group'), summary=node('summary','','Older sessions · '+recent.length);quiet.append(summary);
-      const grid=node('div','quiet-grid');recent.forEach(row=>grid.append(card(row)));quiet.append(grid);container.append(quiet);
-    }
-    if (!visible.length && !recent.length) container.append(empty('Nothing in this view','Change your filters, or let an agent report its next bit of work.'));
+    if (!visible.length) container.append(empty('Nothing in this view','Change your filters, or let an agent report its next bit of work.'));
     if (archived.length) {
       const section=node('details','quiet-group archived-group');section.open=!!state.archivedOpen;
       section.addEventListener('toggle',()=>{state.archivedOpen=section.open;});
@@ -313,7 +299,7 @@ async function refresh() {
     const [sessions, events] = await Promise.all([api('/sessions'),state.view==='timeline' ? api('/events',timelineParams()) : Promise.resolve(null)]);
     if (request!==state.request) return;
     state.sessions=sessions.sessions;
-    periodOptions(); options('host',state.sessions.map(s=>s.machine),'All hosts'); options('project',[...state.sessions].sort((a,b)=>b.updated_at-a.updated_at).map(s=>s.project),'All projects'); options('agent',state.sessions.map(s=>s.agent),'All agents');
+    options('host',state.sessions.map(s=>s.machine),'All hosts'); options('project',[...state.sessions].sort((a,b)=>b.updated_at-a.updated_at).map(s=>s.project),'All projects'); options('agent',state.sessions.map(s=>s.agent),'All agents');
     if (events) { state.events=events.events;state.before=events.next_before;state.more=events.events.length===PAGE; }
     state.synced=Date.now(); $('error').hidden=true; $('sync-dot').classList.remove('offline'); $('sync-status').textContent=state.live ? 'Live' : 'Polling · just synced';
     render(); route();
@@ -432,6 +418,8 @@ $('message-text').addEventListener('keydown',event=>{if(event.key==='Enter' && !
 $('token-form').addEventListener('submit',event=>{event.preventDefault();const value=$('token-input').value.trim();if(!value) return;storeToken(value);$('token-input').value='';$('message-status').textContent='';loadDetail(false);});
 function filtersChanged() { state.events=[];state.before=null;$('view-note').textContent='Updates live';route();refresh(); }
 $('filters').addEventListener('submit',event=>event.preventDefault());
+$('nav-search').addEventListener('toggle',()=>{if($('nav-search').open) $('search').focus();});
+$('nav-search').addEventListener('keydown',event=>{if(event.key==='Escape') {event.preventDefault();$('nav-search').open=false;$('nav-search').querySelector('summary').focus();}});
 $('search').addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(filtersChanged,250);});
 for (const id of ['host','project','agent','period','heartbeats']) $(id).addEventListener('change',filtersChanged);
 document.querySelectorAll('[data-view]').forEach(button=>button.addEventListener('click',()=>{state.view=button.dataset.view;state.filter='';filtersChanged();}));
@@ -444,7 +432,9 @@ $('session-dialog').addEventListener('close',()=>{state.selected=null;++state.de
 $('session-dialog').addEventListener('click',event=>{if(event.target===$('session-dialog') && event.clientX<$('session-dialog').getBoundingClientRect().left) $('session-dialog').close();});
 function readRoute() {
   const params=new URLSearchParams(location.hash.slice(1));state.view=params.get('view')==='timeline'?'timeline':'now';state.filter=ACTIVE.includes(params.get('state'))?params.get('state'):'';
-  for (const id of ['search','period']) $(id).value=params.get(id)||'';
+  $('search').value=params.get('search')||'';
+  const horizon=params.get('period')||'3600';
+  $('period').value=[...$('period').options].some(option=>option.value===horizon)?horizon:'3600';
   for (const id of ['host','project','agent']) {
     const value=params.get(id)||'';
     if (value && ![...$(id).options].some(option=>option.value===value)) $(id).append(new Option(value,value));
