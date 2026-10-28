@@ -131,12 +131,21 @@ mod hud_tests {
     #[test]
     fn install_scoped_sources_keep_their_agent_color() {
         // Sources are install-scoped; the name before the dash is the agent.
-        assert_eq!(agent_color("pi-69f471e05c0f4aa2", "running"), (106, 159, 204));
+        assert_eq!(
+            agent_color("pi-69f471e05c0f4aa2", "running"),
+            (106, 159, 204)
+        );
         assert_eq!(agent_color("pi-69f471e05c0f4aa2", "idle"), (106, 159, 204));
-        assert_eq!(agent_color("hermes-69f471e05c0f4aa2", "running"), (240, 190, 40));
+        assert_eq!(
+            agent_color("hermes-69f471e05c0f4aa2", "running"),
+            (240, 190, 40)
+        );
         assert_eq!(agent_color("mirror", "idle"), (255, 255, 255));
         // Error always overrides identity; unknown agents stay neutral.
         assert_eq!(agent_color("pi-69f471e05c0f4aa2", "error"), (255, 60, 60));
-        assert_eq!(agent_color("mystery-69f471e05c0f4aa2", "running"), (170, 170, 190));
+        assert_eq!(
+            agent_color("mystery-69f471e05c0f4aa2", "running"),
+            (170, 170, 190)
+        );
     }
 }
