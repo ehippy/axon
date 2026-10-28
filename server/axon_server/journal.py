@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 from importlib.resources import files
 import argparse
+import hmac
 import json
 import logging
 import re
@@ -13,11 +14,16 @@ import sqlite3
 import subprocess
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from axon_protocol import STATES, FIELDS, TERMINAL, validate
+
+IDENTITY = re.compile(r'[a-zA-Z0-9_.-]{1,128}')
+MESSAGE_LIMIT = 4000
+CLAIM_WAIT_LIMIT = 55
 
 
 class Journal:
@@ -26,6 +32,7 @@ class Journal:
             raise ValueError('retention_days must be a nonnegative integer')
         self.retention_days = retention_days
         self.path = str(path)
+        self.inbox = threading.Condition()
         with self.connect() as db:
             db.executescript('''
               PRAGMA journal_mode=WAL;
@@ -37,6 +44,10 @@ class Journal:
               CREATE TABLE IF NOT EXISTS sessions (
                 source TEXT, session TEXT, at REAL, payload TEXT,
                 PRIMARY KEY(source, session));
+              CREATE TABLE IF NOT EXISTS messages (
+                id TEXT PRIMARY KEY, source TEXT, session TEXT, at REAL, text TEXT,
+                delivered_at REAL);
+              CREATE INDEX IF NOT EXISTS message_session ON messages(source, session, at);
             ''')
 
 
@@ -67,6 +78,7 @@ class Journal:
         with self.connect() as db:
             events = db.execute('DELETE FROM events WHERE at < ?', (cutoff,)).rowcount
             sessions = db.execute('DELETE FROM sessions WHERE at < ?', (cutoff,)).rowcount
+            db.execute('DELETE FROM messages WHERE at < ?', (cutoff,))
         return {'events': events, 'sessions': sessions}
 
 
@@ -165,7 +177,49 @@ class Journal:
         return [{'seq': r['seq'], 'received_at': r['received'], **json.loads(r['payload'])} for r in rows]
 
 
-def handler(journal, web=True):
+    def send_message(self, source, session, text):
+        """Queue dashboard input for one existing session; its hooks claim it."""
+        if not (IDENTITY.fullmatch(source) and IDENTITY.fullmatch(session)):
+            raise ValueError('invalid session identity')
+        if not isinstance(text, str) or not text.strip() or len(text) > MESSAGE_LIMIT:
+            raise ValueError('message must be 1..%d characters' % MESSAGE_LIMIT)
+        message = {'id': uuid.uuid4().hex, 'source': source, 'session': session, 'at': time.time(),
+                   'text': text.strip(), 'delivered_at': None}
+        with self.connect() as db:
+            if not db.execute('SELECT 1 FROM sessions WHERE source=? AND session=?', (source, session)).fetchone():
+                raise LookupError('unknown session')
+            db.execute('INSERT INTO messages VALUES(:id,:source,:session,:at,:text,:delivered_at)', message)
+        with self.inbox:
+            self.inbox.notify_all()
+        return message
+
+    def messages(self, source, session):
+        with self.connect() as db:
+            rows = db.execute('SELECT * FROM messages WHERE source=? AND session=? ORDER BY at', (source, session)).fetchall()
+        return [dict(r) for r in rows]
+
+    def claim(self, source, session, wait=0):
+        """Atomically hand pending messages to the session's hook, waiting up to `wait` seconds."""
+        if not (IDENTITY.fullmatch(source) and IDENTITY.fullmatch(session)):
+            raise ValueError('invalid session identity')
+        deadline = time.time() + min(CLAIM_WAIT_LIMIT, max(0, wait))
+        while True:
+            with self.connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                rows = [dict(r) for r in db.execute('SELECT * FROM messages WHERE source=? AND session=? AND delivered_at IS NULL ORDER BY at',
+                                                    (source, session)).fetchall()]
+                now = time.time()
+                for row in rows:
+                    row['delivered_at'] = now
+                    db.execute('UPDATE messages SET delivered_at=? WHERE id=?', (now, row['id']))
+            remaining = deadline - time.time()
+            if rows or remaining <= 0:
+                return rows
+            with self.inbox:
+                self.inbox.wait(remaining)
+
+
+def handler(journal, web=True, token=None):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             url = urlsplit(self.path)
@@ -187,6 +241,8 @@ def handler(journal, web=True):
                     data = {'ok': True, 'retention_days': journal.retention_days}
                 elif url.path == '/sessions':
                     data = {'sessions': journal.sessions(filters)}
+                elif (parts := session_path(url.path)) and parts[2] == 'messages':
+                    data = {'messages': journal.messages(parts[0], parts[1]), 'input': bool(token)}
                 elif url.path == '/events':
                     events = journal.events(filters)
                     data = {'events': events, 'next_after': max(e['seq'] for e in events) if events else int(filters.get('after', 0))}
@@ -201,6 +257,37 @@ def handler(journal, web=True):
                 self.end_headers(); self.wfile.write(body)
             except (ValueError, TypeError):
                 self.send_error(400, 'Invalid query')
+        def do_POST(self):
+            url = urlsplit(self.path)
+            parts = session_path(url.path)
+            if not parts or parts[2] not in ('messages', 'inbox/claim'):
+                self.send_error(501); return
+            try:
+                if parts[2] == 'messages':
+                    # Input makes agents act, so it always needs the configured token.
+                    supplied = self.headers.get('Authorization', '')
+                    if not token:
+                        self.send_error(403, 'Session input is disabled'); return
+                    if not hmac.compare_digest(supplied.encode(), ('Bearer ' + token).encode()):
+                        self.send_error(401, 'Invalid input token'); return
+                    length = int(self.headers.get('Content-Length', 0))
+                    if not 0 < length <= 4 * MESSAGE_LIMIT + 1024:
+                        raise ValueError('invalid body')
+                    data = journal.send_message(parts[0], parts[1], json.loads(self.rfile.read(length)).get('text'))
+                    status = 201
+                else:
+                    wait = float(parse_qs(url.query).get('wait', ['0'])[-1])
+                    data, status = {'messages': journal.claim(parts[0], parts[1], wait)}, 200
+                body = json.dumps(data).encode()
+                self.send_response(status)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers(); self.wfile.write(body)
+            except LookupError:
+                self.send_error(404, 'Unknown session')
+            except (ValueError, TypeError, AttributeError):
+                self.send_error(400, 'Invalid request')
+
         def end_headers(self):
             self.send_header('Cache-Control', 'no-store')
             self.send_header('X-Content-Type-Options', 'nosniff')
@@ -211,6 +298,14 @@ def handler(journal, web=True):
         def log_message(self, *_):
             pass
     return Handler
+
+
+def session_path(path):
+    """Split /sessions/<source>/<session>/<action> into its parts, or None."""
+    parts = path.split('/')
+    if len(parts) >= 5 and parts[:2] == ['', 'sessions'] and IDENTITY.fullmatch(parts[2]) and IDENTITY.fullmatch(parts[3]):
+        return parts[2], parts[3], '/'.join(parts[4:])
+    return None
 
 
 def mqtt(journal, broker, stop, port=1883):
@@ -293,13 +388,18 @@ def main():
     p.add_argument('--port', type=int, default=8510)
     p.add_argument('--retention-days', type=int, default=30, help='History lifetime in days (default 30; 0 disables cleanup)')
     p.add_argument('--no-mqtt', action='store_true')
-    p.add_argument('--no-web', action='store_true', help='Disable the read-only browser UI')
+    p.add_argument('--no-web', action='store_true', help='Disable the browser UI')
+    p.add_argument('--input-token-file', default=os.environ.get('AXON_INPUT_TOKEN_FILE'),
+                   help='File holding the bearer token that allows sending input to sessions; input is disabled without it')
     args = p.parse_args()
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
     if not 1 <= args.broker_port <= 65535:
         p.error('--broker-port must be between 1 and 65535')
     if args.retention_days < 0:
         p.error('--retention-days must be nonnegative')
+    token = Path(args.input_token_file).read_text().strip() if args.input_token_file else None
+    if args.input_token_file and len(token or '') < 16:
+        p.error('--input-token-file must hold a token of at least 16 characters')
     journal = Journal(args.db, args.retention_days)
     stop = threading.Event()
     maintenance = threading.Thread(target=maintain, args=(journal, stop), daemon=True)
@@ -309,7 +409,7 @@ def main():
         for target in (mqtt, publish_view):
             thread = threading.Thread(target=target, args=(journal, args.broker, stop, args.broker_port), daemon=True)
             thread.start(); threads.append(thread)
-    server = ThreadingHTTPServer((args.listen, args.port), handler(journal, web=not args.no_web))
+    server = ThreadingHTTPServer((args.listen, args.port), handler(journal, web=not args.no_web, token=token))
     def shutdown(*_):
         stop.set()
         threading.Thread(target=server.shutdown, daemon=True).start()

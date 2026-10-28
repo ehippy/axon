@@ -8,5 +8,7 @@ if (root / 'runtime').is_dir():
 else:
     for project in ('axon_protocol', 'axon_reporter'):
         sys.path.insert(0, str(root.parents[1] / 'packages/python' / project))
-from axon_reporter.plugin_runtime import run_hook
+from axon_reporter.plugin_runtime import listen, run_hook
+if sys.argv[1:] == ['listen']:
+    sys.exit(listen('claude'))
 run_hook('claude')

@@ -15,7 +15,11 @@ for project in ('packages/python/axon_protocol', 'packages/python/axon_reporter'
     sys.path.insert(0, str(ROOT / project))
 import manage
 from axon_reporter import plugin_runtime, report
-from axon_server.journal import Journal
+from axon_server.journal import Journal, handler
+from http.server import ThreadingHTTPServer
+import threading
+import time
+from urllib.request import Request, urlopen
 
 
 def load(path,name):
@@ -27,7 +31,9 @@ def load(path,name):
 class PluginTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(); self.root=Path(self.tmp.name)
-        self.env={**os.environ,'AXON_ACTIVITY_HOME':str(self.root/'state'),'AXON_MOSQUITTO_PUB':'/missing/axon-pub','PYTHONDONTWRITEBYTECODE':'1'}
+        # Never read the developer's saved settings or reach a real journal server.
+        self.env={**os.environ,'AXON_ACTIVITY_HOME':str(self.root/'state'),'AXON_MOSQUITTO_PUB':'/missing/axon-pub','PYTHONDONTWRITEBYTECODE':'1',
+                  'AXON_CONFIG_FILE':str(self.root/'missing-env'),'AXON_SERVER':'http://127.0.0.1:9'}
     def tearDown(self):
         self.tmp.cleanup()
     def hook(self,package,event,session='a',**extra):
@@ -218,6 +224,70 @@ class PiTests(unittest.TestCase):
         self.assertTrue(list((home/'.local/state/axon/install-backups').iterdir()))
         # The install never invents or rewrites a Pi settings file.
         self.assertFalse((home/'.pi/agent/settings.json').exists())
+
+
+class InboxTests(unittest.TestCase):
+    """Dashboard input reaches Claude sessions through hooks, using a real journal server."""
+    hook=PluginTests.hook
+    events=PluginTests.events
+    def setUp(self):
+        PluginTests.setUp(self);self.addCleanup(self.tmp.cleanup)
+        self.env['AXON_LISTEN_POLL']='1'
+        self.journal=Journal(self.root/'journal.db')
+        self.server=ThreadingHTTPServer(('127.0.0.1',0),handler(self.journal,token='t'*20))
+        threading.Thread(target=self.server.serve_forever,daemon=True).start()
+        self.addCleanup(self.server.server_close);self.addCleanup(self.server.shutdown)
+        self.env.update(AXON_SERVER=f'http://127.0.0.1:{self.server.server_port}',AXON_MACHINE='workstation')
+        self.package=manage.build('claude',self.root/'claude')
+    def address(self,session='a'):
+        with patch.dict(os.environ,{k:v for k,v in self.env.items() if k.startswith('AXON_')}):
+            source,key,_=report.identity('claude',session)
+        self.journal.ingest(dict(version=1,source=source,session=key,id='s-'+session,at=time.time(),kind='start',data={'agent':'claude'}))
+        return source,key
+    def send(self,source,key,text,token='t'*20):
+        request=Request(f'http://127.0.0.1:{self.server.server_port}/sessions/{source}/{key}/messages',method='POST',
+                        data=json.dumps({'text':text}).encode(),headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'})
+        with urlopen(request) as response:return json.load(response)
+    def listen(self,session='a',**env):
+        data=json.dumps({'session_id':session,'hook_event_name':'Stop'})
+        return subprocess.Popen([sys.executable,str(self.package/'hooks/run.py'),'listen'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,text=True,env={**self.env,**env}),data
+
+    def test_idle_listener_wakes_session_with_exit_two(self):
+        source,key=self.address()
+        proc,data=self.listen()
+        proc.stdin.write(data);proc.stdin.close()
+        time.sleep(1.5)
+        self.assertIsNone(proc.poll())
+        self.send(source,key,'Also update the docs')
+        self.assertEqual(proc.wait(10),2)
+        self.assertIn('Also update the docs',proc.stderr.read())
+        self.assertIsNotNone(self.journal.messages(source,key)[0]['delivered_at'])
+        self.assertTrue(any(e['data'].get('listening_until',0)>time.time() for e in self.events()))
+
+    def test_newer_listener_or_local_prompt_retires_waiting_listener(self):
+        self.address()
+        first,data=self.listen();first.stdin.write(data);first.stdin.close()
+        time.sleep(1)
+        self.hook(self.package,'UserPromptSubmit')
+        self.assertEqual(first.wait(10),0)
+        self.assertEqual(self.events()[-1]['data']['listening_until'],0)
+
+    def test_in_turn_messages_arrive_as_context_once(self):
+        source,key=self.address()
+        self.send(source,key,'Use the staging broker')
+        output=json.loads(self.hook(self.package,'PostToolUse',tool_name='Bash').stdout)['hookSpecificOutput']
+        self.assertEqual(output['hookEventName'],'PostToolUse')
+        self.assertIn('Use the staging broker',output['additionalContext'])
+        self.assertEqual(self.hook(self.package,'UserPromptSubmit').stdout.count('Use the staging broker'),0)
+
+    def test_installer_keeps_listener_argument_and_async_wake(self):
+        stop=manage.merged_config({},'claude',self.package)['hooks']['Stop'][0]['hooks']
+        listener=[h for h in stop if h.get('asyncRewake')]
+        self.assertEqual(len(listener),1)
+        self.assertEqual(shlex.split(listener[0]['command'])[-1],'listen')
+        self.assertGreaterEqual(listener[0]['timeout'],plugin_runtime.LISTEN_CAP)
+        self.assertTrue(all(shlex.split(h['command'])[1].endswith('/hooks/run.py') for h in stop))
 
 
 if __name__=='__main__': unittest.main()
