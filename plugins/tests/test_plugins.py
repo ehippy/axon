@@ -383,5 +383,15 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(report['installed'],['opencode'])
         self.assertFalse((Path(self.env['AXON_ACTIVITY_HOME'])/'hooks-synced').exists())
 
+    def test_sync_cli_skip_path_exits_zero(self):
+        # main() must tolerate the 'skipped' report shape (no failure map).
+        env={**os.environ,'PATH':str(self.home/'.opencode/bin'),'AXON_ACTIVITY_HOME':str(self.root/'state')}
+        run=lambda: subprocess.run([sys.executable,str(ROOT/'plugins/tools/manage.py'),'sync','--apply','--home',str(self.home)],
+                                   capture_output=True,text=True,env=env)
+        first=run(); self.assertEqual(first.returncode,0,first.stderr)
+        self.assertEqual(json.loads(first.stdout)['installed'],['opencode'])
+        second=run(); self.assertEqual(second.returncode,0,second.stderr)
+        self.assertTrue(json.loads(second.stdout)['skipped'])
+
 
 if __name__=='__main__': unittest.main()
