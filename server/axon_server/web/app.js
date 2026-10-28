@@ -49,20 +49,25 @@ function renderResources(values=[]) {
   for(const provider of ['codex','claude']) if(!rows.some(row=>row.provider===provider)) rows.push({provider,account:'primary',windows:[]});
   rows.sort((a,b)=>['codex','claude'].indexOf(a.provider)-['codex','claude'].indexOf(b.provider) || a.account.localeCompare(b.account));
   const now=Date.now()/1000;
-  const view=rows.map(row=>({provider:row.provider,account:row.account,
+  const view=rows.map(row=>{
+    // An empty window blocks the account until its reset; when both are empty, the later reset is the one that matters.
+    const blocking=row.windows.filter(item=>item.used_percent!=null && item.used_percent>=100 && !(item.resets_at!=null && item.resets_at<=now));
+    const until=blocking.length ? Math.max(...blocking.map(item=>item.resets_at ?? Infinity)) : null;
+    return {provider:row.provider,account:row.account,
     stale:!!row.observed_at && now-row.observed_at>300,
     updated:row.observed_at ? relative(row.observed_at) : null,
+    unavailable:until===null ? null : Number.isFinite(until) ? quotaCountdown(until-now) : 'Reset unknown',
     windows:['short','weekly'].map(name=>{
       const window=row.windows.find(item=>item.name===name), expired=window?.resets_at!=null && window.resets_at<=now;
       const remaining=window?.used_percent!=null && !expired ? Math.max(0,Math.min(100,100-window.used_percent)) : null;
       const minutes=window?.window_minutes || (name==='short'?300:10080);
       return {name,label:name==='weekly'?'Weekly':minutes<60?minutes+'m':minutes/60+'h',remaining,
         reset:expired?'Awaiting update':window?.resets_at ? 'Resets in '+quotaCountdown(window.resets_at-now) : 'Reset unknown'};
-    })}));
+    })};});
   const signature=JSON.stringify([view,inference.map(row=>({...row,stale:now-row.observed_at>30}))]);if(state.resourceSignature===signature)return;state.resourceSignature=signature;
   const fragment=document.createDocumentFragment();
   for(const row of view){
-    const panel=node('article','resource-panel agent-'+row.provider+(row.stale?' stale':''));
+    const panel=node('article','resource-panel agent-'+row.provider+(row.stale?' stale':'')+(row.unavailable?' unavailable':''));
     const header=node('div','resource-heading');header.append(node('h2','',agentName({agent:row.provider})+(row.account==='primary'?'':' · '+row.account)),node('span','resource-age',!row.updated?'Waiting for data':(row.stale?'Stale · ':'Updated ')+row.updated));panel.append(header);
     const windows=node('div','resource-windows');
     for(const window of row.windows){
@@ -73,7 +78,13 @@ function renderResources(values=[]) {
       if(window.remaining!==null){bar.setAttribute('aria-valuenow',String(window.remaining));const fill=node('span','quota-fill');fill.style.width=window.remaining+'%';bar.append(fill);}else bar.setAttribute('aria-valuetext','Unknown');
       box.append(label,bar,node('div','quota-reset',window.reset));windows.append(box);
     }
-    panel.append(windows);fragment.append(panel);
+    panel.append(windows);
+    if(row.unavailable){
+      const overlay=node('div','unavailable-overlay');
+      overlay.append(node('span','unavailable-label','Out of tokens'),node('strong','unavailable-countdown',row.unavailable),node('span','unavailable-label','until reset'));
+      windows.setAttribute('aria-hidden','true');panel.append(overlay);
+    }
+    fragment.append(panel);
   }
   for(const row of inference){
     const stale=now-row.observed_at>30;
