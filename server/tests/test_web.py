@@ -110,6 +110,23 @@ class WebTests(unittest.TestCase):
         self.assertEqual([m['text'] for m in result['claim']],['Now'])
         self.assertLess(time.time()-started,5)
 
+    def test_stream_signals_each_change(self):
+        self.event(kind='start',agent='claude')
+        def frame(response):
+            lines=[]
+            while (line:=response.readline().decode().rstrip('\n')) or not lines:
+                if line and not line.startswith(('retry:',':')):lines.append(line)
+            return lines
+        with urlopen(self.base+'/stream',timeout=5) as response:
+            self.assertEqual(response.headers['Content-Type'],'text/event-stream')
+            first=frame(response)
+            started=time.time()
+            self.event(step='Live')
+            self.assertNotEqual(frame(response),first)
+            self.journal.send_message('example','one','Hi')
+            self.assertEqual(frame(response),[f'data: {self.journal.version}'])
+            self.assertLess(time.time()-started,5)
+
     def test_assets_are_allowlisted_and_ui_can_be_disabled(self):
         for path in ('/ui/../journal.py','/ui/%2e%2e/journal.py','/ui/secrets.json'):
             with self.assertRaises(HTTPError) as error:urlopen(self.base+path)

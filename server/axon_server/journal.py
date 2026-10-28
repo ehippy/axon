@@ -24,6 +24,7 @@ from axon_protocol import STATES, FIELDS, TERMINAL, validate
 IDENTITY = re.compile(r'[a-zA-Z0-9_.-]{1,128}')
 MESSAGE_LIMIT = 4000
 CLAIM_WAIT_LIMIT = 55
+STREAM_PING = 15
 
 
 class Journal:
@@ -33,6 +34,8 @@ class Journal:
         self.retention_days = retention_days
         self.path = str(path)
         self.inbox = threading.Condition()
+        self.changes = threading.Condition()
+        self.version = 0
         with self.connect() as db:
             db.executescript('''
               PRAGMA journal_mode=WAL;
@@ -79,8 +82,21 @@ class Journal:
             events = db.execute('DELETE FROM events WHERE at < ?', (cutoff,)).rowcount
             sessions = db.execute('DELETE FROM sessions WHERE at < ?', (cutoff,)).rowcount
             db.execute('DELETE FROM messages WHERE at < ?', (cutoff,))
+        if events or sessions:
+            self.changed()
         return {'events': events, 'sessions': sessions}
 
+
+    def changed(self):
+        """Wake live browser streams; they refetch, so the version is only a signal."""
+        with self.changes:
+            self.version += 1
+            self.changes.notify_all()
+
+    def wait_change(self, seen, timeout):
+        with self.changes:
+            self.changes.wait_for(lambda: self.version != seen, timeout)
+            return self.version
 
     @contextmanager
     def connect(self):
@@ -93,6 +109,12 @@ class Journal:
             db.close()
 
     def ingest(self, event):
+        stored = self._ingest(event)
+        if stored:
+            self.changed()
+        return stored
+
+    def _ingest(self, event):
         v = validate(event)
         # A delayed outbox or broker replay must not resurrect expired history.
         if self.retention_days and v['at'] < time.time() - self.retention_days * 86400:
@@ -191,6 +213,7 @@ class Journal:
             db.execute('INSERT INTO messages VALUES(:id,:source,:session,:at,:text,:delivered_at)', message)
         with self.inbox:
             self.inbox.notify_all()
+        self.changed()
         return message
 
     def queued(self):
@@ -218,6 +241,8 @@ class Journal:
                 for row in rows:
                     row['delivered_at'] = now
                     db.execute('UPDATE messages SET delivered_at=? WHERE id=?', (now, row['id']))
+            if rows:
+                self.changed()  # queued counts on the board drop
             remaining = deadline - time.time()
             if rows or remaining <= 0:
                 return rows
@@ -225,11 +250,13 @@ class Journal:
                 self.inbox.wait(remaining)
 
 
-def handler(journal, web=True, token=None):
+def handler(journal, web=True, token=None, stop=None):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             url = urlsplit(self.path)
             filters = {k: v[-1] for k, v in parse_qs(url.query).items()}
+            if url.path == '/stream':
+                self.stream(); return
             try:
                 assets = {'/': ('index.html', 'text/html; charset=utf-8'),
                           '/ui/app.css': ('app.css', 'text/css; charset=utf-8'),
@@ -296,6 +323,23 @@ def handler(journal, web=True, token=None):
                 self.send_error(404, 'Unknown session')
             except (ValueError, TypeError, AttributeError):
                 self.send_error(400, 'Invalid request')
+
+        def stream(self):
+            """Server-sent change signals; the page refetches through the normal API."""
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream')
+            self.send_header('X-Accel-Buffering', 'no')
+            self.end_headers()
+            seen = journal.version
+            try:
+                # The first frame makes a reconnecting page catch up on anything it missed.
+                self.wfile.write(f'retry: 3000\ndata: {seen}\n\n'.encode())
+                while not (stop and stop.is_set()):
+                    version = journal.wait_change(seen, STREAM_PING)
+                    self.wfile.write((f'data: {version}\n\n' if version != seen else ': ping\n\n').encode())
+                    seen = version
+            except OSError:
+                pass  # the page went away
 
         def end_headers(self):
             self.send_header('Cache-Control', 'no-store')
@@ -418,9 +462,10 @@ def main():
         for target in (mqtt, publish_view):
             thread = threading.Thread(target=target, args=(journal, args.broker, stop, args.broker_port), daemon=True)
             thread.start(); threads.append(thread)
-    server = ThreadingHTTPServer((args.listen, args.port), handler(journal, web=not args.no_web, token=token))
+    server = ThreadingHTTPServer((args.listen, args.port), handler(journal, web=not args.no_web, token=token, stop=stop))
     def shutdown(*_):
         stop.set()
+        journal.changed()  # release open streams
         threading.Thread(target=server.shutdown, daemon=True).start()
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)

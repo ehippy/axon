@@ -7,7 +7,7 @@ function onBoard(row, now=Date.now()/1000) {
   return ACTIVE.includes(row.effective_state) || now-Number(row.updated_at) <= BOARD_RECENCY;
 }
 const LABEL = {working:'Working', waiting:'Waiting', blocked:'Blocked', finished:'Finished', stopped:'Stopped', interrupted:'Interrupted', lost_contact:'Lost contact'};
-const state = {compose:null, drafts:{}, view:'now', filter:'', sessions:[], events:[], before:null, more:false, selected:null, detailEvents:[], detailBefore:null, detailMore:false, synced:null, request:0, detailRequest:0};
+const state = {compose:null, drafts:{}, view:'now', filter:'', sessions:[], events:[], before:null, more:false, selected:null, detailEvents:[], detailBefore:null, detailMore:false, synced:null, live:false, request:0, detailRequest:0};
 let timer;
 
 function node(tag, className, text) {
@@ -294,7 +294,7 @@ async function refresh() {
     state.sessions=sessions.sessions;
     periodOptions(); options('host',state.sessions.map(s=>s.machine),'All hosts'); options('project',[...state.sessions].sort((a,b)=>b.updated_at-a.updated_at).map(s=>s.project),'All projects'); options('agent',state.sessions.map(s=>s.agent),'All agents');
     if (events) { state.events=events.events;state.before=events.next_before;state.more=events.events.length===PAGE; }
-    state.synced=Date.now(); $('error').hidden=true; $('sync-dot').classList.remove('offline'); $('sync-status').textContent='Live · just synced';
+    state.synced=Date.now(); $('error').hidden=true; $('sync-dot').classList.remove('offline'); $('sync-status').textContent=state.live ? 'Live' : 'Polling · just synced';
     render(); route();
     if (state.selected) await loadDetail(false);
   } catch (error) {
@@ -409,14 +409,14 @@ async function sendMessage(event) {
 $('message-form').addEventListener('submit',sendMessage);
 $('message-text').addEventListener('keydown',event=>{if(event.key==='Enter' && !event.shiftKey && !event.isComposing) sendMessage(event);});
 $('token-form').addEventListener('submit',event=>{event.preventDefault();const value=$('token-input').value.trim();if(!value) return;storeToken(value);$('token-input').value='';$('message-status').textContent='';loadDetail(false);});
-function filtersChanged() { state.events=[];state.before=null;$('view-note').textContent='Refreshes every 5 seconds';route();refresh(); }
+function filtersChanged() { state.events=[];state.before=null;$('view-note').textContent='Updates live';route();refresh(); }
 $('filters').addEventListener('submit',event=>event.preventDefault());
 $('search').addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(filtersChanged,250);});
 for (const id of ['host','project','agent','period','heartbeats']) $(id).addEventListener('change',filtersChanged);
 document.querySelectorAll('[data-view]').forEach(button=>button.addEventListener('click',()=>{state.view=button.dataset.view;state.filter='';filtersChanged();}));
 document.querySelectorAll('[data-state]').forEach(button=>button.addEventListener('click',()=>{state.view='now';state.filter=state.filter===button.dataset.state?'':button.dataset.state;route();render();}));
 $('clear-state').addEventListener('click',()=>{state.filter='';route();render();});
-$('refresh').addEventListener('click',()=>{state.events=[];$('view-note').textContent='Refreshes every 5 seconds';refresh();});
+$('refresh').addEventListener('click',()=>{state.events=[];$('view-note').textContent='Updates live';refresh();});
 $('load-more').addEventListener('click',loadMore);
 $('close-detail').addEventListener('click',()=>$('session-dialog').close());
 $('session-dialog').addEventListener('close',()=>{state.selected=null;++state.detailRequest;route();});
@@ -433,9 +433,25 @@ function readRoute() {
   state.events=[];refresh();
 }
 window.addEventListener('hashchange',readRoute);
+const historyPaused=()=>state.view==='timeline' && state.events.length>PAGE;
+// The journal pushes a signal whenever anything changes; bursts of hook events collapse into one refetch.
+let streamTimer;
+function connectStream() {
+  if (!window.EventSource) return;
+  const stream=new EventSource('/stream');
+  stream.onopen=()=>{state.live=true;};
+  stream.onerror=()=>{state.live=false;};
+  stream.onmessage=()=>{
+    clearTimeout(streamTimer);
+    streamTimer=setTimeout(()=>{if (!document.hidden && !historyPaused()) refresh();},150);
+  };
+}
+document.addEventListener('visibilitychange',()=>{if (!document.hidden && !historyPaused()) refresh();});
 setInterval(()=>{
   document.querySelectorAll('time[data-at]').forEach(el=>{el.textContent=relative(el.dataset.at);});
-  if (state.view==='timeline' && state.events.length>PAGE) return;
-  if (!document.hidden && !$('refresh').disabled) refresh();
+  if (document.hidden || historyPaused() || $('refresh').disabled) return;
+  // Poll while the stream is down; when live, a slow refresh still catches lease expiry, which no event announces.
+  if (!state.live || Date.now()-state.synced>=60000) refresh();
 },5000);
+connectStream();
 readRoute();
