@@ -15,7 +15,7 @@ from urllib.request import urlopen
 ROOT = Path(__file__).resolve().parents[2]
 for project in ('packages/python/axon_protocol', 'packages/python/axon_reporter', 'server', 'clients/query', 'plugins/tools'):
     sys.path.insert(0, str(ROOT / project))
-from axon_reporter import report
+from axon_reporter import report, resources
 
 
 def port():
@@ -63,6 +63,12 @@ class BrokerTests(unittest.TestCase):
                     event = report.report('codex', 'integration-session', 'start', {'project':'axon', 'goal':'Build activity journal'})
                     row = wait_for(lambda: sessions())
                     self.assertEqual(row[0]['goal'], 'Build activity journal')
+                    sample=resources.snapshot('codex',[dict(name='short',window_minutes=300,used_percent=37,resets_at=time.time()+3600)])
+                    resources.publish(sample)
+                    def quota():
+                        with urlopen(f'http://127.0.0.1:{http_port}/resources',timeout=1) as response:
+                            return next((r for r in json.load(response)['resources'] if r['provider']=='codex' and r['windows']),None)
+                    self.assertEqual(wait_for(quota)['windows'][0]['used_percent'],37)
                     collector.terminate(); collector.wait(timeout=5)
                     report.report('codex', 'integration-session', 'finished', {'outcome':'Recovery verified', 'evidence':['test: real MQTT']})
                     collector = start()

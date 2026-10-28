@@ -136,3 +136,17 @@ fingerprint and reloads automatically on a changed version. It checks when the
 live stream reconnects, when a tab becomes visible, and periodically as a fallback.
 The URL preserves the view and filters; unsent card/detail messages are carried
 across the reload in that tab's session storage. An in-flight send finishes first.
+
+## Inference resources
+
+The standing Codex and Claude panels show remaining short-window and weekly
+allowance, reset countdowns and observation age. They are account-level snapshots,
+independent of board filters and sessions. A missing window is Unknown, a passed
+reset is Awaiting update, and observations older than five minutes are Stale.
+Credentials remain on the collecting machine.
+
+Install the reporter wheel and configure its
+[account collectors](../packages/python/axon_reporter/README.md#account-resources).
+The server's MQTT collector subscribes to `axon/resources/+/+`; `/resources` serves
+the latest durable snapshot per provider/account and resource changes signal SSE.
+There is no additional browser polling service or provider login on the server.

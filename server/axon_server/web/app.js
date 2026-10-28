@@ -39,6 +39,43 @@ function node(tag, className, text) {
   if (text !== undefined && text !== null) element.textContent = String(text);
   return element;
 }
+function quotaCountdown(seconds) {
+  const minutes=Math.max(0,Math.ceil(seconds/60)), hours=Math.floor(minutes/60), days=Math.floor(hours/24);
+  return days ? days+'d '+hours%24+'h' : hours ? hours+'h '+minutes%60+'m' : minutes+'m';
+}
+function renderResources(values=[]) {
+  const rows=[...values];
+  for(const provider of ['codex','claude']) if(!rows.some(row=>row.provider===provider)) rows.push({provider,account:'primary',windows:[]});
+  rows.sort((a,b)=>['codex','claude'].indexOf(a.provider)-['codex','claude'].indexOf(b.provider) || a.account.localeCompare(b.account));
+  const now=Date.now()/1000;
+  const view=rows.map(row=>({provider:row.provider,account:row.account,
+    stale:!!row.observed_at && now-row.observed_at>300,
+    updated:row.observed_at ? relative(row.observed_at) : null,
+    windows:['short','weekly'].map(name=>{
+      const window=row.windows.find(item=>item.name===name), expired=window?.resets_at!=null && window.resets_at<=now;
+      const remaining=window?.used_percent!=null && !expired ? Math.max(0,Math.min(100,100-window.used_percent)) : null;
+      const minutes=window?.window_minutes || (name==='short'?300:10080);
+      return {name,label:name==='weekly'?'Weekly':minutes<60?minutes+'m':minutes/60+'h',remaining,
+        reset:expired?'Awaiting update':window?.resets_at ? 'Resets in '+quotaCountdown(window.resets_at-now) : 'Reset unknown'};
+    })}));
+  const signature=JSON.stringify(view);if(state.resourceSignature===signature)return;state.resourceSignature=signature;
+  const fragment=document.createDocumentFragment();
+  for(const row of view){
+    const panel=node('article','resource-panel agent-'+row.provider+(row.stale?' stale':''));
+    const header=node('div','resource-heading');header.append(node('h2','',agentName({agent:row.provider})+(row.account==='primary'?'':' · '+row.account)),node('span','resource-age',!row.updated?'Waiting for data':(row.stale?'Stale · ':'Updated ')+row.updated));panel.append(header);
+    const windows=node('div','resource-windows');
+    for(const window of row.windows){
+      const box=node('div','resource-window'), label=node('div','quota-label');
+      label.append(node('span','',window.label),node('strong','',window.remaining===null?'Unknown':Math.floor(window.remaining)+'% left'));
+      const bar=node('div','quota-bar'+(window.remaining===null?' unknown':window.remaining<=10?' low':window.remaining<=25?' limited':''));
+      bar.setAttribute('role','progressbar');bar.setAttribute('aria-label',agentName({agent:row.provider})+' '+window.label+' remaining');bar.setAttribute('aria-valuemin','0');bar.setAttribute('aria-valuemax','100');
+      if(window.remaining!==null){bar.setAttribute('aria-valuenow',String(window.remaining));const fill=node('span','quota-fill');fill.style.width=window.remaining+'%';bar.append(fill);}else bar.setAttribute('aria-valuetext','Unknown');
+      box.append(label,bar,node('div','quota-reset',window.reset));windows.append(box);
+    }
+    panel.append(windows);fragment.append(panel);
+  }
+  $('resources').replaceChildren(fragment);
+}
 function statusName(value) { return Object.hasOwn(LABEL, value) ? value : 'lost_contact'; }
 function status(value) {
   const key = statusName(value), span = node('span', 'status-label '+key);
@@ -336,9 +373,11 @@ async function refresh() {
   const request=++state.request;
   state.refreshing=true;
   try {
-    const [sessions, events] = await Promise.all([api('/sessions'),state.view==='timeline' ? api('/events',timelineParams()) : Promise.resolve(null)]);
+    const [sessions, events, resources] = await Promise.all([api('/sessions'),state.view==='timeline' ? api('/events',timelineParams()) : Promise.resolve(null),api('/resources').catch(()=>null)]);
     if (request!==state.request) return;
     state.sessions=sessions.sessions;
+    if(resources) state.resources=resources.resources;
+    renderResources(state.resources);
     options('host',state.sessions.map(s=>s.machine),'All hosts'); options('project',[...state.sessions].sort((a,b)=>b.updated_at-a.updated_at).map(s=>s.project),'All projects'); options('agent',state.sessions.map(s=>s.agent),'All agents');
     if (events) { state.events=events.events;state.before=events.next_before;state.more=events.events.length===PAGE; }
     state.synced=Date.now(); $('error').hidden=true; $('sync-dot').classList.remove('offline'); $('sync-status').textContent=state.live ? 'Live' : 'Polling · just synced';
@@ -501,11 +540,13 @@ function connectStream() {
 }
 document.addEventListener('visibilitychange',()=>{if (!document.hidden) {checkVersion();if (!historyPaused()) refresh();}});
 setInterval(()=>{
+  renderResources(state.resources);
   if (!state.versionChecked || Date.now()-state.versionChecked>=60000) checkVersion();
   document.querySelectorAll('time[data-at]').forEach(el=>{el.textContent=relative(el.dataset.at);});
   if (document.hidden || historyPaused() || state.refreshing) return;
   // Poll while the stream is down; when live, a slow refresh still catches lease expiry, which no event announces.
   if (!state.live || Date.now()-state.synced>=60000) refresh();
 },5000);
+renderResources();
 connectStream();
 readRoute();

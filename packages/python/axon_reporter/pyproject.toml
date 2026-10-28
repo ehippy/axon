@@ -10,6 +10,7 @@ dependencies = ['axon-protocol==0.3.0']
 
 [project.scripts]
 axon-report = "axon_reporter.report:main"
+axon-resources = "axon_reporter.resources:main"
 
 [tool.setuptools]
 packages = ['axon_reporter']

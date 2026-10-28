@@ -21,6 +21,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from axon_protocol import STATES, FIELDS, TERMINAL, validate
+from axon_protocol.resources import validate_resource
 
 IDENTITY = re.compile(r'[a-zA-Z0-9_.-]{1,128}')
 MESSAGE_LIMIT = 4000
@@ -65,6 +66,9 @@ class Journal:
               CREATE TABLE IF NOT EXISTS sessions (
                 source TEXT, session TEXT, at REAL, payload TEXT,
                 PRIMARY KEY(source, session));
+              CREATE TABLE IF NOT EXISTS resources (
+                provider TEXT, account TEXT, observed_at REAL, payload TEXT,
+                PRIMARY KEY(provider, account));
               CREATE TABLE IF NOT EXISTS session_archives (
                 source TEXT, session TEXT, archived_at REAL NOT NULL,
                 PRIMARY KEY(source, session));
@@ -195,6 +199,23 @@ class Journal:
             result.append(item)
         return result
 
+    def ingest_resource(self, snapshot):
+        value = validate_resource(snapshot)
+        with self.connect() as db:
+            changed = db.execute('INSERT INTO resources VALUES(?,?,?,?) ON CONFLICT(provider,account) DO UPDATE SET observed_at=excluded.observed_at,payload=excluded.payload WHERE excluded.observed_at>resources.observed_at',
+                       (value['provider'],value['account'],value['observed_at'],json.dumps(value))).rowcount
+        if changed:
+            self.changed()
+        return bool(changed)
+
+    def resources(self):
+        with self.connect() as db:
+            rows = [json.loads(row[0]) for row in db.execute('SELECT payload FROM resources ORDER BY provider,account')]
+        for provider in ('codex','claude'):
+            if not any(row['provider']==provider for row in rows):
+                rows.append({'provider':provider,'account':'primary','observed_at':None,'windows':[]})
+        return rows
+
     def activity_times(self):
         """Heartbeat freshness must not reshuffle work; heartbeat-only sessions use first sighting."""
         with self.connect() as db:
@@ -318,6 +339,8 @@ def handler(journal, web=True, token=None, stop=None):
                     self.end_headers(); self.wfile.write(body); return
                 if url.path == '/health':
                     data = {'ok': True, 'retention_days': journal.retention_days}
+                elif url.path == '/resources':
+                    data = {'resources': journal.resources()}
                 elif url.path == '/sessions':
                     queued = journal.queued()
                     activity = journal.activity_times()
@@ -417,7 +440,7 @@ def mqtt(journal, broker, stop, port=1883):
         try:
             # Persistent QoS 1 subscription queues events while this collector is offline.
             proc = subprocess.Popen(['mosquitto_sub', '-c', '-i', 'axon-activity-journal', '-h', broker,
-                '-p', str(port), '-t', 'axon/activity/+/+/events', '-q', '1', '-F', '%j'], stdout=subprocess.PIPE)
+                '-p', str(port), '-t', 'axon/activity/+/+/events', '-t', 'axon/resources/+/+', '-q', '1', '-F', '%j'], stdout=subprocess.PIPE)
             pending = b''
             while not stop.is_set() and proc.poll() is None:
                 if not select.select([proc.stdout], [], [], 0.5)[0]:
@@ -432,6 +455,11 @@ def mqtt(journal, broker, stop, port=1883):
                         envelope = json.loads(line)
                         topic = envelope['topic'].split('/')
                         event = json.loads(envelope['payload'])
+                        if len(topic)==4 and topic[:2]==['axon','resources']:
+                            if topic[2:]!=[event.get('provider'),event.get('account')]:
+                                raise ValueError('resource topic mismatch')
+                            journal.ingest_resource(event)
+                            continue
                         if len(topic) != 5 or topic[2:4] != [event.get('source'), event.get('session')]:
                             raise ValueError('topic identity mismatch')
                         journal.ingest(event)

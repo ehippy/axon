@@ -49,3 +49,34 @@ Claude Code hooks also fetch dashboard input from the journal server at
 (default 10800, `0` disables) bounds how long an idle session listens for input. It is detected from the battery on macOS and from DMI or
 devicetree chassis type, then a system battery, on Linux. Hosts that cannot be
 classified (for example a Raspberry Pi) send none; set `AXON_MACHINE_KIND` there.
+
+## Account resources
+
+`axon-resources codex` starts the signed-in native Codex app-server, calls only
+`initialize` and `account/rateLimits/read`, then exits. It starts no inference turn.
+Run it once a minute on one signed-in machine per account. `AXON_CODEX_BIN` can
+select the CLI executable. Its auth remains with Codex.
+
+For Claude Code Pro/Max, set `statusLine.command` to
+`/path/to/venv/bin/axon-resources claude-statusline`. Claude supplies documented
+`rate_limits.five_hour` and `rate_limits.seven_day` JSON after its first API response.
+The collector also prints a small quota status line. To preserve an existing
+renderer, append `--display-command 'your existing command'`; it receives the same
+stdin and its stdout is passed through. Missing quota fields leave the last good
+sample intact. Identical callbacks publish at most once a minute; changed limits
+publish immediately. Keep status-line output local; only whitelisted windows,
+account alias and observation time enter the retry outbox.
+
+The existing broker settings in `~/.config/axon/env` apply. `AXON_CODEX_ACCOUNT`
+and `AXON_CLAUDE_ACCOUNT` label distinct accounts; both default to `primary` (or
+`AXON_RESOURCE_ACCOUNT`). Machines using the same alias report the same account,
+not additive usage. The dashboard displays the latest observation, with stale
+and expired readings labeled explicitly. Choose different aliases for different
+subscriptions. The collector can live in a separate reporter virtualenv so normal
+agent-plugin syncs do not remove it.
+
+For macOS, a user LaunchAgent with `StartInterval=60`, `RunAtLoad=true` and
+`ProgramArguments=["/path/to/venv/bin/axon-resources", "codex"] keeps Codex fresh.
+Use a PATH containing your Codex installation, or set `AXON_CODEX_BIN`. On Linux,
+a user systemd timer can invoke the same command. Claude readings update through
+its status-line callback while it is in use; inactive accounts can become stale.
