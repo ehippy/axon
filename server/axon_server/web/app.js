@@ -122,7 +122,10 @@ function renderResources(values=[]) {
     }
     panel.append(stats);fragment.append(panel);
   }
-  $('resources').replaceChildren(fragment);
+  // Every quota and inference panel gets its own column: one row, however many there are.
+  const row=$('resources');
+  row.style.setProperty('--resource-count',String(Math.max(1,fragment.children.length)));
+  row.replaceChildren(fragment);
 }
 function statusName(value) { return Object.hasOwn(LABEL, value) ? value : 'lost_contact'; }
 function status(value) {
