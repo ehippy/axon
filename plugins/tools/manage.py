@@ -228,7 +228,8 @@ def main():
         elif args.command=='sync':
             report=sync(args.home,args.apply,args.force)
             print(json.dumps(report,indent=2))
-            if report['failed']:
+            if report.get('failed'):
+                # 'skipped' reports carry no failure map
                 p.exit(2)
         else:
             print(json.dumps(install(args.agent,args.home,args.apply,not args.no_enable,args.hermes_command),indent=2))
