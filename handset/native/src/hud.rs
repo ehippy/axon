@@ -30,7 +30,9 @@ pub fn agent_color(source: &str, state: &str) -> Color {
     let source = source.to_lowercase();
     // Sources are install-scoped ("hermes-69f471e05c0f4aa2"); the agent name
     // is the prefix before the install hash.
-    let agent = source.split_once('-').map_or(source.as_str(), |(head, _)| head);
+    let agent = source
+        .split_once('-')
+        .map_or(source.as_str(), |(head, _)| head);
     match agent {
         // Claude Code's terracotta identity color.
         "claude" => (218, 119, 86),
