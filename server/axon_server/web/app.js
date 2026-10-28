@@ -249,6 +249,7 @@ function render() {
   $('live-badge').textContent=state.sessions.filter(row=>!row.archived_at && ACTIVE.includes(row.effective_state)).length;
   document.querySelectorAll('[data-view]').forEach(button=>{button.classList.toggle('selected',button.dataset.view===state.view);button.setAttribute('aria-current',button.dataset.view===state.view ? 'page' : 'false');});
   document.querySelectorAll('[data-state]').forEach(button=>{button.classList.toggle('active',button.dataset.state===state.filter);button.setAttribute('aria-pressed',String(button.dataset.state===state.filter));button.setAttribute('aria-label',LABEL[button.dataset.state]+': '+counts[button.dataset.state]);button.title=LABEL[button.dataset.state];});
+  $('resume-live').hidden=!(state.view==='timeline' && state.events.length>PAGE);
   $('clear-state').hidden=!state.filter || state.view!=='now';
   $('heartbeat-control').hidden=state.view!=='timeline';
   $('nav-search').classList.toggle('has-query',!!$('search').value.trim());
@@ -294,7 +295,7 @@ function timelineParams(extra={}) {
 }
 async function refresh() {
   const request=++state.request;
-  $('refresh').disabled=true;
+  state.refreshing=true;
   try {
     const [sessions, events] = await Promise.all([api('/sessions'),state.view==='timeline' ? api('/events',timelineParams()) : Promise.resolve(null)]);
     if (request!==state.request) return;
@@ -308,7 +309,7 @@ async function refresh() {
     if (request!==state.request) return;
     $('error').textContent='Connection interrupted. '+error.message+' Showing cached activity where available; retrying automatically.';
     $('error').hidden=false; $('sync-dot').classList.add('offline'); $('sync-status').textContent='Disconnected';
-  } finally { if (request===state.request) $('refresh').disabled=false; }
+  } finally { if (request===state.request) state.refreshing=false; }
 }
 async function loadMore() {
   $('load-more').disabled=true;
@@ -316,7 +317,7 @@ async function loadMore() {
     const request=state.request, data=await api('/events',timelineParams({before:String(state.before)}));
     if (request!==state.request) return;
     state.events.push(...data.events);state.before=data.next_before;state.more=data.events.length===PAGE;
-    render();$('sync-status').textContent='History paused';$('view-note').textContent='Browsing history · refresh for latest';
+    render();$('sync-status').textContent='History paused';$('view-note').textContent='Browsing history';
   } catch (error) { $('error').textContent='Could not load earlier events. '+error.message;$('error').hidden=false; }
   finally { $('load-more').disabled=false; }
 }
@@ -425,7 +426,7 @@ for (const id of ['host','project','agent','period','heartbeats']) $(id).addEven
 document.querySelectorAll('[data-view]').forEach(button=>button.addEventListener('click',()=>{state.view=button.dataset.view;state.filter='';filtersChanged();}));
 document.querySelectorAll('[data-state]').forEach(button=>button.addEventListener('click',()=>{state.view='now';state.filter=state.filter===button.dataset.state?'':button.dataset.state;route();render();}));
 $('clear-state').addEventListener('click',()=>{state.filter='';route();render();});
-$('refresh').addEventListener('click',()=>{state.events=[];$('view-note').textContent='Updates live';refresh();});
+$('resume-live').addEventListener('click',()=>{state.events=[];$('view-note').textContent='Updates live';refresh();});
 $('load-more').addEventListener('click',loadMore);
 $('close-detail').addEventListener('click',()=>$('session-dialog').close());
 $('session-dialog').addEventListener('close',()=>{state.selected=null;++state.detailRequest;route();});
@@ -462,7 +463,7 @@ function connectStream() {
 document.addEventListener('visibilitychange',()=>{if (!document.hidden && !historyPaused()) refresh();});
 setInterval(()=>{
   document.querySelectorAll('time[data-at]').forEach(el=>{el.textContent=relative(el.dataset.at);});
-  if (document.hidden || historyPaused() || $('refresh').disabled) return;
+  if (document.hidden || historyPaused() || state.refreshing) return;
   // Poll while the stream is down; when live, a slow refresh still catches lease expiry, which no event announces.
   if (!state.live || Date.now()-state.synced>=60000) refresh();
 },5000);
