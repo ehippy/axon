@@ -57,15 +57,21 @@ classified (for example a Raspberry Pi) send none; set `AXON_MACHINE_KIND` there
 Run it once a minute on one signed-in machine per account. `AXON_CODEX_BIN` can
 select the CLI executable. Its auth remains with Codex.
 
-For Claude Code Pro/Max, set `statusLine.command` to
-`/path/to/venv/bin/axon-resources claude-statusline`. Claude supplies documented
-`rate_limits.five_hour` and `rate_limits.seven_day` JSON after its first API response.
-The collector also prints a small quota status line. To preserve an existing
-renderer, append `--display-command 'your existing command'`; it receives the same
-stdin and its stdout is passed through. Missing quota fields leave the last good
-sample intact. Identical callbacks publish at most once a minute; changed limits
-publish immediately. Keep status-line output local; only whitelisted windows,
-account alias and observation time enter the retry outbox.
+For Claude Code Pro/Max, the managed Claude install (`plugins/tools/manage.py
+install claude --apply`) adds its bundled `usage` plugin to `CLAUDE_CODE_PLUGIN_DIRS`
+in `~/.claude/settings.json`. Its hooks module receives Claude's `five_hour` and
+`seven_day` rate limits after each turn on every surface, desktop app included, and
+passes only those windows to the bundled collector. Settings command hooks never
+receive these fields, and the desktop app does not run `statusLine`.
+Reload Claude after installing.
+
+Terminal-only setups can instead set `statusLine.command` to
+`/path/to/venv/bin/axon-resources claude-statusline`, which also prints a small quota
+status line. To preserve an existing renderer, append `--display-command 'your
+existing command'`; it receives the same stdin and its stdout is passed through.
+Either path: missing quota fields leave the last good sample intact. Identical
+readings publish at most once a minute; changed limits publish immediately. Only
+whitelisted windows, account alias and observation time enter the retry outbox.
 
 The existing broker settings in `~/.config/axon/env` apply. `AXON_CODEX_ACCOUNT`
 and `AXON_CLAUDE_ACCOUNT` label distinct accounts; both default to `primary` (or
@@ -78,5 +84,5 @@ agent-plugin syncs do not remove it.
 For macOS, a user LaunchAgent with `StartInterval=60`, `RunAtLoad=true` and
 `ProgramArguments=["/path/to/venv/bin/axon-resources", "codex"] keeps Codex fresh.
 Use a PATH containing your Codex installation, or set `AXON_CODEX_BIN`. On Linux,
-a user systemd timer can invoke the same command. Claude readings update through
-its status-line callback while it is in use; inactive accounts can become stale.
+a user systemd timer can invoke the same command. Claude readings update after each turn
+while it is in use; inactive accounts can become stale.

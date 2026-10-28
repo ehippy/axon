@@ -3,6 +3,7 @@
 import argparse
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import shlex
 import shutil
@@ -29,6 +30,8 @@ def build(agent, destination):
         staged = Path(tmp)/'package'
         staged.mkdir()
         selected = ['README.md','__init__.py','plugin.yaml'] if agent == 'hermes' else ['README.md','hooks','skills', 'plugin.json' if agent=='codex' else '.claude-plugin']
+        if agent == 'claude':
+            selected.append('usage')
         for name in selected:
             src, dst = source/name, staged/name
             if src.is_dir():
@@ -38,6 +41,11 @@ def build(agent, destination):
         for name in ('axon_protocol', 'axon_reporter'):
             shutil.copytree(ROOT/'packages/python'/name/name, staged/'runtime'/name,
                             ignore=shutil.ignore_patterns('__pycache__'))
+        collector = staged/'usage/bin/collect'
+        if collector.exists():
+            # Claude runs the collector without a shell; pin the building interpreter.
+            lines = collector.read_text().split('\n', 1)
+            collector.write_text('#!'+sys.executable+'\n'+lines[1])
         if destination.exists():
             destination.rename(Path(tmp)/'previous')
         staged.rename(destination)
@@ -81,6 +89,14 @@ def merged_config(current,agent,package):
                 extra=next((words[i+1:] for i,w in enumerate(words) if w.endswith('/hooks/run.py')),[])
                 handler['command']=shlex.join([sys.executable,str(package/'hooks/run.py'),*extra])
         hooks.setdefault(event,[]).extend(groups)
+    if agent=='claude':
+        # Usage reaches only hooks modules, which load from plugin folders, not settings hooks.
+        env=result.setdefault('env',{})
+        if not isinstance(env,dict) or not isinstance(env.get('CLAUDE_CODE_PLUGIN_DIRS',''),str):
+            raise ValueError('Existing settings env must map names to strings')
+        dirs=[d for d in env.get('CLAUDE_CODE_PLUGIN_DIRS','').split(os.pathsep)
+              if d and not d.replace('\\','/').rstrip('/').endswith('/.local/share/axon/plugins/claude/usage')]
+        env['CLAUDE_CODE_PLUGIN_DIRS']=os.pathsep.join([*dirs,str(package/'usage')])
     return result
 
 

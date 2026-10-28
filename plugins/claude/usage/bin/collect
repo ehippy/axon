@@ -1,0 +1,12 @@
+#!/usr/bin/env python3
+"""Publish one Claude account snapshot from status-line rate-limit JSON on stdin."""
+from pathlib import Path
+import sys
+package = Path(__file__).resolve().parents[2]
+if (package / 'runtime').is_dir():
+    sys.path.insert(0, str(package / 'runtime'))
+else:
+    for project in ('axon_protocol', 'axon_reporter'):
+        sys.path.insert(0, str(package.parents[1] / 'packages/python' / project))
+from axon_reporter.resources import collect_claude
+collect_claude(sys.stdin.buffer.read())

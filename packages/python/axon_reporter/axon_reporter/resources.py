@@ -99,12 +99,17 @@ def read_codex(binary=None):
         proc.stdin.close();proc.stdout.close()
 
 
-def statusline(raw, display_command=None):
-    value=None
+def collect_claude(raw):
+    """Publish Claude's status-line rate limits; never raise into the host agent."""
     try:
-        value=claude_snapshot(json.loads(raw));
+        value=claude_snapshot(json.loads(raw))
         if value:publish(value)
-    except (ValueError,TypeError,AttributeError,OSError,sqlite3.Error):pass
+        return value
+    except (ValueError,TypeError,AttributeError,OSError,sqlite3.Error):return None
+
+
+def statusline(raw, display_command=None):
+    value=collect_claude(raw)
     if display_command:
         try:
             result=subprocess.run(['/bin/sh','-c',display_command],input=raw,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=2)
