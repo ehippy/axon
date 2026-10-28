@@ -61,6 +61,13 @@ class UpdateTests(unittest.TestCase):
         self.assertTrue((release/'marker').exists())
         self.assertEqual(json.loads((self.root/'update-state.json').read_text())['commit'],head)
 
+    def test_updater_change_waits_for_ci_then_installs_without_restart(self):
+        installed=Path(self.tmp.name)/'installed.py';installed.write_text('old\n');self.args.self_path=installed
+        self.commit('server/deploy/axon_update.py','new')
+        self.assertEqual(self.run_update(ci='pending'),'pending');self.assertEqual(installed.read_text(),'old\n')
+        self.assertEqual(self.run_update(),'unchanged')
+        self.assertEqual(installed.read_text(),'new\n');self.assertEqual(self.restarts,[])
+
     def test_commit_outside_the_server_restarts_nothing(self):
         self.commit('plugins/claude/README.md','docs')
         self.assertEqual(self.run_update(),'unchanged')

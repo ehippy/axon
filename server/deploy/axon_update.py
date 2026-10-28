@@ -21,6 +21,7 @@ from urllib.request import Request, urlopen
 # Only these paths reach the installed server; other commits are recorded without a restart.
 SERVER_PATHS = ('server/axon_server', 'server/pyproject.toml', 'packages/python/axon_protocol')
 PASSED = {'success', 'neutral', 'skipped'}
+UPDATER = 'server/deploy/axon_update.py'
 # The server's POST /update writes this file. A requested run keeps waiting for CI instead of leaving it to the
 # next timer tick; the interval and deadline cap it at a few dozen GitHub requests however often it is kicked.
 REQUEST = 'update-requested'
@@ -55,13 +56,27 @@ def ci_state(repo, sha, opener=urlopen):
     return 'passed' if all(run['conclusion'] in PASSED for run in runs) else 'failed'
 
 
-def touches_server(mirror, old, new):
+def touches(mirror, old, new, *paths):
     if not old:
         return True
     try:
-        return bool(git(mirror, 'diff', '--name-only', old, new, '--', *SERVER_PATHS))
+        return bool(git(mirror, 'diff', '--name-only', old, new, '--', *paths))
     except subprocess.CalledProcessError:
         return True  # The old commit is unknown (rewritten history): rebuild rather than guess.
+
+
+def touches_server(mirror, old, new):
+    return touches(mirror, old, new, *SERVER_PATHS)
+
+
+def install_self(args, mirror, head):
+    """The updater ships in the repository, so it installs its own newest version once that commit is verified."""
+    if not args.self_path:
+        return
+    newer = git(mirror, 'show', f'{head}:{UPDATER}')+'\n'
+    if args.self_path.read_text() != newer:
+        args.self_path.write_text(newer)
+        log(f'{head[:7]}: updated the updater')
 
 
 def load_state(root):
@@ -171,12 +186,9 @@ def update(args, ci=ci_state, check=healthy, restart_unit=restart):
         return 'current'
     if head in (state.get('seen'), state.get('failed')):
         return 'current'
-    if not touches_server(mirror, current, head):
-        state.update(commit=head, seen=head)
-        save_state(root, state)
-        log(f'{head[:7]}: no server changes, nothing to restart')
-        return 'unchanged'
-    if args.require_ci:
+    server = touches_server(mirror, current, head)
+    # The updater replaces itself too, so its own changes wait for CI like the server's.
+    if (server or args.self_path and touches(mirror, current, head, UPDATER)) and args.require_ci:
         result = ci(args.repo, head)
         if result == 'pending':
             log(f'{head[:7]}: waiting for CI')
@@ -186,6 +198,12 @@ def update(args, ci=ci_state, check=healthy, restart_unit=restart):
             save_state(root, state)
             log(f'{head[:7]}: CI failed, not deploying')
             return 'failed'
+    if not server:
+        state.update(commit=head, seen=head)
+        save_state(root, state)
+        install_self(args, mirror, head)
+        log(f'{head[:7]}: no server changes, nothing to restart')
+        return 'unchanged'
     previous = (root/'current').resolve() if (root/'current').exists() else None
     release = build(mirror, head, root/'releases', args.python)
     copy = backup(args.db, args.backups, head)
@@ -205,11 +223,7 @@ def update(args, ci=ci_state, check=healthy, restart_unit=restart):
     state.pop('failed', None)
     save_state(root, state)
     prune(root, args.keep, args.backups, args.db)
-    # The updater ships with the server, so each deploy also installs its own newest version.
-    if args.self_path:
-        newer = git(mirror, 'show', f'{head}:server/deploy/axon_update.py')+'\n'
-        if args.self_path.read_text() != newer:
-            args.self_path.write_text(newer)
+    install_self(args, mirror, head)
     log(f'{head[:7]}: deployed {release.name}')
     return 'deployed'
 
