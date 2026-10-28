@@ -1,39 +1,38 @@
 # Axon
 
-A dedicated computer for running agents, in a puck-shaped enclosure with a tilted
-monochrome status display — inspired by [Pamir AI's Lapis One](https://www.pamir.ai/),
-built from parts on hand: a Raspberry Pi 4 as the brain, an Adafruit Feather RP2040
-as a peripheral controller.
+Axon turns agent activity into a small physical status display. Its components
+can run on different machines or together on one device.
 
-See [docs/SPEC.md](docs/SPEC.md) for the full hardware/software spec, and
-[docs/PROTOTYPE-PWNAGOTCHI.md](docs/PROTOTYPE-PWNAGOTCHI.md) for a faster-to-bring-up
-parallel track that repurposes a spare pwnagotchi (Pi Zero W + e-Paper + PiSugar) as
-a network-connected status display while the Pi4 build comes together.
+- **[Server](docs/install-server.md):** stores session activity, retains history,
+  and publishes the current session view. No display hardware required.
+- **[Handset](docs/install-handset.md):** a Rust application for the PiSugar
+  Whisplay display, buttons, battery, and LEDs. No journal database required.
+- **[Agent plugins](docs/install-plugins.md):** self-contained Codex, Claude Code,
+  and Hermes adapters. No server implementation bundled.
+- **[Integrations](integrations/README.md):** optional Gabbie voice/relay and
+  Glass status publishing. A handset works without either.
 
-## Layout
+An MQTT broker connects publishers, server, and handset. Each component has its
+own installation and configuration; no particular network or host is assumed.
 
-- `docs/` — spec and design notes
-- `hardware/bom/` — bill of materials
-- `hardware/enclosure/` — 3D-printable enclosure design files
-- `software/display-service/` — the e-Paper display daemon. Currently holds the
-  working version built for the Pi Zero 2 W prototype; the Pi4 build will
-  need a variant that talks to the Feather over USB-serial instead of driving
-  the panel directly.
-- `software/feather-firmware/` — CircuitPython firmware for the Feather RP2040 (display, LED bar, IMU, button)
-- `software/provisioning/` — first-boot setup scripts (agent runtime, display service)
+See [architecture](docs/architecture.md), [wire contracts](protocol/README.md),
+[development and release checks](docs/development.md), and the
+[0.3 migration guide](docs/migration.md). This is a clean component breakout;
+old source paths and superseded implementations are removed.
 
-## Session activity and history
+## Source layout
 
-[Activity journal](software/activity-journal/README.md) adds individual chat goals,
-steps, blockers, outcomes and evidence, a durable SQLite event history, lifecycle
-hooks, and local query APIs. The native display consumes its session view while
-remaining compatible with the original machine status feed.
+| Directory | Responsibility |
+| --- | --- |
+| `server/` | Journal, read API, retention, server service unit |
+| `handset/native/` | Portable display core and Linux hardware binary |
+| `packages/python/` | Shared validation and reporter runtime |
+| `plugins/` | Native agent adapters, builder, installer |
+| `clients/query/` | Standalone read-only query CLI |
+| `protocol/` | Versioned contracts and shared fixtures |
+| `integrations/` | Gabbie and Glass integration instructions |
+| `hardware/` | Parts and enclosure planning |
+| `tools/` | Repository checks and release artifact builder |
 
-## Deployment configuration
-
-The MQTT broker defaults to `localhost`. Set `AXON_BROKER` in each publisher and
-display process environment for a remote broker; the journal also has `--broker`.
-For systemd services, use a local override with `Environment=AXON_BROKER=...`.
-Keep host addresses, SSH destinations, and credentials in local configuration.
-The relay helper uses `AXON_SSH_TARGET`; its queue path is a deployment example.
-Example service units must be adjusted to your service account and install path.
+The enclosure/hardware concept is inspired by [Pamir AI's Lapis One](https://www.pamir.ai/).
+See [hardware specification](docs/SPEC.md) and [prototype notes](docs/PROTOTYPE-PWNAGOTCHI.md).

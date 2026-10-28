@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "source": "codex-example",
+  "session": "example-session",
+  "id": "finished-1",
+  "at": 1700000001,
+  "kind": "finished",
+  "data": {
+    "outcome": "Status verified",
+    "evidence": [
+      "test: protocol fixture"
+    ]
+  }
+}

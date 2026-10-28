@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "source": "codex-example",
+  "session": "example-session",
+  "id": "start-1",
+  "at": 1700000000,
+  "kind": "start",
+  "data": {
+    "agent": "codex",
+    "machine": "example-installation",
+    "project": "glass",
+    "goal": "Check status",
+    "lease_seconds": 900
+  }
+}
