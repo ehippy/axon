@@ -79,7 +79,10 @@ function renderResources(values=[]) {
     }
     panel.append(windows);fragment.append(panel);
   }
-  $('resources').replaceChildren(fragment);
+  // Every panel gets its own column: one row, however many accounts and endpoints there are.
+  const row=$('resources');
+  row.style.setProperty('--resource-count',String(Math.max(1,fragment.children.length)));
+  row.replaceChildren(fragment);
 }
 function statusName(value) { return Object.hasOwn(LABEL, value) ? value : 'lost_contact'; }
 function status(value) {
