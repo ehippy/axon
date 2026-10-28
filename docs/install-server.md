@@ -68,6 +68,20 @@ loginctl enable-linger "$USER"
 systemctl --user daemon-reload && systemctl --user enable --now axon-update.timer
 ```
 
+### Requesting a deploy
+
+Start the server with `--updater ~/.local/share/axon/server` (or `AXON_UPDATER_ROOT`)
+to expose the updater over the API. `GET /update` shows the deployed, previous and
+refused commits and whether a request is pending. `POST /update` needs the input
+token and answers `202` at once; the updater then checks every 45 seconds for up to
+20 minutes and deploys as soon as CI passes, instead of waiting for the next timer
+tick. Requests within 30 seconds of each other share one run, and only one updater
+runs at a time, so at most a few dozen GitHub requests follow a burst of requests.
+
+```sh
+curl -X POST -H "Authorization: Bearer $(cat ~/.config/axon/input-token)" http://127.0.0.1:8510/update
+```
+
 Override defaults (`AXON_UPDATE_BRANCH`, `AXON_UPDATE_KEEP`, `AXON_UPDATE_HEALTH_URL`, ...)
 in `~/.config/axon/update.env`. `journalctl --user -u axon-update` shows each decision;
 `update-state.json` beside `current` records the deployed and any failed commit. Every

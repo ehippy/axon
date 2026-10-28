@@ -21,6 +21,11 @@ from urllib.request import Request, urlopen
 # Only these paths reach the installed server; other commits are recorded without a restart.
 SERVER_PATHS = ('server/axon_server', 'server/pyproject.toml', 'packages/python/axon_protocol')
 PASSED = {'success', 'neutral', 'skipped'}
+# The server's POST /update writes this file. A requested run keeps waiting for CI instead of leaving it to the
+# next timer tick; the interval and deadline cap it at a few dozen GitHub requests however often it is kicked.
+REQUEST = 'update-requested'
+REQUEST_WAIT = 20*60
+REQUEST_INTERVAL = 45
 
 
 def log(message):
@@ -204,6 +209,33 @@ def update(args, ci=ci_state, check=healthy, restart_unit=restart):
     return 'deployed'
 
 
+def run(args, step=update, sleep=time.sleep, clock=time.time):
+    request = args.root/REQUEST
+    def requested_at():
+        try:
+            return request.stat().st_mtime
+        except OSError:
+            return None
+    while True:
+        requested = requested_at()
+        if requested is None or clock()-requested > REQUEST_WAIT:
+            request.unlink(missing_ok=True)
+            return step(args)
+        while True:
+            try:
+                result = step(args)
+            except OSError as error:  # GitHub briefly unreachable or rate limited: keep waiting, within the deadline.
+                log(f'check failed, retrying: {error}')
+                result = 'pending'
+            if result != 'pending' or clock()-requested+REQUEST_INTERVAL > REQUEST_WAIT:
+                break
+            sleep(REQUEST_INTERVAL)
+        # A request made during this run may name a newer commit than the one just handled.
+        if requested_at() == requested:
+            request.unlink(missing_ok=True)
+            return result
+
+
 def parser():
     home = Path.home()
     env = os.environ.get
@@ -225,7 +257,7 @@ def parser():
 
 if __name__ == '__main__':
     try:
-        update(parser().parse_args())
+        run(parser().parse_args())
     except subprocess.CalledProcessError as error:
         log(f'update failed: {error}')
         sys.exit(1)

@@ -93,5 +93,37 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(state([{'status':'completed','conclusion':'success'},{'status':'completed','conclusion':'skipped'}]),'passed')
         self.assertEqual(state([{'status':'completed','conclusion':'success'},{'status':'completed','conclusion':'failure'}]),'failed')
 
+class RequestedRunTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name)
+        self.args=updater.parser().parse_args(['--root',str(self.root)]);self.now=1000.0;self.sleeps=[]
+
+    def run_with(self,results,requested=True):
+        if requested:(self.root/updater.REQUEST).touch();import os;os.utime(self.root/updater.REQUEST,(self.now,self.now))
+        steps=iter(results)
+        def step(args):
+            result=next(steps)
+            if isinstance(result,Exception):raise result
+            return result
+        def sleep(seconds):self.sleeps.append(seconds);self.now+=seconds
+        return updater.run(self.args,step=step,sleep=sleep,clock=lambda:self.now)
+
+    def test_timer_run_checks_once(self):
+        self.assertEqual(self.run_with(['pending'],requested=False),'pending');self.assertEqual(self.sleeps,[])
+
+    def test_requested_run_waits_for_ci_then_clears_the_request(self):
+        self.assertEqual(self.run_with(['pending',OSError('rate limited'),'deployed']),'deployed')
+        self.assertEqual(self.sleeps,[updater.REQUEST_INTERVAL]*2);self.assertFalse((self.root/updater.REQUEST).exists())
+
+    def test_requested_run_gives_up_at_the_deadline(self):
+        self.assertEqual(self.run_with(['pending']*100),'pending')
+        self.assertLessEqual(len(self.sleeps)*updater.REQUEST_INTERVAL,updater.REQUEST_WAIT)
+        self.assertFalse((self.root/updater.REQUEST).exists())
+
+    def test_stale_request_is_a_plain_check(self):
+        (self.root/updater.REQUEST).touch();import os;os.utime(self.root/updater.REQUEST,(0,0));self.now=updater.REQUEST_WAIT+1
+        self.assertEqual(self.run_with(['pending'],requested=False),'pending');self.assertEqual(self.sleeps,[])
+        self.assertFalse((self.root/updater.REQUEST).exists())
+
 if __name__=='__main__':
     unittest.main()

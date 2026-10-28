@@ -29,6 +29,8 @@ INFERENCE_LABEL = re.compile(r'[a-zA-Z0-9_.-]{1,80}')
 MESSAGE_LIMIT = 4000
 CLAIM_WAIT_LIMIT = 55
 STREAM_PING = 15
+UPDATE_UNIT = 'axon-update.service'
+UPDATE_DEBOUNCE = 30
 
 
 WEB_ASSETS = {'/': ('index.html', 'text/html; charset=utf-8'),
@@ -321,7 +323,35 @@ class Journal:
                 self.inbox.wait(remaining)
 
 
-def handler(journal, web=True, token=None, stop=None):
+def update_status(root):
+    """What the deploy updater last did, without the host paths it records."""
+    try:
+        state = json.loads((root/'update-state.json').read_text())
+    except (OSError, ValueError):
+        state = {}
+    try:
+        requested = (root/'update-requested').stat().st_mtime
+    except OSError:
+        requested = None
+    return {'commit': state.get('commit'), 'release': state.get('release'), 'previous': state.get('previous'),
+            'deployed_at': state.get('deployed_at'), 'failed': state.get('failed'), 'requested_at': requested}
+
+
+def request_update(root):
+    """Ask the updater for a run that waits for CI; repeated requests while one is fresh start nothing new."""
+    request = root/'update-requested'
+    try:
+        fresh = time.time()-request.stat().st_mtime < UPDATE_DEBOUNCE
+    except OSError:
+        fresh = False
+    request.touch()
+    if not fresh:
+        # --no-block: the run may restart this very server, so the request must not wait for it.
+        subprocess.run(['systemctl', '--user', 'start', '--no-block', UPDATE_UNIT], check=True, timeout=10, capture_output=True)
+    return update_status(root)
+
+
+def handler(journal, web=True, token=None, stop=None, updater=None):
     revision = server_revision()
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -343,6 +373,8 @@ def handler(journal, web=True, token=None, stop=None):
                     data = {'ok': True, 'retention_days': journal.retention_days}
                 elif url.path == '/resources':
                     data = {'resources': journal.resources()}
+                elif url.path == '/update' and updater:
+                    data = update_status(updater)
                 elif url.path == '/sessions':
                     queued = journal.queued()
                     activity = journal.activity_times()
@@ -364,19 +396,32 @@ def handler(journal, web=True, token=None, stop=None):
                 self.end_headers(); self.wfile.write(body)
             except (ValueError, TypeError):
                 self.send_error(400, 'Invalid query')
+        def authorized(self, disabled):
+            # Input and deploys make things act, so they always need the configured token.
+            if not token:
+                self.send_error(403, disabled); return False
+            if not hmac.compare_digest(self.headers.get('Authorization', '').encode(), ('Bearer ' + token).encode()):
+                self.send_error(401, 'Invalid input token'); return False
+            return True
         def do_POST(self):
             url = urlsplit(self.path)
+            if url.path == '/update' and updater:
+                if not self.authorized('Update requests are disabled'): return
+                try:
+                    body = json.dumps(request_update(updater)).encode()
+                except (OSError, subprocess.SubprocessError):
+                    logging.exception('Could not start the updater')
+                    self.send_error(503, 'Updater unavailable'); return
+                self.send_response(202)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers(); self.wfile.write(body); return
             parts = session_path(url.path)
             if not parts or parts[2] not in ('messages', 'inbox/claim', 'archive'):
                 self.send_error(501); return
             try:
                 if parts[2] in ('messages', 'archive'):
-                    # Input makes agents act, so it always needs the configured token.
-                    supplied = self.headers.get('Authorization', '')
-                    if not token:
-                        self.send_error(403, 'Session input is disabled'); return
-                    if not hmac.compare_digest(supplied.encode(), ('Bearer ' + token).encode()):
-                        self.send_error(401, 'Invalid input token'); return
+                    if not self.authorized('Session input is disabled'): return
                     length = int(self.headers.get('Content-Length', 0))
                     if not 0 < length <= 4 * MESSAGE_LIMIT + 1024:
                         raise ValueError('invalid body')
@@ -564,6 +609,8 @@ def main():
                    help='Poll the metrics an inference server exposes and report them as LABEL; repeat per server')
     p.add_argument('--inference-interval', type=float, default=10,
                    help='Seconds between inference polls (default 10; minimum 5)')
+    p.add_argument('--updater', type=Path, default=os.environ.get('AXON_UPDATER_ROOT'),
+                   help='Deploy root kept by axon_update.py; enables GET /update and token-protected POST /update')
     args = p.parse_args()
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
     if not 1 <= args.broker_port <= 65535:
@@ -592,7 +639,7 @@ def main():
         poller = threading.Thread(target=poll_inference, args=(journal, inference, stop, args.inference_interval), daemon=True)
         poller.start(); threads.append(poller)
         logging.info('Polling inference servers: %s', ', '.join(sorted(inference)))
-    server = ThreadingHTTPServer((args.listen, args.port), handler(journal, web=not args.no_web, token=token, stop=stop))
+    server = ThreadingHTTPServer((args.listen, args.port), handler(journal, web=not args.no_web, token=token, stop=stop, updater=args.updater))
     def shutdown(*_):
         stop.set()
         journal.changed()  # release open streams

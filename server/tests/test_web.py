@@ -114,6 +114,30 @@ class WebTests(unittest.TestCase):
         with urlopen(Request(self.base+path,method='POST',data=json.dumps(body or {}).encode(),headers=headers)) as response:
             return response.status,json.load(response)
 
+    def test_update_requests_need_the_token_and_start_the_updater_once(self):
+        root=Path(self.tmp.name)/'deploy';root.mkdir()
+        (root/'update-state.json').write_text(json.dumps({'commit':'abc','release':'0.3.0-abc','backup':'/private/path','failed':None}))
+        self.stop()
+        self.server=ThreadingHTTPServer(('127.0.0.1',0),handler(self.journal,token='s'*20,updater=root))
+        self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start()
+        self.base=f'http://127.0.0.1:{self.server.server_port}'
+        status=self.get('/update')
+        self.assertEqual((status['commit'],status['requested_at']),('abc',None));self.assertNotIn('backup',status)
+        with patch('axon_server.journal.subprocess.run') as start:
+            for token in (None,'wrong'*4):
+                with self.assertRaises(HTTPError) as error:self.post('/update',token=token)
+                self.assertEqual(error.exception.code,401);error.exception.close()
+            self.assertFalse((root/'update-requested').exists())
+            code,body=self.post('/update',token='s'*20);self.post('/update',token='s'*20)
+        self.assertEqual(code,202);self.assertIsNotNone(body['requested_at'])
+        self.assertEqual(start.call_count,1);self.assertIn('--no-block',start.call_args[0][0])
+
+    def test_update_endpoint_is_absent_without_an_updater(self):
+        with self.assertRaises(HTTPError) as error:urlopen(self.base+'/update')
+        self.assertEqual(error.exception.code,404);error.exception.close()
+        with self.assertRaises(HTTPError) as error:self.post('/update',token='s'*20)
+        self.assertEqual(error.exception.code,501);error.exception.close()
+
     def test_session_input_requires_token_and_is_claimed_once(self):
         self.event(kind='start',agent='claude')
         with self.assertRaises(HTTPError) as error:self.post('/sessions/example/one/messages',{'text':'hi'},'x'*20)
