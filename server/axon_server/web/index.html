@@ -6,12 +6,10 @@
 <link rel="icon" href="/ui/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/ui/app.css"><script src="/ui/app.js" defer></script>
 </head>
 <body>
-<aside class="rail">
+<header class="rail">
   <a class="brand" href="/" aria-label="Axon home"><span class="brand-mark" aria-hidden="true">a<span>·</span></span>axon</a>
-  <div class="rail-caption">ACTIVITY JOURNAL</div>
   <nav aria-label="Views"><button class="nav-button selected" data-view="now"><span class="nav-icon">◉</span>Board<span id="live-badge" class="nav-count">0</span></button><button class="nav-button" data-view="timeline"><span class="nav-icon">≋</span>Timeline</button></nav>
-  <div class="rail-bottom"><span class="signal-dot"></span><span>Observe, don’t interrupt.</span><div class="read-only">JOURNAL / V1</div></div>
-</aside>
+</header>
 <main>
 <header class="page-header">
  <div class="header-title"><h1 id="page-title">Live board</h1><p id="page-subtitle">Reporting agents, across hosts and projects.</p></div>
@@ -24,8 +22,9 @@
 </header>
 <div id="error" class="error-banner" role="alert" hidden></div>
 <form id="filters" class="pill-filters" aria-label="Filter activity">
- <div class="filter-row"><span class="filter-label">Hosts</span><div id="host" class="pill-group" role="group" aria-label="Host"></div><span class="filter-label">Agents</span><div id="agent" class="pill-group" role="group" aria-label="Agent"></div></div>
- <div class="filter-row"><span class="filter-label">Projects</span><div id="project" class="pill-group" role="group" aria-label="Project"></div><div id="period" class="pill-group period-pills" role="group" aria-label="Date range"></div><label class="search-field"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search activity…" aria-label="Search activity"></label></div>
+ <div class="filter-row identity-filters"><span class="filter-label">Hosts</span><div id="host" class="pill-group" role="group" aria-label="Host"></div><span class="filter-label">Agents</span><div id="agent" class="pill-group" role="group" aria-label="Agent"></div></div>
+ <div class="filter-row project-filters"><span class="filter-label">Projects</span><div id="project" class="pill-group" role="group" aria-label="Project"></div></div>
+ <div class="filter-row utility-filters"><div id="period" class="pill-group period-pills" role="group" aria-label="Date range"></div><label class="search-field"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search activity…" aria-label="Search activity"></label></div>
 </form>
 <div class="section-heading"><div><span id="section-title">IN THE ROOM</span><span id="result-count" class="muted"></span></div><div class="section-controls"><button id="clear-state" class="text-button" hidden>Clear state filter ×</button><label id="heartbeat-control" class="check-label" hidden><input id="heartbeats" type="checkbox">Include heartbeats</label><span id="view-note">Updates live</span></div></div>
 <div id="archive-notice" class="archive-notice" role="status" hidden><span id="archive-notice-text"></span><button id="archive-undo" class="text-button" type="button">Undo</button></div>
