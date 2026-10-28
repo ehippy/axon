@@ -23,13 +23,16 @@ def validate(v):
     if isinstance(at, bool) or not isinstance(at, (int, float)) or not 0 < at <= time.time() + 60:
         raise ValueError('invalid timestamp')
     patch = v.get('data', {})
-    if not isinstance(patch, dict) or set(patch) - (set(FIELDS) | {'state', 'evidence', 'lease_seconds', 'machine_kind'}):
+    if not isinstance(patch, dict) or set(patch) - (set(FIELDS) | {'state', 'evidence', 'lease_seconds', 'machine_kind', 'listening_until'}):
         raise ValueError('invalid data fields')
     for key, limit in FIELDS.items():
         if key in patch and (not isinstance(patch[key], str) or len(patch[key]) > limit):
             raise ValueError('invalid ' + key)
     if 'machine_kind' in patch and patch['machine_kind'] not in MACHINE_KINDS:
         raise ValueError('invalid machine_kind')
+    listening = patch.get('listening_until', 0)
+    if isinstance(listening, bool) or not isinstance(listening, (int, float)) or not 0 <= listening <= time.time() + 86400:
+        raise ValueError('invalid listening_until')
     if 'state' in patch and patch['state'] not in STATES:
         raise ValueError('invalid state')
     evidence = patch.get('evidence', [])

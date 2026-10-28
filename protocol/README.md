@@ -9,7 +9,7 @@ Breaking source packaging does not change the meaning of activity events.
 | `axon/activity/view` | Server | Handset | QoS 1, retained, versioned JSON |
 | `axon/integrations/<source>/status` | Glass/Gabbie/other adapters | Handset | Retained JSON with sender timestamp |
 | `axon/handsets/<device-id>/ptt` | Voice-enabled handset | Gabbie adapter | QoS 1, nonretained `start` / `stop` bytes |
-| HTTP `127.0.0.1:8510` | Server | Query client | Read-only `/health`, `/sessions`, `/events` |
+| HTTP `127.0.0.1:8510` | Server | Query client | `/health`, `/sessions`, `/events`, session input |
 | HTTP `127.0.0.1:8500` | Handset | Local controls | `/health`, POST `/event`, GET `/event/<gesture>` |
 | TCP `127.0.0.1:8765` | Gabbie | Voice-enabled handset | Newline-delimited JSON voice events |
 
@@ -27,7 +27,8 @@ Finished requires a nonempty outcome and 1–12 nonempty evidence strings, each 
 most 500 characters. Lease seconds must be an integer between 30 and 3600
 (default 900). Optional `machine_kind` is `laptop`, `desktop`, or `server`;
 servers older than this field reject events that carry it, so upgrade the server
-before reporters. Field limits and exact validation live in the dependency-free
+before reporters. Optional `listening_until` is a Unix time until which an idle
+session accepts dashboard input (`0` when it stops listening). Field limits and exact validation live in the dependency-free
 [Python contract](../packages/python/axon_protocol/axon_protocol/__init__.py).
 
 States are working, waiting, blocked, finished, stopped, interrupted. Duplicate
@@ -77,3 +78,14 @@ page. Optional `agent`, `project`, `q`, `since`, `until`, and `exclude_kind`
 filters support the browser timeline. Project/agent filters refer to the current
 session association. Text search treats its query literally. Sequence order is
 arrival order; event timestamps retain the publisher's reported time.
+
+### Session input
+
+`POST /sessions/<source>/<session>/messages` with `{"text": "..."}` (1–4000
+characters) and `Authorization: Bearer <token>` queues input for an existing
+session: 201 on success, 403 when the server has no input token, 401 for a wrong
+token, 404 for an unknown session. `GET` on the same path lists the session's
+messages with `delivered_at` (null while queued) and `input` (whether sending is
+enabled). Hooks call `POST /sessions/<source>/<session>/inbox/claim?wait=<s>`
+(long-poll, at most 55 s): it atomically marks pending messages delivered and
+returns them. Messages follow the journal retention period.

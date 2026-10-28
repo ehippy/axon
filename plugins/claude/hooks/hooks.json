@@ -62,6 +62,12 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\"",
             "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" listen",
+            "asyncRewake": true,
+            "timeout": 14400
           }
         ]
       }

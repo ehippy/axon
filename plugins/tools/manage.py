@@ -73,11 +73,13 @@ def merged_config(current,agent,package):
                 kept.append({**group,'hooks':handlers})
         hooks[event]=kept
     bundled=json.loads((ROOT/'plugins'/agent/'hooks/hooks.json').read_text())['hooks']
-    command=shlex.join([sys.executable,str(package/'hooks/run.py')])
     for event, groups in bundled.items():
         for group in groups:
             for handler in group['hooks']:
-                handler['command']=command
+                # Keep bundled arguments (e.g. `listen`) after the runner path.
+                words=shlex.split(handler['command'])
+                extra=next((words[i+1:] for i,w in enumerate(words) if w.endswith('/hooks/run.py')),[])
+                handler['command']=shlex.join([sys.executable,str(package/'hooks/run.py'),*extra])
         hooks.setdefault(event,[]).extend(groups)
     return result
 

@@ -64,6 +64,43 @@ class WebTests(unittest.TestCase):
         self.event(kind='progress',step='No kind from an older reporter')
         self.assertEqual(self.get('/sessions')['sessions'][0]['machine_kind'],'server')
 
+    def post(self,path,body=None,token=None):
+        headers={'Content-Type':'application/json',**({'Authorization':'Bearer '+token} if token else {})}
+        with urlopen(Request(self.base+path,method='POST',data=json.dumps(body or {}).encode(),headers=headers)) as response:
+            return response.status,json.load(response)
+
+    def test_session_input_requires_token_and_is_claimed_once(self):
+        self.event(kind='start',agent='claude')
+        with self.assertRaises(HTTPError) as error:self.post('/sessions/example/one/messages',{'text':'hi'},'x'*20)
+        self.assertEqual(error.exception.code,403);error.exception.close()
+        self.stop()
+        self.server=ThreadingHTTPServer(('127.0.0.1',0),handler(self.journal,token='s'*20))
+        self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start()
+        self.base=f'http://127.0.0.1:{self.server.server_port}'
+        for token,code in [(None,401),('wrong'*4,401)]:
+            with self.assertRaises(HTTPError) as error:self.post('/sessions/example/one/messages',{'text':'hi'},token)
+            self.assertEqual(error.exception.code,code);error.exception.close()
+        for path,body in [('/sessions/example/missing/messages',{'text':'hi'}),('/sessions/example/one/messages',{'text':' '}),('/sessions/bad%2Fid/one/messages',{'text':'hi'})]:
+            with self.assertRaises(HTTPError) as error:self.post(path,body,'s'*20)
+            self.assertIn(error.exception.code,(400,404,501));error.exception.close()
+        status,message=self.post('/sessions/example/one/messages',{'text':'Ship it'},'s'*20)
+        self.assertEqual((status,message['text'],message['delivered_at']),(201,'Ship it',None))
+        listing=self.get('/sessions/example/one/messages')
+        self.assertTrue(listing['input']);self.assertEqual(len(listing['messages']),1)
+        self.assertEqual([m['text'] for m in self.post('/sessions/example/one/inbox/claim')[1]['messages']],['Ship it'])
+        self.assertEqual(self.post('/sessions/example/one/inbox/claim')[1]['messages'],[])
+        self.assertIsNotNone(self.get('/sessions/example/one/messages')['messages'][0]['delivered_at'])
+
+    def test_claim_long_poll_wakes_when_input_arrives(self):
+        self.event(kind='start',agent='claude')
+        result={}
+        waiter=threading.Thread(target=lambda:result.update(claim=self.journal.claim('example','one',wait=20)))
+        started=time.time();waiter.start();time.sleep(.3)
+        self.journal.send_message('example','one','Now')
+        waiter.join(5)
+        self.assertEqual([m['text'] for m in result['claim']],['Now'])
+        self.assertLess(time.time()-started,5)
+
     def test_assets_are_allowlisted_and_ui_can_be_disabled(self):
         for path in ('/ui/../journal.py','/ui/%2e%2e/journal.py','/ui/secrets.json'):
             with self.assertRaises(HTTPError) as error:urlopen(self.base+path)

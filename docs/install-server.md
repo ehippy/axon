@@ -53,12 +53,12 @@ python3 -m venv .venv-query
 ```
 
 The client requires neither server nor reporter Python modules. Remote access to
-the loopback API should use a secured tunnel; the API has no authentication.
+the loopback API should use a secured tunnel; reads have no authentication.
 
 ## Browser UI
 
 Open `http://127.0.0.1:8510/` on the server, or forward that loopback port over
-SSH and open the forwarded local address. The packaged, read-only UI offers Now,
+SSH and open the forwarded local address. The packaged UI offers Now,
 a filterable event timeline, and session details with evidence. The board groups
 live reporting sessions by host, then agent, with a separate tile for each
 source/session pair. Tile order is stable across activity updates. Agent identity
@@ -87,3 +87,31 @@ section are ordered by most recent report, with session identity breaking ties.
 
 Hosts occupy side-by-side board columns when space permits. Agent groups and
 session tiles stack vertically inside each host; narrow screens stack hosts.
+
+## Session input
+
+The session detail view can send messages into running Claude Code sessions.
+Input is disabled until the server has a token, because a message makes an agent
+act with that user's permissions:
+
+```sh
+umask 077; python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > ~/.config/axon/input-token
+axon-server ... --input-token-file ~/.config/axon/input-token
+```
+
+`AXON_INPUT_TOKEN_FILE` works too. Paste the token into the session view once; the
+browser keeps it in local storage. Sending requires `Authorization: Bearer <token>`.
+Hooks claim queued messages without the token. Anyone who can reach the API could
+therefore claim (and so swallow) a queued message, but never inject one; keep the
+server on a trusted network.
+
+Delivery depends on the session's state:
+
+- **Working:** the next tool call's hook adds the message to Claude's context.
+- **Idle:** after each turn, a background `asyncRewake` Stop hook listens for up to
+  three hours (`AXON_LISTEN_SECONDS`, at most 14000) and wakes Claude immediately when
+  a message arrives. Waiting costs no tokens, and the terminal stays usable: typing
+  locally ends that listen window. The board shows *Listening* with the time left.
+- **Otherwise** the message stays queued until the session next runs a hook.
+
+Codex and Hermes sessions cannot receive input yet.

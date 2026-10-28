@@ -36,6 +36,15 @@ function agentClass(row) { return ['codex','claude','hermes'].includes(row.agent
 function agentName(row) { return ({codex:'Codex',claude:'Claude',hermes:'Hermes'})[row.agent] || row.agent || 'Agent'; }
 function hostName(row) { return row.machine || 'Host not reported'; }
 const HOST_KINDS = ['laptop', 'desktop', 'server'];
+const INPUT_AGENTS = ['claude'];
+const TOKEN_KEY = 'axon-input-token';
+function storedToken() { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } }
+function storeToken(value) { try { value ? localStorage.setItem(TOKEN_KEY,value) : localStorage.removeItem(TOKEN_KEY); } catch {} }
+function listeningLeft(row) {
+  const left=Number(row.listening_until||0)-Date.now()/1000;
+  return row.effective_state==='waiting' && left>0 ? left : 0;
+}
+function duration(seconds) { const h=Math.floor(seconds/3600), m=Math.floor(seconds%3600/60); return h ? h+'h '+m+'m' : Math.max(1,m)+'m'; }
 function hostIcon(kind) {
   if (!HOST_KINDS.includes(kind)) return null;
   const icon=node('i','host-icon kind-'+kind);
@@ -115,7 +124,9 @@ function card(row, grouped=false) {
   const project=node('div','project-line');project.append(node('span','project-name',row.project || 'Unassigned project'),time);
   const label=statusName(row.effective_state), bottom=node('div','card-bottom');
   const detail=label==='blocked' ? row.blocker || row.step : label==='finished' ? row.outcome : row.step || row.activity;
-  bottom.append(status(label),node('span','session-id','#'+row.session.slice(0,8)));
+  bottom.append(status(label));
+  if (listeningLeft(row)) bottom.append(node('span','listening-label','Listening · '+duration(listeningLeft(row))));
+  bottom.append(node('span','session-id','#'+row.session.slice(0,8)));
   if (!grouped) button.append(top);
   button.classList.toggle('grouped-card',grouped);
   button.setAttribute('aria-label',agentName(row)+' on '+hostName(row)+': '+(row.project || 'Unassigned project')+' — '+(row.goal || row.outcome || 'Work session')+' — '+LABEL[label]+' — '+row.session.slice(0,8));
@@ -260,7 +271,9 @@ function detailSection(title,text) {
 function renderDetail(row) {
   const content=$('detail-content');content.replaceChildren();
   const title=node('h2','',row.goal || row.outcome || row.project || 'Work session');title.id='detail-title';content.append(title);
-  const statusBox=node('div','detail-status');statusBox.append(status(row.effective_state || 'lost_contact'));content.append(statusBox);
+  const statusBox=node('div','detail-status');statusBox.append(status(row.effective_state || 'lost_contact'));
+  if (listeningLeft(row)) statusBox.append(node('span','listening-label','Listening for input · '+duration(listeningLeft(row))+' left'));
+  content.append(statusBox);
   const facts=node('dl','detail-facts');
   for (const [label,value] of [['Host',row.machine],['Project',row.project],['Agent',row.agent],['Source',row.source],['Session',row.session],['Branch',row.branch],['Updated',row.updated_at ? new Date(row.updated_at*1000).toLocaleString() : null]]) {
     if (value) facts.append(node('dt','',label),node('dd','',value));
@@ -279,6 +292,7 @@ function renderDetail(row) {
 }
 async function openSession(row) {
   state.selected={source:row.source,session:row.session};state.detailEvents=[];state.detailBefore=null;state.detailMore=false;state.detailRendered='';
+  state.thread='';$('message-thread').replaceChildren();$('message-text').value='';$('message-status').textContent='';$('session-input').hidden=true;
   $('detail-content').replaceChildren(node('h2','','Loading session…'));
   if (!$('session-dialog').open) $('session-dialog').showModal();
   route();await loadDetail(false);
@@ -289,7 +303,8 @@ async function loadDetail(older) {
   const params=new URLSearchParams({...selected,order:'desc',limit:'100',exclude_kind:'heartbeat'});
   if (older && state.detailBefore) params.set('before',String(state.detailBefore));
   try {
-    const [sessions,events]=await Promise.all([api('/sessions',new URLSearchParams(selected)),api('/events',params)]);
+    const [sessions,events,inbox]=await Promise.all([api('/sessions',new URLSearchParams(selected)),api('/events',params),
+      api(sessionPath(selected)+'/messages').catch(()=>null)]);
     if (request!==state.detailRequest || !state.selected || key(selected)!==key(state.selected)) return;
     if (!older && state.detailEvents.length>100) return; // keep an explicitly paged history stable
     state.detailEvents=older ? state.detailEvents.concat(events.events) : events.events;
@@ -297,11 +312,53 @@ async function loadDetail(older) {
     const row=sessions.sessions[0] || {...selected,goal:'Session not in current projection',effective_state:'lost_contact'};
     const snapshot=JSON.stringify({row,events:state.detailEvents});
     if (snapshot!==state.detailRendered) { state.detailRendered=snapshot;renderDetail(row); }
+    renderInput(row,inbox);
   } catch (error) {
     if (request!==state.detailRequest) return;
     $('detail-content').replaceChildren(node('h2','','Could not load this session'),node('p','detail-error',error.message));
   }
 }
+function sessionPath(row) { return '/sessions/'+encodeURIComponent(row.source)+'/'+encodeURIComponent(row.session); }
+function renderInput(row, inbox) {
+  const box=$('session-input');
+  box.hidden=!INPUT_AGENTS.includes(row.agent) || !inbox;
+  if (box.hidden) return;
+  const signature=JSON.stringify(inbox.messages);
+  if (signature!==state.thread) {
+    state.thread=signature;
+    $('message-thread').replaceChildren(...inbox.messages.map(message=>{
+      const item=node('li','message'+(message.delivered_at?' delivered':''));
+      item.append(node('p','message-text',message.text),node('span','message-meta',clock(message.at)+' · '+(message.delivered_at ? 'Delivered '+clock(message.delivered_at) : 'Queued')));
+      return item;
+    }));
+  }
+  const live=ACTIVE.includes(row.effective_state);
+  $('input-note').textContent=!inbox.input ? 'Session input is disabled on this server.'
+    : listeningLeft(row) ? 'Idle and listening: a message wakes it immediately.'
+    : row.effective_state==='working' ? 'Working: the message arrives at its next tool call.'
+    : live ? 'Not listening: the message waits until the session next runs.'
+    : 'Session has ended or lost contact: the message waits if it resumes.';
+  const token=!!storedToken();
+  $('message-form').hidden=!inbox.input || !token;$('token-form').hidden=!inbox.input || token;
+}
+async function sendMessage(event) {
+  event.preventDefault();
+  const selected=state.selected, text=$('message-text').value.trim();
+  if (!selected || !text) return;
+  $('message-send').disabled=true;$('message-status').textContent='Sending…';
+  try {
+    const response=await fetch(sessionPath(selected)+'/messages',{method:'POST',cache:'no-store',signal:AbortSignal.timeout(8000),
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+storedToken()},body:JSON.stringify({text})});
+    if (response.status===401) { storeToken('');$('message-status').textContent='Token rejected. Paste it again.'; }
+    else if (!response.ok) $('message-status').textContent='Not sent: the journal returned '+response.status+'.';
+    else { $('message-text').value='';$('message-status').textContent='Queued.'; }
+    await loadDetail(false);
+  } catch (error) { $('message-status').textContent='Not sent: '+error.message; }
+  finally { $('message-send').disabled=false; }
+}
+$('message-form').addEventListener('submit',sendMessage);
+$('message-text').addEventListener('keydown',event=>{if(event.key==='Enter' && (event.metaKey||event.ctrlKey)) sendMessage(event);});
+$('token-form').addEventListener('submit',event=>{event.preventDefault();const value=$('token-input').value.trim();if(!value) return;storeToken(value);$('token-input').value='';$('message-status').textContent='';loadDetail(false);});
 function filtersChanged() { state.events=[];state.before=null;$('view-note').textContent='Refreshes every 5 seconds';route();refresh(); }
 $('filters').addEventListener('submit',event=>event.preventDefault());
 $('search').addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(filtersChanged,250);});
