@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from http.server import ThreadingHTTPServer
 from urllib.error import HTTPError
 from urllib.parse import urlencode
@@ -14,7 +15,7 @@ from urllib.request import Request, urlopen
 ROOT = Path(__file__).resolve().parents[2]
 for project in ('server', 'packages/python/axon_protocol'):
     sys.path.insert(0, str(ROOT/project))
-from axon_server.journal import Journal, handler
+from axon_server.journal import Journal, handler, server_revision
 
 
 class WebTests(unittest.TestCase):
@@ -39,6 +40,50 @@ class WebTests(unittest.TestCase):
 
     def get(self,path):
         with urlopen(self.base+path) as response:return json.load(response)
+
+    def test_activity_time_ignores_heartbeats_and_handles_heartbeat_only_sessions(self):
+        self.event(kind='start',agent='claude',goal='Meaningful work')
+        first=self.get('/sessions')['sessions'][0]['activity_at']
+        self.event(kind='heartbeat',activity='running tools')
+        row=self.get('/sessions')['sessions'][0]
+        self.assertEqual(row['activity_at'],first)
+        self.assertGreater(row['updated_at'],first)
+        self.event(step='Real progress')
+        newer=self.get('/sessions')['sessions'][0]['activity_at']
+        self.assertGreater(newer,first)
+        self.event(source='heartbeat-only',kind='heartbeat',agent='pi')
+        initial=next(row['activity_at'] for row in self.get('/sessions')['sessions'] if row['source']=='heartbeat-only')
+        self.event(source='heartbeat-only',kind='heartbeat',activity='Still alive')
+        row=next(row for row in self.get('/sessions')['sessions'] if row['source']=='heartbeat-only')
+        self.assertEqual(row['activity_at'],initial)
+        self.assertGreater(row['updated_at'],initial)
+        self.assertEqual(Journal(self.journal.path).activity_times()[('heartbeat-only','one')],initial)
+
+    def test_version_matches_html_api_and_stream_and_ignores_activity(self):
+        with urlopen(self.base+'/') as response:
+            revision=response.headers['X-Axon-Version']
+            self.assertRegex(revision,r'^[a-f0-9]{64}$')
+            self.assertIn(f'data-axon-version="{revision}"',response.read().decode())
+        self.event(goal='Activity must not force a page reload')
+        for path in ('/health','/sessions','/ui/app.js'):
+            with urlopen(self.base+path) as response:self.assertEqual(response.headers['X-Axon-Version'],revision)
+        with urlopen(self.base+'/stream',timeout=5) as response:
+            self.assertEqual(response.headers['X-Axon-Version'],revision)
+        self.assertEqual(server_revision(),revision)
+
+    def test_version_changes_when_shipped_asset_changes(self):
+        from importlib.resources import files as actual_files
+        original=server_revision()
+        class ChangedAsset:
+            def __init__(self,parts):self.parts=parts
+            def read_bytes(self):
+                content=actual_files('axon_server').joinpath(*self.parts).read_bytes()
+                return content+b'/* updated */' if self.parts==('web','app.css') else content
+        class ChangedRoot:
+            def joinpath(self,*parts):return ChangedAsset(parts)
+        with patch('axon_server.journal.files',return_value=ChangedRoot()):
+            self.assertNotEqual(server_revision(),original)
+        self.assertEqual(server_revision(),original)
 
     def test_packaged_assets_have_security_headers(self):
         for path, kind in [('/', 'text/html'),('/ui/app.js','text/javascript'),('/ui/app.css','text/css'),('/ui/favicon.svg','image/svg+xml')]:
@@ -109,6 +154,23 @@ class WebTests(unittest.TestCase):
         waiter.join(5)
         self.assertEqual([m['text'] for m in result['claim']],['Now'])
         self.assertLess(time.time()-started,5)
+
+    def test_stream_signals_each_change(self):
+        self.event(kind='start',agent='claude')
+        def frame(response):
+            lines=[]
+            while (line:=response.readline().decode().rstrip('\n')) or not lines:
+                if line and not line.startswith(('retry:',':')):lines.append(line)
+            return lines
+        with urlopen(self.base+'/stream',timeout=5) as response:
+            self.assertEqual(response.headers['Content-Type'],'text/event-stream')
+            first=frame(response)
+            started=time.time()
+            self.event(step='Live')
+            self.assertNotEqual(frame(response),first)
+            self.journal.send_message('example','one','Hi')
+            self.assertEqual(frame(response),[f'data: {self.journal.version}'])
+            self.assertLess(time.time()-started,5)
 
     def test_assets_are_allowlisted_and_ui_can_be_disabled(self):
         for path in ('/ui/../journal.py','/ui/%2e%2e/journal.py','/ui/secrets.json'):

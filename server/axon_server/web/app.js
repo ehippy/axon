@@ -2,19 +2,103 @@
 const $ = id => document.getElementById(id);
 const PAGE = 50;
 const ACTIVE = ['working', 'waiting', 'blocked'];
-const BOARD_RECENCY = 60 * 60;
-function onBoard(row, now=Date.now()/1000) {
-  return ACTIVE.includes(row.effective_state) || now-Number(row.updated_at) <= BOARD_RECENCY;
-}
 const LABEL = {working:'Working', waiting:'Waiting', blocked:'Blocked', finished:'Finished', stopped:'Stopped', interrupted:'Interrupted', lost_contact:'Lost contact'};
-const state = {compose:null, drafts:{}, view:'now', filter:'', sessions:[], events:[], before:null, more:false, selected:null, detailEvents:[], detailBefore:null, detailMore:false, synced:null, request:0, detailRequest:0};
+const state = {compose:null, drafts:{}, view:'now', filter:'', sessions:[], events:[], before:null, more:false, selected:null, detailEvents:[], detailBefore:null, detailMore:false, synced:null, live:false, request:0, detailRequest:0};
 let timer;
+const loadedVersion=document.documentElement.dataset.axonVersion;
+const RELOAD_STATE='axon:reload-state';
+let restoredDraft=null;
+try {
+  const saved=JSON.parse(sessionStorage.getItem(RELOAD_STATE)||'null');
+  if (saved) {state.drafts=saved.drafts||{};state.compose=saved.compose||null;restoredDraft=saved.detail||null;}
+  sessionStorage.removeItem(RELOAD_STATE);
+} catch {}
+function observeVersion(response) {
+  const version=response.headers.get('X-Axon-Version');
+  if (!loadedVersion || !version || loadedVersion===version || state.reloading) return;
+  // Let an in-flight send settle before capturing its draft or navigating away.
+  if (document.querySelector('.message-form button:disabled, .card-composer .send-button:disabled')) return;
+  const detail=state.selected ? {...state.selected,text:$('message-text').value} : null;
+  const saved={drafts:state.drafts,compose:state.compose,detail};
+  try {sessionStorage.setItem(RELOAD_STATE,JSON.stringify(saved));}
+  catch {if(detail?.text || Object.values(state.drafts).some(Boolean)) return;}
+  state.reloading=true;route();location.reload();
+}
+async function checkVersion() {
+  if (document.hidden || state.versionChecking) return;
+  state.versionChecking=true;state.versionChecked=Date.now();
+  try {observeVersion(await fetch('/health',{cache:'no-store',signal:AbortSignal.timeout(8000)}));}
+  catch {} // Normal activity refresh handles outage messages and retry.
+  finally {state.versionChecking=false;}
+}
+
 
 function node(tag, className, text) {
   const element = document.createElement(tag);
   if (className) element.className = className;
   if (text !== undefined && text !== null) element.textContent = String(text);
   return element;
+}
+function quotaCountdown(seconds) {
+  const minutes=Math.max(0,Math.ceil(seconds/60)), hours=Math.floor(minutes/60), days=Math.floor(hours/24);
+  return days ? days+'d '+hours%24+'h' : hours ? hours+'h '+minutes%60+'m' : minutes+'m';
+}
+function renderResources(values=[]) {
+  const inference=values.filter(row=>row.provider==='inference');
+  const rows=values.filter(row=>row.provider!=='inference');
+  for(const provider of ['codex','claude']) if(!rows.some(row=>row.provider===provider)) rows.push({provider,account:'primary',windows:[]});
+  rows.sort((a,b)=>['codex','claude'].indexOf(a.provider)-['codex','claude'].indexOf(b.provider) || a.account.localeCompare(b.account));
+  const now=Date.now()/1000;
+  const view=rows.map(row=>({provider:row.provider,account:row.account,
+    stale:!!row.observed_at && now-row.observed_at>300,
+    updated:row.observed_at ? relative(row.observed_at) : null,
+    windows:['short','weekly'].map(name=>{
+      const window=row.windows.find(item=>item.name===name), expired=window?.resets_at!=null && window.resets_at<=now;
+      const remaining=window?.used_percent!=null && !expired ? Math.max(0,Math.min(100,100-window.used_percent)) : null;
+      const minutes=window?.window_minutes || (name==='short'?300:10080);
+      return {name,label:name==='weekly'?'Weekly':minutes<60?minutes+'m':minutes/60+'h',remaining,
+        reset:expired?'Awaiting update':window?.resets_at ? 'Resets in '+quotaCountdown(window.resets_at-now) : 'Reset unknown'};
+    })}));
+  const signature=JSON.stringify([view,inference.map(row=>({...row,stale:now-row.observed_at>30}))]);if(state.resourceSignature===signature)return;state.resourceSignature=signature;
+  const fragment=document.createDocumentFragment();
+  for(const row of view){
+    const panel=node('article','resource-panel agent-'+row.provider+(row.stale?' stale':''));
+    const header=node('div','resource-heading');header.append(node('h2','',agentName({agent:row.provider})+(row.account==='primary'?'':' · '+row.account)),node('span','resource-age',!row.updated?'Waiting for data':(row.stale?'Stale · ':'Updated ')+row.updated));panel.append(header);
+    const windows=node('div','resource-windows');
+    for(const window of row.windows){
+      const box=node('div','resource-window'), label=node('div','quota-label');
+      label.append(node('span','',window.label),node('strong','',window.remaining===null?'Unknown':Math.floor(window.remaining)+'% left'));
+      const bar=node('div','quota-bar'+(window.remaining===null?' unknown':window.remaining<=10?' low':window.remaining<=25?' limited':''));
+      bar.setAttribute('role','progressbar');bar.setAttribute('aria-label',agentName({agent:row.provider})+' '+window.label+' remaining');bar.setAttribute('aria-valuemin','0');bar.setAttribute('aria-valuemax','100');
+      if(window.remaining!==null){bar.setAttribute('aria-valuenow',String(window.remaining));const fill=node('span','quota-fill');fill.style.width=window.remaining+'%';bar.append(fill);}else bar.setAttribute('aria-valuetext','Unknown');
+      box.append(label,bar,node('div','quota-reset',window.reset));windows.append(box);
+    }
+    panel.append(windows);fragment.append(panel);
+  }
+  for(const row of inference){
+    const stale=now-row.observed_at>30;
+    const panel=node('article','resource-panel inference-panel'+(stale?' stale':''));
+    const header=node('div','resource-heading');
+    header.append(node('h2','',row.account+' · Inference'),node('span','resource-age',stale?'Stale · '+inferenceAge(row.observed_at):row.online?'Live':'Endpoint offline'));
+    panel.append(header);
+    const stats=node('div','inference-stats');
+    const show=(label,value)=>stats.append(node('div','inference-stat',label+' '+value));
+    const fmt=(v,suffix='')=>v==null?'Unknown':Number(v).toFixed(1)+suffix;
+    if(row.online){
+      show('Running',row.metrics.running??'Unknown');show('Queued',row.metrics.queued??'Unknown');
+      show('Generation',fmt(row.metrics.generation_tps,' tok/s'));show('Prompt',fmt(row.metrics.prompt_tps,' tok/s'));
+      show('KV cache',fmt(row.metrics.kv_cache_percent,'%'));
+    }
+    for(const gpu of row.gpus){
+      show(gpu.name,fmt(gpu.utilization_percent,'% busy'));
+      show('Power',fmt(gpu.power_watts,' W'));show('Temperature',fmt(gpu.temperature_c,' °C'));
+      const memory=(used,total)=>used==null||total==null?'Unknown':fmt(used/1073741824)+' / '+fmt(total/1073741824)+' GiB';
+      show('VRAM',memory(gpu.memory_used_bytes,gpu.memory_total_bytes));
+      if(gpu.shared_total_bytes!=null)show('Shared GPU memory',memory(gpu.shared_used_bytes,gpu.shared_total_bytes));
+    }
+    panel.append(stats);fragment.append(panel);
+  }
+  $('resources').replaceChildren(fragment);
 }
 function statusName(value) { return Object.hasOwn(LABEL, value) ? value : 'lost_contact'; }
 function status(value) {
@@ -28,6 +112,11 @@ function relative(at) {
   if (seconds < 3600) return Math.floor(seconds/60)+'m ago';
   if (seconds < 86400) return Math.floor(seconds/3600)+'h ago';
   return Math.floor(seconds/86400)+'d ago';
+}
+function inferenceAge(at) {
+  // Inference turns stale in 30s, too soon for relative()'s minute floor to read as stale.
+  const seconds = Math.max(0, Math.floor(Date.now()/1000-Number(at)));
+  return seconds < 60 ? seconds+'s ago' : relative(at);
 }
 function clock(at) { return new Date(Number(at)*1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); }
 function date(at) { return new Date(Number(at)*1000).toLocaleDateString([], {month:'long', day:'numeric', year:'numeric'}); }
@@ -53,50 +142,38 @@ function hostIcon(kind) {
 }
 // Older reporters omit the kind; any session from the same host can supply it.
 function hostKind(sessions) { return [...sessions].sort((a,b)=>Number(b.updated_at)-Number(a.updated_at)).find(row=>row.machine_kind)?.machine_kind; }
+// Minute buckets avoid trading places over near-simultaneous progress reports.
+function activityBucket(row) { return Math.floor(Number(row.activity_at ?? row.updated_at)/60); }
+function sessionOrder(a,b) {
+  return Number(ACTIVE.includes(b.effective_state))-Number(ACTIVE.includes(a.effective_state))
+    || activityBucket(b)-activityBucket(a) || key(a).localeCompare(key(b));
+}
 function boardOrder(a,b) {
-  return hostName(a).localeCompare(hostName(b)) || agentName(a).localeCompare(agentName(b))
-    || Number(ACTIVE.includes(b.effective_state))-Number(ACTIVE.includes(a.effective_state))
-    || Number(b.updated_at)-Number(a.updated_at) || key(a).localeCompare(key(b));
+  return hostName(a).localeCompare(hostName(b)) || sessionOrder(a,b);
+}
+function agentOrder([nameA,rowsA],[nameB,rowsB]) {
+  const live=rows=>rows.some(row=>ACTIVE.includes(row.effective_state));
+  const latest=rows=>Math.max(...rows.map(activityBucket));
+  return Number(live(rowsB))-Number(live(rowsA)) || latest(rowsB)-latest(rowsA) || nameA.localeCompare(nameB);
 }
 
 function options(id, values, label) {
-  const group=$(id), current=group.value || '';
-  let unique=[...new Set(values.filter(Boolean))];
-  if (id !== 'project') unique.sort();
+  const select=$(id), current=select.value || '';
+  const unique=[...new Set(values.filter(Boolean))];
+  if (id!=='project') unique.sort();
   if (current && !unique.includes(current)) unique.push(current);
-  const signature=JSON.stringify([unique,current,!!group.expanded]);
-  if (group.dataset.signature===signature) return;
-  group.dataset.signature=signature;
-  group.replaceChildren();
-  const add=(value,text)=>{
-    const button=node('button','filter-pill'+(id==='agent' && value ? ' agent-'+value : ''),text);
-    button.type='button';button.setAttribute('aria-pressed',String(current===value));
-    button.addEventListener('click',()=>{group.value=current===value?'':value;filtersChanged();});
-    group.append(button);
-  };
-  add('',label);
-  const visible=id==='project' && !group.expanded ? unique.filter((value,index)=>index<5 || value===current) : unique;
-  visible.forEach(value=>add(value,id==='agent'?agentName({agent:value}):value));
-  if (id==='project' && unique.length>5) {
-    const more=node('button','filter-pill overflow-pill',group.expanded?'Less':'…');more.type='button';
-    more.setAttribute('aria-label',group.expanded?'Show fewer projects':'Show older projects');
-    more.setAttribute('aria-expanded',String(!!group.expanded));
-    more.addEventListener('click',()=>{group.expanded=!group.expanded;options(id,values,label);});group.append(more);
-  }
-}
-function periodOptions() {
-  const group=$('period');group.replaceChildren();
-  for (const [value,label] of [['','Any time'],['86400','24h'],['604800','7d'],['2592000','30d']]) {
-    const button=node('button','filter-pill',label);button.type='button';button.setAttribute('aria-pressed',String((group.value||'')===value));
-    button.addEventListener('click',()=>{group.value=group.value===value?'':value;filtersChanged();});group.append(button);
-  }
+  const signature=JSON.stringify([...unique].sort());
+  if (select.dataset.signature===signature) return;
+  select.dataset.signature=signature;
+  select.replaceChildren(new Option(label,''),...unique.map(value=>new Option(id==='agent'?agentName({agent:value}):value,value)));
+  select.value=current;
 }
 function query(extra={}) {
   const params = new URLSearchParams(extra);
   for (const name of ['project','agent']) if ($(name).value) params.set(name, $(name).value);
   if ($('host').value) params.set('machine',$('host').value);
   if ($('search').value.trim()) params.set('q', $('search').value.trim());
-  if ($('period').value) params.set('since', String(Math.floor(Date.now()/1000-Number($('period').value))));
+  if ($('period').value!=='all') params.set('since', String(Math.floor(Date.now()/1000-Number($('period').value))));
   return params;
 }
 function route() {
@@ -109,6 +186,7 @@ function route() {
 }
 async function api(path, params) {
   const response = await fetch(path+(params ? '?'+params : ''), {cache:'no-store',signal:AbortSignal.timeout(8000)});
+  observeVersion(response);
   if (!response.ok) throw new Error('The journal returned '+response.status+'.');
   return response.json();
 }
@@ -120,7 +198,8 @@ function card(row, grouped=false) {
   const top=node('div','card-top'), identity=node('h2','agent-identity');
   identity.append(node('span','agent-label',agentName(row)),node('span','on-label',' on '),node('span','host-name',hostName(row)));
   top.append(identity);
-  const time=node('time','card-time',relative(row.updated_at)); time.dataset.at=row.updated_at; time.title=new Date(row.updated_at*1000).toLocaleString();
+  const activity=row.activity_at ?? row.updated_at;
+  const time=node('time','card-time',relative(activity)); time.dataset.at=activity; time.title='Last activity: '+new Date(activity*1000).toLocaleString()+' · Last report: '+new Date(row.updated_at*1000).toLocaleString();
   const project=node('div','project-line');project.append(node('span','project-name',row.project || 'Unassigned project'),time);
   const label=statusName(row.effective_state), bottom=node('div','card-bottom');
   const detail=label==='blocked' ? row.blocker || row.step : label==='finished' ? row.outcome : row.step || row.activity;
@@ -132,12 +211,40 @@ function card(row, grouped=false) {
   button.setAttribute('aria-label',agentName(row)+' on '+hostName(row)+': '+(row.project || 'Unassigned project')+' — '+(row.goal || row.outcome || 'Work session')+' — '+LABEL[label]+' — '+row.session.slice(0,8));
   button.append(project,node('h3','work-title',row.goal || row.outcome || 'Work session'),node('p','card-step',detail || 'No further update reported.'),bottom);
   button.addEventListener('click',()=>openSession(row));
-  if (!INPUT_AGENTS.includes(row.agent)) return button;
   const shell=node('div','card-shell'+(state.compose===key(row)?' composing':''));shell.dataset.composeKey=key(row);
-  const frame=node('div','card-frame');frame.append(button,chatToggle(row));shell.append(frame);
+  const frame=node('div','card-frame'), tools=node('div','card-tools');
+  const archive=node('button','archive-button',row.archived_at?'Restore':'Archive');archive.type='button';
+  archive.setAttribute('aria-label',(row.archived_at?'Restore':'Archive')+' session '+(row.project||row.session.slice(0,8)));
+  archive.addEventListener('click',()=>archiveSession(row,!row.archived_at));tools.append(archive);
+  if (INPUT_AGENTS.includes(row.agent)) tools.append(chatToggle(row));
+  frame.append(button,tools);shell.append(frame);
   if (state.compose===key(row)) shell.append(composer(row));
   return shell;
 }
+let pendingArchive=null;
+async function archiveSession(row, archived) {
+  if (!storedToken()) {
+    pendingArchive={row,archived};$('archive-token-status').textContent='Use the same token as session messaging.';
+    $('archive-auth').showModal();$('archive-token').focus();return;
+  }
+  try {
+    const response=await fetch(sessionPath(row)+'/archive',{method:'POST',cache:'no-store',signal:AbortSignal.timeout(8000),
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+storedToken()},body:JSON.stringify({archived})});
+    if (response.status===401) {storeToken('');return archiveSession(row,archived);}
+    if (!response.ok) throw new Error(response.status===403?'Configure the server input token to archive sessions.':'Could not update session ('+response.status+').');
+    state.lastArchived=archived?row:null;
+    $('archive-notice').hidden=!archived;
+    $('archive-notice-text').textContent='Session archived.';
+    state.compose=null;await refresh();
+  } catch(error) {$('error').textContent=error.message;$('error').hidden=false;}
+}
+$('archive-token-form').addEventListener('submit',event=>{
+  event.preventDefault();const token=$('archive-token').value.trim();if (!token) return;
+  storeToken(token);$('archive-token').value='';$('archive-auth').close();
+  const pending=pendingArchive;pendingArchive=null;if(pending) archiveSession(pending.row,pending.archived);
+});
+$('archive-cancel').addEventListener('click',()=>$('archive-auth').close());
+$('archive-undo').addEventListener('click',()=>{if(state.lastArchived) archiveSession(state.lastArchived,false);});
 function chatToggle(row) {
   const listening=listeningLeft(row), queued=Number(row.queued_messages||0), toggle=node('button','chat-toggle'+(listening?' listening':''));
   toggle.type='button';toggle.setAttribute('aria-expanded',String(state.compose===key(row)));
@@ -216,7 +323,7 @@ function filteredSessions() {
     .filter(row=>!$('agent').value || row.agent===$('agent').value);
   const search=$('search').value.trim().toLowerCase();
   if (search) rows=rows.filter(row=>JSON.stringify(row).toLowerCase().includes(search));
-  if ($('period').value) rows=rows.filter(row=>row.updated_at>=Date.now()/1000-Number($('period').value));
+  if ($('period').value!=='all') rows=rows.filter(row=>row.updated_at>=Date.now()/1000-Number($('period').value));
   return rows;
 }
 function hostGroups(rows) {
@@ -231,41 +338,47 @@ function hostGroups(rows) {
     heading.append(title,node('span','host-count',sessions.filter(row=>ACTIVE.includes(row.effective_state)).length+' live · '+sessions.filter(row=>!ACTIVE.includes(row.effective_state)).length+' recent'));section.append(heading);
     const columns=node('div','agent-columns'), agents=new Map();
     for (const row of sessions) {const name=agentName(row);if(!agents.has(name)) agents.set(name,[]);agents.get(name).push(row);}
-    for (const [name,items] of agents) {
+    for (const [name,items] of [...agents].sort(agentOrder)) {
       const group=node('section','agent-group '+agentClass(items[0]));
       const label=node('div','agent-group-heading');label.append(node('span','agent-dot'),node('h3','',name),node('span','agent-count',items.length));group.append(label);
-      items.forEach(row=>group.append(card(row,true)));columns.append(group);
+      items.sort(sessionOrder).forEach(row=>group.append(card(row,true)));columns.append(group);
     }
     section.append(columns);fragment.append(section);
   }
   return fragment;
 }
 function render() {
-  const counts=Object.fromEntries(ACTIVE.map(value=>[value,filteredSessions().filter(s=>s.effective_state===value).length]));
+  const counts=Object.fromEntries(ACTIVE.map(value=>[value,filteredSessions().filter(s=>!s.archived_at && s.effective_state===value).length]));
   for (const value of ACTIVE) $('count-'+value).textContent=counts[value];
-  $('live-badge').textContent=state.sessions.filter(row=>ACTIVE.includes(row.effective_state)).length;
+  $('live-badge').textContent=state.sessions.filter(row=>!row.archived_at && ACTIVE.includes(row.effective_state)).length;
   document.querySelectorAll('[data-view]').forEach(button=>{button.classList.toggle('selected',button.dataset.view===state.view);button.setAttribute('aria-current',button.dataset.view===state.view ? 'page' : 'false');});
-  document.querySelectorAll('[data-state]').forEach(button=>{button.classList.toggle('active',button.dataset.state===state.filter);button.setAttribute('aria-pressed',String(button.dataset.state===state.filter));});
+  document.querySelectorAll('[data-state]').forEach(button=>{button.classList.toggle('active',button.dataset.state===state.filter);button.setAttribute('aria-pressed',String(button.dataset.state===state.filter));button.setAttribute('aria-label',LABEL[button.dataset.state]+': '+counts[button.dataset.state]);button.title=LABEL[button.dataset.state];});
+  $('resume-live').hidden=!(state.view==='timeline' && state.events.length>PAGE);
   $('clear-state').hidden=!state.filter || state.view!=='now';
   $('heartbeat-control').hidden=state.view!=='timeline';
+  $('nav-search').classList.toggle('has-query',!!$('search').value.trim());
   $('page-title').textContent=state.view==='now' ? 'Live board' : 'Timeline';
   $('page-subtitle').textContent=state.view==='now' ? 'Hosts → agents → work.' : 'Reported work, across hosts, agents and projects.';
-  $('section-title').textContent=state.view==='now' ? 'IN THE ROOM' : 'LATEST RECEIVED';
+  $('result-count').hidden=state.view==='now';
+  document.querySelector('.section-heading').hidden=state.view==='now' && !state.filter;
   const container=$('activity');container.classList.toggle('board',state.view==='now');
   const focused=document.activeElement?.dataset?.sessionKey;
   if (state.view==='now' && document.activeElement?.closest?.('.card-composer')) return; // never wipe a draft mid-typing
   container.replaceChildren();
   if (state.view==='now') {
-    let rows=filteredSessions();
+    const archived=filteredSessions().filter(row=>row.archived_at);
+    let rows=filteredSessions().filter(row=>!row.archived_at);
     if (state.filter) rows=rows.filter(row=>row.effective_state===state.filter);
-    const active=rows.filter(row=>ACTIVE.includes(row.effective_state)), visible=rows.filter(row=>onBoard(row)).sort(boardOrder), recent=rows.filter(row=>!onBoard(row)).slice(0,8);
+    const active=rows.filter(row=>ACTIVE.includes(row.effective_state)), visible=rows.sort(boardOrder);
     $('result-count').textContent=active.length+' live · '+(visible.length-active.length)+' recent';
     container.append(hostGroups(visible));
-    if (recent.length) {
-      const quiet=node('details','quiet-group'), summary=node('summary','','Older sessions · '+recent.length);quiet.append(summary);
-      const grid=node('div','quiet-grid');recent.forEach(row=>grid.append(card(row)));quiet.append(grid);container.append(quiet);
+    if (!visible.length) container.append(empty('Nothing in this view','Change your filters, or let an agent report its next bit of work.'));
+    if (archived.length) {
+      const section=node('details','quiet-group archived-group');section.open=!!state.archivedOpen;
+      section.addEventListener('toggle',()=>{state.archivedOpen=section.open;});
+      section.append(node('summary','','Archived · '+archived.length));
+      const grid=node('div','quiet-grid');archived.forEach(row=>grid.append(card(row)));section.append(grid);container.append(section);
     }
-    if (!visible.length && !recent.length) container.append(empty('Nothing in this view','Change your filters, or let an agent report its next bit of work.'));
     $('load-more').hidden=true;
   } else {
     $('result-count').textContent=state.events.length+' events';
@@ -287,21 +400,23 @@ function timelineParams(extra={}) {
 }
 async function refresh() {
   const request=++state.request;
-  $('refresh').disabled=true;
+  state.refreshing=true;
   try {
-    const [sessions, events] = await Promise.all([api('/sessions'),state.view==='timeline' ? api('/events',timelineParams()) : Promise.resolve(null)]);
+    const [sessions, events, resources] = await Promise.all([api('/sessions'),state.view==='timeline' ? api('/events',timelineParams()) : Promise.resolve(null),api('/resources').catch(()=>null)]);
     if (request!==state.request) return;
     state.sessions=sessions.sessions;
-    periodOptions(); options('host',state.sessions.map(s=>s.machine),'All hosts'); options('project',[...state.sessions].sort((a,b)=>b.updated_at-a.updated_at).map(s=>s.project),'All projects'); options('agent',state.sessions.map(s=>s.agent),'All agents');
+    if(resources) state.resources=resources.resources;
+    renderResources(state.resources);
+    options('host',state.sessions.map(s=>s.machine),'All hosts'); options('project',[...state.sessions].sort((a,b)=>b.updated_at-a.updated_at).map(s=>s.project),'All projects'); options('agent',state.sessions.map(s=>s.agent),'All agents');
     if (events) { state.events=events.events;state.before=events.next_before;state.more=events.events.length===PAGE; }
-    state.synced=Date.now(); $('error').hidden=true; $('sync-dot').classList.remove('offline'); $('sync-status').textContent='Live · just synced';
+    state.synced=Date.now(); $('error').hidden=true; $('sync-dot').classList.remove('offline'); $('sync-status').textContent=state.live ? 'Live' : 'Polling · just synced';
     render(); route();
     if (state.selected) await loadDetail(false);
   } catch (error) {
     if (request!==state.request) return;
     $('error').textContent='Connection interrupted. '+error.message+' Showing cached activity where available; retrying automatically.';
     $('error').hidden=false; $('sync-dot').classList.add('offline'); $('sync-status').textContent='Disconnected';
-  } finally { if (request===state.request) $('refresh').disabled=false; }
+  } finally { if (request===state.request) state.refreshing=false; }
 }
 async function loadMore() {
   $('load-more').disabled=true;
@@ -309,7 +424,7 @@ async function loadMore() {
     const request=state.request, data=await api('/events',timelineParams({before:String(state.before)}));
     if (request!==state.request) return;
     state.events.push(...data.events);state.before=data.next_before;state.more=data.events.length===PAGE;
-    render();$('sync-status').textContent='History paused';$('view-note').textContent='Browsing history · refresh for latest';
+    render();$('sync-status').textContent='History paused';
   } catch (error) { $('error').textContent='Could not load earlier events. '+error.message;$('error').hidden=false; }
   finally { $('load-more').disabled=false; }
 }
@@ -352,7 +467,7 @@ function renderDetail(row) {
 }
 async function openSession(row) {
   state.selected={source:row.source,session:row.session};state.detailEvents=[];state.detailBefore=null;state.detailMore=false;state.detailRendered='';
-  state.thread='';$('message-thread').replaceChildren();$('message-text').value='';$('message-status').textContent='';$('session-input').hidden=true;
+  state.thread='';$('message-thread').replaceChildren();$('message-text').value=restoredDraft && key(restoredDraft)===key(row) ? restoredDraft.text : '';restoredDraft=null;$('message-status').textContent='';$('session-input').hidden=true;
   $('detail-content').replaceChildren(node('h2','','Loading session…'));
   if (!$('session-dialog').open) $('session-dialog').showModal();
   route();await loadDetail(false);
@@ -409,23 +524,29 @@ async function sendMessage(event) {
 $('message-form').addEventListener('submit',sendMessage);
 $('message-text').addEventListener('keydown',event=>{if(event.key==='Enter' && !event.shiftKey && !event.isComposing) sendMessage(event);});
 $('token-form').addEventListener('submit',event=>{event.preventDefault();const value=$('token-input').value.trim();if(!value) return;storeToken(value);$('token-input').value='';$('message-status').textContent='';loadDetail(false);});
-function filtersChanged() { state.events=[];state.before=null;$('view-note').textContent='Refreshes every 5 seconds';route();refresh(); }
+function filtersChanged() { state.events=[];state.before=null;route();refresh(); }
 $('filters').addEventListener('submit',event=>event.preventDefault());
+$('nav-search').addEventListener('toggle',()=>{if($('nav-search').open) $('search').focus();});
+$('nav-search').addEventListener('keydown',event=>{if(event.key==='Escape') {event.preventDefault();$('nav-search').open=false;$('nav-search').querySelector('summary').focus();}});
 $('search').addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(filtersChanged,250);});
 for (const id of ['host','project','agent','period','heartbeats']) $(id).addEventListener('change',filtersChanged);
 document.querySelectorAll('[data-view]').forEach(button=>button.addEventListener('click',()=>{state.view=button.dataset.view;state.filter='';filtersChanged();}));
 document.querySelectorAll('[data-state]').forEach(button=>button.addEventListener('click',()=>{state.view='now';state.filter=state.filter===button.dataset.state?'':button.dataset.state;route();render();}));
 $('clear-state').addEventListener('click',()=>{state.filter='';route();render();});
-$('refresh').addEventListener('click',()=>{state.events=[];$('view-note').textContent='Refreshes every 5 seconds';refresh();});
+$('resume-live').addEventListener('click',()=>{state.events=[];refresh();});
 $('load-more').addEventListener('click',loadMore);
 $('close-detail').addEventListener('click',()=>$('session-dialog').close());
 $('session-dialog').addEventListener('close',()=>{state.selected=null;++state.detailRequest;route();});
 $('session-dialog').addEventListener('click',event=>{if(event.target===$('session-dialog') && event.clientX<$('session-dialog').getBoundingClientRect().left) $('session-dialog').close();});
 function readRoute() {
   const params=new URLSearchParams(location.hash.slice(1));state.view=params.get('view')==='timeline'?'timeline':'now';state.filter=ACTIVE.includes(params.get('state'))?params.get('state'):'';
-  for (const id of ['search','period']) $(id).value=params.get(id)||'';
+  $('search').value=params.get('search')||'';
+  const horizon=params.get('period')||'3600';
+  $('period').value=[...$('period').options].some(option=>option.value===horizon)?horizon:'3600';
   for (const id of ['host','project','agent']) {
-    $(id).value=params.get(id)||'';
+    const value=params.get(id)||'';
+    if (value && ![...$(id).options].some(option=>option.value===value)) $(id).append(new Option(value,value));
+    $(id).value=value;
   }
   $('heartbeats').checked=params.get('heartbeats')==='1';
   if (params.get('source') && params.get('session')) openSession({source:params.get('source'),session:params.get('session')});
@@ -433,9 +554,28 @@ function readRoute() {
   state.events=[];refresh();
 }
 window.addEventListener('hashchange',readRoute);
+const historyPaused=()=>state.view==='timeline' && state.events.length>PAGE;
+// The journal pushes a signal whenever anything changes; bursts of hook events collapse into one refetch.
+let streamTimer;
+function connectStream() {
+  if (!window.EventSource) return;
+  const stream=new EventSource('/stream');
+  stream.onopen=()=>{state.live=true;checkVersion();};
+  stream.onerror=()=>{state.live=false;};
+  stream.onmessage=()=>{
+    clearTimeout(streamTimer);
+    streamTimer=setTimeout(()=>{if (!document.hidden && !historyPaused()) refresh();},150);
+  };
+}
+document.addEventListener('visibilitychange',()=>{if (!document.hidden) {checkVersion();if (!historyPaused()) refresh();}});
 setInterval(()=>{
+  renderResources(state.resources);
+  if (!state.versionChecked || Date.now()-state.versionChecked>=60000) checkVersion();
   document.querySelectorAll('time[data-at]').forEach(el=>{el.textContent=relative(el.dataset.at);});
-  if (state.view==='timeline' && state.events.length>PAGE) return;
-  if (!document.hidden && !$('refresh').disabled) refresh();
+  if (document.hidden || historyPaused() || state.refreshing) return;
+  // Poll while the stream is down; when live, a slow refresh still catches lease expiry, which no event announces.
+  if (!state.live || Date.now()-state.synced>=60000) refresh();
 },5000);
+renderResources();
+connectStream();
 readRoute();

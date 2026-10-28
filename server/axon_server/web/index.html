@@ -6,28 +6,33 @@
 <link rel="icon" href="/ui/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/ui/app.css"><script src="/ui/app.js" defer></script>
 </head>
 <body>
-<aside class="rail">
-  <a class="brand" href="/" aria-label="Axon home"><span class="brand-mark" aria-hidden="true">a<span>·</span></span>axon</a>
-  <div class="rail-caption">ACTIVITY JOURNAL</div>
+<header class="rail">
+  <a class="brand" href="/" aria-label="Axon home"><span class="brand-mark" aria-hidden="true">a<span>·</span></span><span class="brand-name">axon</span></a>
   <nav aria-label="Views"><button class="nav-button selected" data-view="now"><span class="nav-icon">◉</span>Board<span id="live-badge" class="nav-count">0</span></button><button class="nav-button" data-view="timeline"><span class="nav-icon">≋</span>Timeline</button></nav>
-  <div class="rail-bottom"><span class="signal-dot"></span><span>Observe, don’t interrupt.</span><div class="read-only">JOURNAL / V1</div></div>
-</aside>
-<main>
-<header class="page-header">
- <div class="header-title"><h1 id="page-title">Live board</h1><p id="page-subtitle">Reporting agents, across hosts and projects.</p></div>
+<form id="filters" class="pill-filters nav-filters" aria-label="Filter activity">
+ <label class="nav-filter"><select id="host" aria-label="Host"><option value="">All hosts</option></select></label>
+ <label class="nav-filter"><select id="agent" aria-label="Agent"><option value="">All agents</option></select></label>
+ <label class="nav-filter"><select id="project" aria-label="Project"><option value="">All projects</option></select></label>
+ <label class="nav-filter horizon-filter"><select id="period" aria-label="Time horizon"><option value="900">15m</option><option value="1800">30m</option><option value="3600" selected>1h</option><option value="21600">6h</option><option value="86400">24h</option><option value="604800">7d</option><option value="2592000">30d</option><option value="all">Any time</option></select></label>
+ <details id="nav-search" class="nav-search"><summary aria-label="Search activity" title="Search activity">⌕</summary><label class="search-field"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search activity…" aria-label="Search activity"></label></details>
+</form>
  <section class="metrics" aria-label="Current activity">
   <button class="metric" data-state="working"><i class="status-dot working"></i><span>Working</span><strong id="count-working">—</strong></button>
   <button class="metric" data-state="waiting"><i class="status-dot waiting"></i><span>Waiting</span><strong id="count-waiting">—</strong></button>
   <button class="metric" data-state="blocked"><i class="status-dot blocked"></i><span>Blocked</span><strong id="count-blocked">—</strong></button>
  </section>
- <div class="connection"><span id="sync-dot" class="signal-dot"></span><span id="sync-status" role="status">Connecting…</span><button id="refresh" class="icon-button" aria-label="Refresh activity">↻</button></div>
+ <div class="connection"><span id="sync-dot" class="signal-dot"></span><span id="sync-status" role="status">Connecting…</span></div>
+</header>
+<main>
+<header class="page-header">
+ <div class="header-title"><h1 id="page-title">Live board</h1><p id="page-subtitle">Reporting agents, across hosts and projects.</p></div>
+
 </header>
 <div id="error" class="error-banner" role="alert" hidden></div>
-<form id="filters" class="pill-filters" aria-label="Filter activity">
- <div class="filter-row"><span class="filter-label">Hosts</span><div id="host" class="pill-group" role="group" aria-label="Host"></div><span class="filter-label">Agents</span><div id="agent" class="pill-group" role="group" aria-label="Agent"></div></div>
- <div class="filter-row"><span class="filter-label">Projects</span><div id="project" class="pill-group" role="group" aria-label="Project"></div><div id="period" class="pill-group period-pills" role="group" aria-label="Date range"></div><label class="search-field"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search activity…" aria-label="Search activity"></label></div>
-</form>
-<div class="section-heading"><div><span id="section-title">IN THE ROOM</span><span id="result-count" class="muted"></span></div><div class="section-controls"><button id="clear-state" class="text-button" hidden>Clear state filter ×</button><label id="heartbeat-control" class="check-label" hidden><input id="heartbeats" type="checkbox">Include heartbeats</label><span id="view-note">Refreshes every 5 seconds</span></div></div>
+
+<section id="resources" class="resources" aria-label="Inference resources"></section>
+<div class="section-heading"><div><span id="result-count" class="muted"></span></div><div class="section-controls"><button id="resume-live" class="text-button" type="button" hidden>Back to live</button><button id="clear-state" class="text-button" hidden>Clear state filter ×</button><label id="heartbeat-control" class="check-label" hidden><input id="heartbeats" type="checkbox">Include heartbeats</label></div></div>
+<div id="archive-notice" class="archive-notice" role="status" hidden><span id="archive-notice-text"></span><button id="archive-undo" class="text-button" type="button">Undo</button></div>
 <div id="activity" class="activity" aria-live="off"><div class="empty"><span class="empty-symbol">◌</span><h2>Listening for activity</h2><p>The journal is connecting.</p></div></div>
 <button id="load-more" class="load-more" hidden>Load earlier events ↓</button>
 <footer><span id="footer-note">Agent-reported activity. Completion requires an explicit outcome and evidence.</span><span>AXON / JOURNAL</span></footer>
@@ -42,5 +47,9 @@
   <form id="message-form" class="message-form"><textarea id="message-text" rows="3" maxlength="4000" placeholder="Message this session…" aria-label="Message"></textarea><div class="message-actions"><span id="message-status" role="status"></span><button id="message-send" class="send-button" type="submit">Send</button></div></form>
   <form id="token-form" class="token-form" hidden><input id="token-input" type="password" autocomplete="off" placeholder="Paste the server's input token" aria-label="Input token"><button class="send-button" type="submit">Save token</button></form>
  </section>
+</dialog>
+<dialog id="archive-auth" aria-labelledby="archive-auth-title">
+ <h2 id="archive-auth-title">Archive sessions</h2><p id="archive-token-status"></p>
+ <form id="archive-token-form"><input id="archive-token" type="password" autocomplete="off" aria-label="Archive input token" placeholder="Server input token" required><div class="message-actions"><button id="archive-cancel" type="button" class="text-button">Cancel</button><button type="submit" class="send-button">Continue</button></div></form>
 </dialog>
 </body></html>

@@ -89,3 +89,29 @@ messages with `delivered_at` (null while queued) and `input` (whether sending is
 enabled). Hooks call `POST /sessions/<source>/<session>/inbox/claim?wait=<s>`
 (long-poll, at most 55 s): it atomically marks pending messages delivered and
 returns them. Messages follow the journal retention period.
+
+Dashboard archiving is server metadata, separate from work state. Authenticated
+`POST /sessions/<source>/<session>/archive` with `{"archived": true}` archives;
+`false` restores. It uses the same bearer token as session input. Archived rows
+carry `archived_at` in `/sessions`; event history is unchanged. Optional boolean
+`data.user_turn` marks an actual user prompt, not agent progress. A fresh marker
+after archiving restores the session; stale delivery and heartbeat do not.
+
+Session API rows include `activity_at`: the latest retained non-heartbeat event
+time, or the first retained heartbeat for heartbeat-only sessions. It separates
+meaningful activity ranking from `updated_at` lease freshness.
+
+## Account quota snapshots
+
+`axon/resources/<provider>/<account>` carries a version-1 snapshot with exact fields
+`version`, `provider` (`codex` or `claude`), `account` (a configured safe alias),
+`observed_at` (epoch seconds), and `windows`. Each window has `name` (`short` or
+`weekly`), `window_minutes`, `used_percent` and `resets_at`. Window values may be
+null when unavailable; zero usage is a valid reading. Percentages must be finite
+and within 0..100. Unknown fields are rejected, including credential/account-detail
+fields. Collectors normalize only these fields from native provider responses.
+
+A newer observation replaces the previous one for that provider/account; duplicate
+or older snapshots do not overwrite it. Snapshots do not create activity sessions
+or event history, and are never added across hosts. `GET /resources` includes
+unknown standing entries for Codex/Claude until their first observation.

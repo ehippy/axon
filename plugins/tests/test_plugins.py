@@ -94,6 +94,8 @@ class PluginTests(unittest.TestCase):
             self.assertEqual(self.hook(package,event,tool_name='exec_command').stdout,'')
         self.hook(package,'Stop')
         self.assertEqual([e['kind'] for e in self.events()],['progress','heartbeat','waiting'])
+        self.assertTrue(self.events()[0]['data']['user_turn'])
+        self.assertNotIn('user_turn',self.events()[1]['data'])
     def test_prompt_followup_does_not_erase_goal_and_missing_cwd_does_not_erase_project(self):
         with patch.dict(os.environ,self.env), patch.object(report,'drain'):
             report.report('hermes','a','start',{'project':'axon','goal':'Build plugin','step':'Test hooks'})
@@ -167,6 +169,33 @@ class PluginTests(unittest.TestCase):
             self.assertNotIn('query.py', names)
             self.assertTrue((package/'runtime/axon_protocol/__init__.py').exists())
             self.assertTrue((package/'runtime/axon_reporter/report.py').exists())
+    def test_claude_usage_collector_runs_from_bundle_without_shell(self):
+        package=manage.build('claude',self.root/'claude')
+        collector=package/'usage/bin/collect'
+        self.assertEqual(collector.read_text().split('\n',1)[0],'#!'+sys.executable)
+        self.assertEqual(json.loads((package/'usage/hooks/hooks.json').read_text()),{'modules':['./register.ts']})
+        reset=time.time()+3600
+        limits={'rate_limits':{'five_hour':{'used_percentage':23.5,'resets_at':reset},'seven_day':{'used_percentage':41,'resets_at':None}},'transcript_path':'PRIVATE'}
+        result=subprocess.run([str(collector)],input=json.dumps(limits),text=True,capture_output=True,env=self.env,check=True)
+        self.assertEqual((result.stdout,result.stderr),('',''))
+        with sqlite3.connect(self.root/'state/outbox.sqlite3') as db:
+            topic,payload=db.execute('SELECT topic,payload FROM outbox').fetchone()
+        self.assertEqual(topic,'axon/resources/claude/primary')
+        self.assertNotIn('PRIVATE',payload)
+        windows=json.loads(payload)['windows']
+        self.assertEqual([(w['name'],w['used_percent'],w['resets_at']) for w in windows],[('short',23.5,reset),('weekly',41,None)])
+        subprocess.run([str(collector)],input='not json',text=True,capture_output=True,env=self.env,check=True)
+    def test_claude_install_registers_usage_plugin_dir_once(self):
+        settings=self.root/'.claude/settings.json'; settings.parent.mkdir()
+        stale=str(self.root/'old/.local/share/axon/plugins/claude/usage')
+        settings.write_text(json.dumps({'env':{'KEEP':'1','CLAUDE_CODE_PLUGIN_DIRS':os.pathsep.join(['/mine/mod',stale])}}))
+        manage.install('claude',self.root,apply=True)
+        manage.install('claude',self.root,apply=True)
+        env=json.loads(settings.read_text())['env']
+        usage=str(self.root.resolve()/'.local/share/axon/plugins/claude/usage')
+        self.assertEqual(env['CLAUDE_CODE_PLUGIN_DIRS'],os.pathsep.join(['/mine/mod',usage]))
+        self.assertEqual(env['KEEP'],'1')
+        self.assertTrue((Path(usage)/'.claude-plugin/plugin.json').exists())
 
 
 class HermesTests(unittest.TestCase):

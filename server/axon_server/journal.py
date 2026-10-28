@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from importlib.resources import files
 import argparse
 import hmac
+import hashlib
 import json
 import logging
 import re
@@ -20,10 +21,29 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from axon_protocol import STATES, FIELDS, TERMINAL, validate
+from axon_protocol.resources import validate_resource
 
 IDENTITY = re.compile(r'[a-zA-Z0-9_.-]{1,128}')
 MESSAGE_LIMIT = 4000
 CLAIM_WAIT_LIMIT = 55
+STREAM_PING = 15
+
+
+WEB_ASSETS = {'/': ('index.html', 'text/html; charset=utf-8'),
+                          '/ui/app.css': ('app.css', 'text/css; charset=utf-8'),
+                          '/ui/app.js': ('app.js', 'text/javascript; charset=utf-8'),
+                          '/ui/favicon.svg': ('favicon.svg', 'image/svg+xml'),
+                          **{f'/ui/icons/{name}.svg': (f'icons/{name}.svg', 'image/svg+xml')
+                             for name in ('laptop', 'pc-display', 'hdd-rack', 'chat-dots')}}
+
+
+def server_revision():
+    """Fingerprint code and shipped UI, independent of data and deployment paths."""
+    digest = hashlib.sha256(Path(__file__).read_bytes())
+    for name in sorted({asset[0] for asset in WEB_ASSETS.values()}):
+        digest.update(name.encode())
+        digest.update(files('axon_server').joinpath('web', *name.split('/')).read_bytes())
+    return digest.hexdigest()
 
 
 class Journal:
@@ -33,6 +53,8 @@ class Journal:
         self.retention_days = retention_days
         self.path = str(path)
         self.inbox = threading.Condition()
+        self.changes = threading.Condition()
+        self.version = 0
         with self.connect() as db:
             db.executescript('''
               PRAGMA journal_mode=WAL;
@@ -43,6 +65,12 @@ class Journal:
               CREATE INDEX IF NOT EXISTS event_session ON events(source, session, seq);
               CREATE TABLE IF NOT EXISTS sessions (
                 source TEXT, session TEXT, at REAL, payload TEXT,
+                PRIMARY KEY(source, session));
+              CREATE TABLE IF NOT EXISTS resources (
+                provider TEXT, account TEXT, observed_at REAL, payload TEXT,
+                PRIMARY KEY(provider, account));
+              CREATE TABLE IF NOT EXISTS session_archives (
+                source TEXT, session TEXT, archived_at REAL NOT NULL,
                 PRIMARY KEY(source, session));
               CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY, source TEXT, session TEXT, at REAL, text TEXT,
@@ -79,8 +107,22 @@ class Journal:
             events = db.execute('DELETE FROM events WHERE at < ?', (cutoff,)).rowcount
             sessions = db.execute('DELETE FROM sessions WHERE at < ?', (cutoff,)).rowcount
             db.execute('DELETE FROM messages WHERE at < ?', (cutoff,))
+            db.execute('DELETE FROM session_archives WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.source=session_archives.source AND s.session=session_archives.session)')
+        if events or sessions:
+            self.changed()
         return {'events': events, 'sessions': sessions}
 
+
+    def changed(self):
+        """Wake live browser streams; they refetch, so the version is only a signal."""
+        with self.changes:
+            self.version += 1
+            self.changes.notify_all()
+
+    def wait_change(self, seen, timeout):
+        with self.changes:
+            self.changes.wait_for(lambda: self.version != seen, timeout)
+            return self.version
 
     @contextmanager
     def connect(self):
@@ -93,6 +135,12 @@ class Journal:
             db.close()
 
     def ingest(self, event):
+        stored = self._ingest(event)
+        if stored:
+            self.changed()
+        return stored
+
+    def _ingest(self, event):
         v = validate(event)
         # A delayed outbox or broker replay must not resurrect expired history.
         if self.retention_days and v['at'] < time.time() - self.retention_days * 86400:
@@ -115,7 +163,11 @@ class Journal:
             if v['kind'] == 'start':
                 for key in ('goal', 'step', 'outcome', 'evidence', 'blocker'):
                     current.pop(key, None)
-            current.update(patch)
+            # A fresh user turn may restore a session; replays and background activity cannot.
+            if patch.get('user_turn') is True:
+                db.execute('DELETE FROM session_archives WHERE source=? AND session=? AND archived_at<?',
+                           (v['source'], v['session'], v['at']))
+            current.update({k: value for k, value in patch.items() if k != 'user_turn'})
             state = {'start': 'working', 'waiting': 'waiting', 'blocked': 'blocked',
                      'finished': 'finished', 'stopped': 'stopped', 'interrupted': 'interrupted'}.get(v['kind'])
             # Late lifecycle/tool hooks cannot erase an explicitly recorded result.
@@ -132,10 +184,12 @@ class Journal:
     def sessions(self, filters=None):
         filters = filters or {}
         with self.connect() as db:
-            rows = db.execute('SELECT payload FROM sessions ORDER BY at DESC').fetchall()
+            rows = db.execute('SELECT s.payload, a.archived_at FROM sessions s LEFT JOIN session_archives a ON s.source=a.source AND s.session=a.session ORDER BY s.at DESC').fetchall()
         result = []
         for row in rows:
             item = json.loads(row[0])
+            if row['archived_at'] is not None:
+                item['archived_at'] = row['archived_at']
             item['fresh'] = time.time() - item['updated_at'] <= item['lease_seconds']
             item['effective_state'] = item['state'] if item['fresh'] or item['state'] in TERMINAL else 'lost_contact'
             if any(item.get(k if k != 'state' else 'effective_state') != v for k, v in filters.items() if k in ('source', 'session', 'project', 'agent', 'machine', 'state')):
@@ -144,6 +198,43 @@ class Journal:
                 continue
             result.append(item)
         return result
+
+    def ingest_resource(self, snapshot):
+        value = validate_resource(snapshot)
+        with self.connect() as db:
+            changed = db.execute('INSERT INTO resources VALUES(?,?,?,?) ON CONFLICT(provider,account) DO UPDATE SET observed_at=excluded.observed_at,payload=excluded.payload WHERE excluded.observed_at>resources.observed_at',
+                       (value['provider'],value['account'],value['observed_at'],json.dumps(value))).rowcount
+        if changed:
+            self.changed()
+        return bool(changed)
+
+    def resources(self):
+        with self.connect() as db:
+            rows = [json.loads(row[0]) for row in db.execute('SELECT payload FROM resources ORDER BY provider,account')]
+        for provider in ('codex','claude'):
+            if not any(row['provider']==provider for row in rows):
+                rows.append({'provider':provider,'account':'primary','observed_at':None,'windows':[]})
+        return rows
+
+    def activity_times(self):
+        """Heartbeat freshness must not reshuffle work; heartbeat-only sessions use first sighting."""
+        with self.connect() as db:
+            rows = db.execute("SELECT source, session, COALESCE(MAX(CASE WHEN kind!='heartbeat' THEN at END), MIN(at)) AS activity_at FROM events GROUP BY source, session").fetchall()
+        return {(row['source'], row['session']): row['activity_at'] for row in rows}
+
+    def archive(self, source, session, archived):
+        if type(archived) is not bool:
+            raise ValueError('archived must be a boolean')
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if not db.execute('SELECT 1 FROM sessions WHERE source=? AND session=?', (source, session)).fetchone():
+                raise LookupError('unknown session')
+            if archived:
+                db.execute('INSERT OR IGNORE INTO session_archives VALUES(?,?,?)', (source, session, time.time()))
+            else:
+                db.execute('DELETE FROM session_archives WHERE source=? AND session=?', (source, session))
+        self.changed()
+        return {'archived': archived}
 
     def events(self, filters=None):
         filters = filters or {}
@@ -191,6 +282,7 @@ class Journal:
             db.execute('INSERT INTO messages VALUES(:id,:source,:session,:at,:text,:delivered_at)', message)
         with self.inbox:
             self.inbox.notify_all()
+        self.changed()
         return message
 
     def queued(self):
@@ -218,6 +310,8 @@ class Journal:
                 for row in rows:
                     row['delivered_at'] = now
                     db.execute('UPDATE messages SET delivered_at=? WHERE id=?', (now, row['id']))
+            if rows:
+                self.changed()  # queued counts on the board drop
             remaining = deadline - time.time()
             if rows or remaining <= 0:
                 return rows
@@ -225,30 +319,32 @@ class Journal:
                 self.inbox.wait(remaining)
 
 
-def handler(journal, web=True, token=None):
+def handler(journal, web=True, token=None, stop=None):
+    revision = server_revision()
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             url = urlsplit(self.path)
             filters = {k: v[-1] for k, v in parse_qs(url.query).items()}
+            if url.path == '/stream':
+                self.stream(); return
             try:
-                assets = {'/': ('index.html', 'text/html; charset=utf-8'),
-                          '/ui/app.css': ('app.css', 'text/css; charset=utf-8'),
-                          '/ui/app.js': ('app.js', 'text/javascript; charset=utf-8'),
-                          '/ui/favicon.svg': ('favicon.svg', 'image/svg+xml'),
-                          **{f'/ui/icons/{name}.svg': (f'icons/{name}.svg', 'image/svg+xml')
-                             for name in ('laptop', 'pc-display', 'hdd-rack', 'chat-dots')}}
-                if web and url.path in assets:
-                    asset, content_type = assets[url.path]
+                if web and url.path in WEB_ASSETS:
+                    asset, content_type = WEB_ASSETS[url.path]
                     body = files('axon_server').joinpath('web', *asset.split('/')).read_bytes()
+                    if asset == 'index.html':
+                        body = body.replace(b'<html lang="en"', ('<html lang="en" data-axon-version="'+revision+'"').encode(), 1)
                     self.send_response(200)
                     self.send_header('Content-Type', content_type)
                     self.send_header('Content-Length', str(len(body)))
                     self.end_headers(); self.wfile.write(body); return
                 if url.path == '/health':
                     data = {'ok': True, 'retention_days': journal.retention_days}
+                elif url.path == '/resources':
+                    data = {'resources': journal.resources()}
                 elif url.path == '/sessions':
                     queued = journal.queued()
-                    data = {'sessions': [{**s, 'queued_messages': queued.get((s['source'], s['session']), 0)}
+                    activity = journal.activity_times()
+                    data = {'sessions': [{**s, 'activity_at': activity.get((s['source'], s['session']), s['updated_at']), 'queued_messages': queued.get((s['source'], s['session']), 0)}
                                          for s in journal.sessions(filters)]}
                 elif (parts := session_path(url.path)) and parts[2] == 'messages':
                     data = {'messages': journal.messages(parts[0], parts[1]), 'input': bool(token)}
@@ -269,10 +365,10 @@ def handler(journal, web=True, token=None):
         def do_POST(self):
             url = urlsplit(self.path)
             parts = session_path(url.path)
-            if not parts or parts[2] not in ('messages', 'inbox/claim'):
+            if not parts or parts[2] not in ('messages', 'inbox/claim', 'archive'):
                 self.send_error(501); return
             try:
-                if parts[2] == 'messages':
+                if parts[2] in ('messages', 'archive'):
                     # Input makes agents act, so it always needs the configured token.
                     supplied = self.headers.get('Authorization', '')
                     if not token:
@@ -282,8 +378,11 @@ def handler(journal, web=True, token=None):
                     length = int(self.headers.get('Content-Length', 0))
                     if not 0 < length <= 4 * MESSAGE_LIMIT + 1024:
                         raise ValueError('invalid body')
-                    data = journal.send_message(parts[0], parts[1], json.loads(self.rfile.read(length)).get('text'))
-                    status = 201
+                    payload = json.loads(self.rfile.read(length))
+                    if parts[2] == 'archive':
+                        data, status = journal.archive(parts[0], parts[1], payload.get('archived')), 200
+                    else:
+                        data, status = journal.send_message(parts[0], parts[1], payload.get('text')), 201
                 else:
                     wait = float(parse_qs(url.query).get('wait', ['0'])[-1])
                     data, status = {'messages': journal.claim(parts[0], parts[1], wait)}, 200
@@ -297,7 +396,25 @@ def handler(journal, web=True, token=None):
             except (ValueError, TypeError, AttributeError):
                 self.send_error(400, 'Invalid request')
 
+        def stream(self):
+            """Server-sent change signals; the page refetches through the normal API."""
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream')
+            self.send_header('X-Accel-Buffering', 'no')
+            self.end_headers()
+            seen = journal.version
+            try:
+                # The first frame makes a reconnecting page catch up on anything it missed.
+                self.wfile.write(f'retry: 3000\ndata: {seen}\n\n'.encode())
+                while not (stop and stop.is_set()):
+                    version = journal.wait_change(seen, STREAM_PING)
+                    self.wfile.write((f'data: {version}\n\n' if version != seen else ': ping\n\n').encode())
+                    seen = version
+            except OSError:
+                pass  # the page went away
+
         def end_headers(self):
+            self.send_header('X-Axon-Version', revision)
             self.send_header('Cache-Control', 'no-store')
             self.send_header('X-Content-Type-Options', 'nosniff')
             self.send_header('Referrer-Policy', 'no-referrer')
@@ -323,7 +440,7 @@ def mqtt(journal, broker, stop, port=1883):
         try:
             # Persistent QoS 1 subscription queues events while this collector is offline.
             proc = subprocess.Popen(['mosquitto_sub', '-c', '-i', 'axon-activity-journal', '-h', broker,
-                '-p', str(port), '-t', 'axon/activity/+/+/events', '-q', '1', '-F', '%j'], stdout=subprocess.PIPE)
+                '-p', str(port), '-t', 'axon/activity/+/+/events', '-t', 'axon/resources/+/+', '-q', '1', '-F', '%j'], stdout=subprocess.PIPE)
             pending = b''
             while not stop.is_set() and proc.poll() is None:
                 if not select.select([proc.stdout], [], [], 0.5)[0]:
@@ -338,6 +455,11 @@ def mqtt(journal, broker, stop, port=1883):
                         envelope = json.loads(line)
                         topic = envelope['topic'].split('/')
                         event = json.loads(envelope['payload'])
+                        if len(topic)==4 and topic[:2]==['axon','resources']:
+                            if topic[2:]!=[event.get('provider'),event.get('account')]:
+                                raise ValueError('resource topic mismatch')
+                            journal.ingest_resource(event)
+                            continue
                         if len(topic) != 5 or topic[2:4] != [event.get('source'), event.get('session')]:
                             raise ValueError('topic identity mismatch')
                         journal.ingest(event)
@@ -418,9 +540,10 @@ def main():
         for target in (mqtt, publish_view):
             thread = threading.Thread(target=target, args=(journal, args.broker, stop, args.broker_port), daemon=True)
             thread.start(); threads.append(thread)
-    server = ThreadingHTTPServer((args.listen, args.port), handler(journal, web=not args.no_web, token=token))
+    server = ThreadingHTTPServer((args.listen, args.port), handler(journal, web=not args.no_web, token=token, stop=stop))
     def shutdown(*_):
         stop.set()
+        journal.changed()  # release open streams
         threading.Thread(target=server.shutdown, daemon=True).start()
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)

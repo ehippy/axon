@@ -75,7 +75,7 @@ def lifecycle(agent, data):
         return
     if event == 'UserPromptSubmit':
         # A new user turn may continue the same task. Do not erase its semantic goal.
-        patch = {'state':'working', 'activity':'working'}
+        patch = {'state':'working', 'activity':'working', 'user_turn':True}
         if agent in INBOX_AGENTS:
             patch['listening_until'] = 0
         if safe.get('cwd'):

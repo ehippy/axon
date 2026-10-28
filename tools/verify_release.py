@@ -36,6 +36,7 @@ def verify(release):
             subprocess.run([str(executable),'-c',script],cwd=tmp,env=env,check=True)
             subprocess.run([str(target/'bin'/entry),'--help'],cwd=tmp,env=env,check=True,stdout=subprocess.DEVNULL)
             if component == 'reporter':
+                subprocess.run([str(target/'bin/axon-resources'),'--help'],cwd=tmp,env=env,check=True,stdout=subprocess.DEVNULL)
                 result = subprocess.run([str(target/'bin'/entry),'--session','release-chat','start','--goal','Verify install'],cwd=tmp,env=env,check=True,capture_output=True,text=True)
                 assert json.loads(result.stdout)['queued']
             if component == 'server':

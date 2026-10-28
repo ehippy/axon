@@ -1,5 +1,7 @@
 # Axon
 
+![Axon board view: agent-reported sessions grouped by host, each card showing a goal, progress, and a finished, working, waiting, or blocked status](assets/hero-board.png)
+
 Axon turns agent activity into a small physical status display. Its components
 can run on different machines or together on one device.
 

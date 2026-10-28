@@ -56,3 +56,70 @@ Claude Code hooks also fetch dashboard input from the journal server at
 (default 10800, `0` disables) bounds how long an idle session listens for input. It is detected from the battery on macOS and from DMI or
 devicetree chassis type, then a system battery, on Linux. Hosts that cannot be
 classified (for example a Raspberry Pi) send none; set `AXON_MACHINE_KIND` there.
+
+## Account resources
+
+`axon-resources codex` starts the signed-in native Codex app-server, calls only
+`initialize` and `account/rateLimits/read`, then exits. It starts no inference turn.
+Run it once a minute on one signed-in machine per account. `AXON_CODEX_BIN` can
+select the CLI executable. Its auth remains with Codex.
+
+For Claude Code Pro/Max, the managed Claude install (`plugins/tools/manage.py
+install claude --apply`) adds its bundled `usage` plugin to `CLAUDE_CODE_PLUGIN_DIRS`
+in `~/.claude/settings.json`. Its hooks module receives Claude's `five_hour` and
+`seven_day` rate limits after each turn on every surface, desktop app included, and
+passes only those windows to the bundled collector. Settings command hooks never
+receive these fields, and the desktop app does not run `statusLine`.
+Reload Claude after installing.
+
+Terminal-only setups can instead set `statusLine.command` to
+`/path/to/venv/bin/axon-resources claude-statusline`, which also prints a small quota
+status line. To preserve an existing renderer, append `--display-command 'your
+existing command'`; it receives the same stdin and its stdout is passed through.
+Either path: missing quota fields leave the last good sample intact. Identical
+readings publish at most once a minute; changed limits publish immediately. Only
+whitelisted windows, account alias and observation time enter the retry outbox.
+
+The existing broker settings in `~/.config/axon/env` apply. `AXON_CODEX_ACCOUNT`
+and `AXON_CLAUDE_ACCOUNT` label distinct accounts; both default to `primary` (or
+`AXON_RESOURCE_ACCOUNT`). Machines using the same alias report the same account,
+not additive usage. The dashboard displays the latest observation, with stale
+and expired readings labeled explicitly. Choose different aliases for different
+subscriptions. The collector can live in a separate reporter virtualenv so normal
+agent-plugin syncs do not remove it.
+
+For macOS, a user LaunchAgent with `StartInterval=60`, `RunAtLoad=true` and
+`ProgramArguments=["/path/to/venv/bin/axon-resources", "codex"] keeps Codex fresh.
+Use a PATH containing your Codex installation, or set `AXON_CODEX_BIN`. On Linux,
+a user systemd timer can invoke the same command. Claude readings update after each turn
+while it is in use; inactive accounts can become stale.
+
+## Shared inference servers
+
+Run one `axon-inference --server neuralforge` collector on each inference host.
+Use distinct stable labels (e.g. `neuralforge`, `moar`); each gets its own panel.
+The default GUFO metrics URL is `http://127.0.0.1:13308/metrics`; override with
+`--metrics-url`. Snapshots publish every ten seconds through the existing broker
+settings. `--once --print` inspects a snapshot without publishing.
+
+The collector reads GUFO/llama.cpp request, throughput and KV-cache gauges,
+AMD Linux sysfs GPU counters, and NVIDIA `nvidia-smi` when available. AMD GTT
+(shared GPU allocation) is displayed separately from dedicated VRAM; it is not
+system memory usage. Throughput gauges are backend-reported processing speeds,
+not a guarantee of current wall-clock throughput when the endpoint is idle.
+An unreachable inference endpoint is explicitly offline; a missing collector
+becomes stale after thirty seconds. Unsupported hardware metrics remain Unknown.
+
+Example user systemd unit (adjust the executable path):
+
+```ini
+[Unit]
+Description=Axon inference telemetry
+After=network-online.target
+[Service]
+ExecStart=%h/.local/share/axon/inference/venv/bin/axon-inference --server neuralforge
+Restart=on-failure
+RestartSec=5
+[Install]
+WantedBy=default.target
+```

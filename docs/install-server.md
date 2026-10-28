@@ -78,13 +78,15 @@ address and authentication model: keep it on loopback or behind authenticated
 access, since activity can contain personal project details. Agent-reported text
 is displayed as text; evidence becomes a link only for explicit HTTP(S) URLs.
 
-The board keeps sessions in their host/agent groups for one hour after their last
-report, including finished and disconnected sessions. Live state still follows
-the reported lease; keeping a tile visible does not extend that lease. Older
-sessions are available in the collapsed older-session section and timeline.
+The top bar's time horizon controls both board sessions (by last report) and
+timeline events. It defaults to one hour and offers 15m, 30m, 1h, 6h, 24h, 7d,
+30d, and Any time. Selecting a longer horizon reveals older sessions without
+changing their reported state or extending their heartbeat lease.
 
-Within each host and agent group, live sessions appear first; sessions in each
-section are ordered by most recent report, with session identity breaking ties.
+Within each host, live agent groups appear first, then groups with the most
+recent meaningful activity. Sessions inside each group follow the same rule.
+Heartbeat renewals update freshness without changing this ordering. Activity is
+ranked in one-minute buckets with deterministic ties to avoid noisy reshuffling.
 
 Hosts occupy side-by-side board columns when space permits. Agent groups and
 session tiles stack vertically inside each host; narrow screens stack hosts.
@@ -116,3 +118,55 @@ Delivery depends on the session's state:
 - **Otherwise** the message stays queued until the session next runs a hook.
 
 Codex and Hermes sessions cannot receive input yet.
+
+## Archive sessions
+
+Archive on a card hides that session from the board across browsers and restarts.
+Undo restores it immediately; the collapsed Archived section also offers Restore.
+Archiving uses the same server input token as messaging, and does not alter the
+agent's reported state or delete its event history. Archived sessions remain in
+the timeline and session API, identified by `archived_at`.
+
+Background reports, heartbeat renewals, and replays leave the archive in place.
+An updated reporter's next `UserPromptSubmit` emits a `user_turn: true` marker;
+a fresh marker after the archive restores the session automatically. Update the
+installed agent plugins alongside the server to enable this behavior.
+
+The browser detects code/UI deployments from the server's `X-Axon-Version`
+fingerprint and reloads automatically on a changed version. It checks when the
+live stream reconnects, when a tab becomes visible, and periodically as a fallback.
+The URL preserves the view and filters; unsent card/detail messages are carried
+across the reload in that tab's session storage. An in-flight send finishes first.
+
+## Account quota resources
+
+The standing Codex and Claude panels show remaining short-window and weekly
+allowance, reset countdowns and observation age. They are account-level snapshots,
+independent of board filters and sessions. A missing window is Unknown, a passed
+reset is Awaiting update, and observations older than five minutes are Stale.
+Credentials remain on the collecting machine.
+
+Install the reporter wheel and configure its
+[account collectors](../packages/python/axon_reporter/README.md#account-resources).
+The server's MQTT collector subscribes to `axon/resources/+/+`; `/resources` serves
+the latest durable snapshot per provider/account and resource changes signal SSE.
+There is no additional browser polling service or provider login on the server.
+
+## Shared inference servers
+
+Every shared inference host runs one `axon-inference --server <label>` collector and
+displays its own panel: running and queued requests, generation and prompt speed,
+KV-cache use, then per-GPU utilization, power, temperature and memory. The label is
+a stable identity (`neuralforge`, `moar`), so another server means another panel
+rather than another integration.
+
+Hardware counters are read on the host: AMD sysfs (`gpu_busy_percent`, VRAM and GTT
+counters, hwmon temperature and power) and `nvidia-smi` where present. Dedicated
+VRAM and GTT allocation are shown separately because an APU keeps its weights in
+GTT; neither is a spending limit. Request and throughput figures come from the
+GUFO/llama.cpp metrics endpoint, `http://127.0.0.1:13308/metrics` by default.
+
+A snapshot publishes about every ten seconds and its panel turns Stale after thirty
+seconds without one; an unreachable endpoint reports Offline while hardware readings
+carry on. Load stays aggregate: it cannot say which of Hermes, Pi or OpenCode caused
+it. See the reporter [inference collectors](../packages/python/axon_reporter/README.md#shared-inference-servers).

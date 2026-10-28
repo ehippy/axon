@@ -195,6 +195,8 @@ def hook(data, agent):
     if not kind:
         return
     patch = {'project': project} if data.get('cwd') else {}
+    if event == 'UserPromptSubmit':
+        patch['user_turn'] = True
     if event == 'PermissionRequest':
         patch['activity'] = 'needs approval'
     elif event in ('Stop', 'SessionStart'):
