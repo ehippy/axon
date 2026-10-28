@@ -8,8 +8,8 @@ can run on different machines or together on one device.
   live work, the event timeline, and session details. No display hardware required.
 - **[Handset](docs/install-handset.md):** a Rust application for the PiSugar
   Whisplay display, buttons, battery, and LEDs. No journal database required.
-- **[Agent plugins](docs/install-plugins.md):** self-contained Codex, Claude Code,
-  and Hermes adapters. No server implementation bundled.
+- **[Agent plugins](docs/install-plugins.md):** self-contained Codex, Claude
+  Code, Hermes, and Pi adapters. No server implementation bundled.
 - **[Integrations](integrations/README.md):** optional Gabbie voice/relay and
   Glass status publishing. A handset works without either.
 
