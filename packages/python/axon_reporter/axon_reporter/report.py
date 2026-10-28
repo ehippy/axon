@@ -22,7 +22,7 @@ if not __package__:
     if source_protocol.is_dir():
         sys.path.insert(0, str(source_protocol))
 
-from axon_protocol import validate
+from axon_protocol import MACHINE_KINDS, validate
 
 
 def setting(name, default=None):
@@ -49,6 +49,46 @@ def machine_identity():
             raise ValueError('AXON_MACHINE must contain 1..80 letters, digits, dots, underscores or hyphens')
         return alias
     return installation_identity()
+
+
+# SMBIOS chassis types; anything else (tablet, handheld, unknown) stays unreported.
+DMI_KINDS = {**dict.fromkeys((3, 4, 5, 6, 7, 13, 15, 16, 24, 35, 36), 'desktop'),
+             **dict.fromkeys((8, 9, 10, 14, 31, 32), 'laptop'),
+             **dict.fromkeys((17, 23, 25, 28, 29), 'server')}
+DEVICETREE_KINDS = {'laptop': 'laptop', 'convertible': 'laptop', 'desktop': 'desktop', 'server': 'server'}
+
+
+def machine_kind():
+    """Host icon class: explicit AXON_MACHINE_KIND, else detected hardware, else None."""
+    kind = setting('AXON_MACHINE_KIND')
+    if kind is not None:
+        if kind not in MACHINE_KINDS:
+            raise ValueError('AXON_MACHINE_KIND must be one of ' + ', '.join(sorted(MACHINE_KINDS)))
+        return kind
+    try:
+        return detect_machine_kind()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def detect_machine_kind():
+    if sys.platform == 'darwin':
+        result = subprocess.run(['/usr/bin/pmset', '-g', 'batt'], capture_output=True, text=True, timeout=1)
+        if result.returncode:
+            return None
+        return 'laptop' if 'InternalBattery' in result.stdout else 'desktop'
+    dmi = Path('/sys/class/dmi/id/chassis_type')
+    if dmi.exists() and (kind := DMI_KINDS.get(int(dmi.read_text().strip()))):
+        return kind
+    tree = Path('/sys/firmware/devicetree/base/chassis-type')
+    if tree.exists() and (kind := DEVICETREE_KINDS.get(tree.read_bytes().strip(b'\0\n').decode())):
+        return kind
+    # A system battery (not a wireless peripheral's) means a portable machine.
+    for supply in Path('/sys/class/power_supply').glob('*'):
+        scope = supply/'scope'
+        if (supply/'type').read_text().strip() == 'Battery' and not (scope.exists() and scope.read_text().strip() == 'Device'):
+            return 'laptop'
+    return None
 
 
 def installation_identity():
@@ -82,6 +122,8 @@ def report(agent, raw_session, kind, data, flush=True):
     source, session, machine = identity(agent, raw_session)
     event = dict(version=1, source=source, session=session, id=uuid.uuid4().hex,
                  at=time.time(), kind=kind, data={'agent': agent, 'machine': machine, **data})
+    if (chassis := machine_kind()):
+        event['data']['machine_kind'] = chassis
     validate(event)
     path = spool_path()
     # Explicitly create the file privately before SQLite opens it.

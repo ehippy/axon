@@ -53,6 +53,17 @@ class WebTests(unittest.TestCase):
             self.assertIn('/ui/app.js',text)
             self.assertNotIn('https://',text)
 
+    def test_host_icons_are_packaged_svg_and_kind_reaches_sessions(self):
+        for name in ('laptop','pc-display','hdd-rack'):
+            with urlopen(self.base+f'/ui/icons/{name}.svg') as response:
+                self.assertEqual(response.headers['Content-Type'],'image/svg+xml')
+                self.assertIn(b'<svg',response.read())
+        with self.assertRaises(HTTPError) as error:urlopen(self.base+'/ui/icons/LICENSE')
+        self.assertEqual(error.exception.code,404);error.exception.close()
+        self.event(kind='start',machine='host-a',machine_kind='server')
+        self.event(kind='progress',step='No kind from an older reporter')
+        self.assertEqual(self.get('/sessions')['sessions'][0]['machine_kind'],'server')
+
     def test_assets_are_allowlisted_and_ui_can_be_disabled(self):
         for path in ('/ui/../journal.py','/ui/%2e%2e/journal.py','/ui/secrets.json'):
             with self.assertRaises(HTTPError) as error:urlopen(self.base+path)

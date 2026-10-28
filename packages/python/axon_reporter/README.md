@@ -40,3 +40,8 @@ Reporters also read literal `KEY=value` or `export KEY=value` settings from
 Set `AXON_BROKER`, `AXON_PORT`, and an explicit friendly `AXON_MACHINE` there.
 The file is read for each report, so label changes need no restart. Changing the
 machine label preserves the generated source identity. Hostnames are never inferred.
+
+Each report also carries `machine_kind` (`laptop`, `desktop`, or `server`) for the
+browser UI's host icon. It is detected from the battery on macOS and from DMI or
+devicetree chassis type, then a system battery, on Linux. Hosts that cannot be
+classified (for example a Raspberry Pi) send none; set `AXON_MACHINE_KIND` there.

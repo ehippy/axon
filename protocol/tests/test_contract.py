@@ -57,6 +57,24 @@ class ContractTests(unittest.TestCase):
             with patch.dict(os.environ,AXON_MACHINE='override'):
                 self.assertEqual(report.identity('codex','chat')[2],'override')
 
+    def test_machine_kind_is_detected_overridable_and_validated(self):
+        event=self.fixture('start')
+        for kind in ('laptop','desktop','server'):
+            validate({**event,'data':{**event['data'],'machine_kind':kind}})
+        with self.assertRaises(ValueError):
+            validate({**event,'data':{**event['data'],'machine_kind':'toaster'}})
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'AXON_ACTIVITY_HOME':tmp, 'HOME':tmp}, clear=True):
+            with patch.object(report, 'detect_machine_kind', return_value='laptop'):
+                self.assertEqual(report.machine_kind(), 'laptop')
+                config=Path(tmp)/'.config/axon/env';config.parent.mkdir(parents=True)
+                config.write_text('AXON_MACHINE_KIND=server\n')
+                self.assertEqual(report.machine_kind(), 'server')
+                config.write_text('AXON_MACHINE_KIND=toaster\n')
+                with self.assertRaises(ValueError): report.machine_kind()
+            with patch.object(report, 'detect_machine_kind', side_effect=OSError):
+                config.unlink()
+                self.assertIsNone(report.machine_kind())
+
     def test_reporter_uses_existing_outbox_without_aggregate_publication(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, AXON_ACTIVITY_HOME=tmp, AXON_MACHINE='example'):
             db = Path(tmp)/'outbox.sqlite3'

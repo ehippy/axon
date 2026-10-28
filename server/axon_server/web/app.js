@@ -35,6 +35,15 @@ function key(row) { return row.source+'/'+row.session; }
 function agentClass(row) { return ['codex','claude','hermes'].includes(row.agent) ? 'agent-'+row.agent : 'agent-other'; }
 function agentName(row) { return ({codex:'Codex',claude:'Claude',hermes:'Hermes'})[row.agent] || row.agent || 'Agent'; }
 function hostName(row) { return row.machine || 'Host not reported'; }
+const HOST_KINDS = ['laptop', 'desktop', 'server'];
+function hostIcon(kind) {
+  if (!HOST_KINDS.includes(kind)) return null;
+  const icon=node('i','host-icon kind-'+kind);
+  icon.title=kind[0].toUpperCase()+kind.slice(1);icon.setAttribute('aria-hidden','true');
+  return icon;
+}
+// Older reporters omit the kind; any session from the same host can supply it.
+function hostKind(sessions) { return [...sessions].sort((a,b)=>Number(b.updated_at)-Number(a.updated_at)).find(row=>row.machine_kind)?.machine_kind; }
 function boardOrder(a,b) {
   return hostName(a).localeCompare(hostName(b)) || agentName(a).localeCompare(agentName(b))
     || Number(ACTIVE.includes(b.effective_state))-Number(ACTIVE.includes(a.effective_state))
@@ -146,7 +155,9 @@ function hostGroups(rows) {
   for (const row of rows) {const host=hostName(row);if(!hosts.has(host)) hosts.set(host,[]);hosts.get(host).push(row);}
   for (const [host,sessions] of hosts) {
     const section=node('section','host-group'), heading=node('div','host-heading');
-    const title=node('h2','host-title',host);
+    const title=node('h2','host-title'), icon=hostIcon(hostKind(sessions));
+    if (icon) title.append(icon);
+    title.append(document.createTextNode(host));
     heading.append(title,node('span','host-count',sessions.filter(row=>ACTIVE.includes(row.effective_state)).length+' live · '+sessions.filter(row=>!ACTIVE.includes(row.effective_state)).length+' recent'));section.append(heading);
     const columns=node('div','agent-columns'), agents=new Map();
     for (const row of sessions) {const name=agentName(row);if(!agents.has(name)) agents.set(name,[]);agents.get(name).push(row);}

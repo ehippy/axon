@@ -25,7 +25,9 @@ Kinds: `start`, `progress`, `heartbeat`, `waiting`, `blocked`, `finished`,
 patches existing fields. A stop hook means waiting, never successful completion.
 Finished requires a nonempty outcome and 1–12 nonempty evidence strings, each at
 most 500 characters. Lease seconds must be an integer between 30 and 3600
-(default 900). Field limits and exact validation live in the dependency-free
+(default 900). Optional `machine_kind` is `laptop`, `desktop`, or `server`;
+servers older than this field reject events that carry it, so upgrade the server
+before reporters. Field limits and exact validation live in the dependency-free
 [Python contract](../packages/python/axon_protocol/axon_protocol/__init__.py).
 
 States are working, waiting, blocked, finished, stopped, interrupted. Duplicate

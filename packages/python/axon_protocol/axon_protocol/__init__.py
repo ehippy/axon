@@ -8,6 +8,7 @@ STATES = {'working', 'waiting', 'blocked', 'finished', 'stopped', 'interrupted'}
 FIELDS = {'agent': 80, 'machine': 80, 'project': 120, 'goal': 400, 'step': 400,
           'activity': 120, 'outcome': 1000, 'parent': 160, 'branch': 200, 'blocker': 400}
 TERMINAL = {'finished', 'stopped', 'interrupted'}
+MACHINE_KINDS = {'laptop', 'desktop', 'server'}
 
 
 def validate(v):
@@ -22,11 +23,13 @@ def validate(v):
     if isinstance(at, bool) or not isinstance(at, (int, float)) or not 0 < at <= time.time() + 60:
         raise ValueError('invalid timestamp')
     patch = v.get('data', {})
-    if not isinstance(patch, dict) or set(patch) - (set(FIELDS) | {'state', 'evidence', 'lease_seconds'}):
+    if not isinstance(patch, dict) or set(patch) - (set(FIELDS) | {'state', 'evidence', 'lease_seconds', 'machine_kind'}):
         raise ValueError('invalid data fields')
     for key, limit in FIELDS.items():
         if key in patch and (not isinstance(patch[key], str) or len(patch[key]) > limit):
             raise ValueError('invalid ' + key)
+    if 'machine_kind' in patch and patch['machine_kind'] not in MACHINE_KINDS:
+        raise ValueError('invalid machine_kind')
     if 'state' in patch and patch['state'] not in STATES:
         raise ValueError('invalid state')
     evidence = patch.get('evidence', [])

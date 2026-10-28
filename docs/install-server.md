@@ -64,7 +64,9 @@ live reporting sessions by host, then agent, with a separate tile for each
 source/session pair. Tile order is stable across activity updates. Agent identity
 colors follow the handset palette; status dots separately indicate work state.
 Host labels come from reported `machine` values (`AXON_MACHINE` can set a friendly
-label); missing host metadata is shown explicitly instead of inferred. It polls every
+label); missing host metadata is shown explicitly instead of inferred. A laptop, desktop,
+or server icon from [Bootstrap Icons](https://icons.getbootstrap.com/) (MIT, vendored
+in `web/icons`) marks each host's reported `machine_kind`. It polls every
 five seconds; paging into older timeline events pauses refresh until you click
 Refresh. Heartbeats are hidden by default. Session links encode source and
 session in the URL fragment, so dashboards can link directly to a session.

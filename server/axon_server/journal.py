@@ -173,10 +173,12 @@ def handler(journal, web=True):
             try:
                 assets = {'/': ('index.html', 'text/html; charset=utf-8'),
                           '/ui/app.css': ('app.css', 'text/css; charset=utf-8'),
-                          '/ui/app.js': ('app.js', 'text/javascript; charset=utf-8')}
+                          '/ui/app.js': ('app.js', 'text/javascript; charset=utf-8'),
+                          **{f'/ui/icons/{name}.svg': (f'icons/{name}.svg', 'image/svg+xml')
+                             for name in ('laptop', 'pc-display', 'hdd-rack')}}
                 if web and url.path in assets:
                     asset, content_type = assets[url.path]
-                    body = files('axon_server').joinpath('web', asset).read_bytes()
+                    body = files('axon_server').joinpath('web', *asset.split('/')).read_bytes()
                     self.send_response(200)
                     self.send_header('Content-Type', content_type)
                     self.send_header('Content-Length', str(len(body)))
