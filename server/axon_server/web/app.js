@@ -317,7 +317,7 @@ async function loadMore() {
     const request=state.request, data=await api('/events',timelineParams({before:String(state.before)}));
     if (request!==state.request) return;
     state.events.push(...data.events);state.before=data.next_before;state.more=data.events.length===PAGE;
-    render();$('sync-status').textContent='History paused';$('view-note').textContent='Browsing history';
+    render();$('sync-status').textContent='History paused';
   } catch (error) { $('error').textContent='Could not load earlier events. '+error.message;$('error').hidden=false; }
   finally { $('load-more').disabled=false; }
 }
@@ -417,7 +417,7 @@ async function sendMessage(event) {
 $('message-form').addEventListener('submit',sendMessage);
 $('message-text').addEventListener('keydown',event=>{if(event.key==='Enter' && !event.shiftKey && !event.isComposing) sendMessage(event);});
 $('token-form').addEventListener('submit',event=>{event.preventDefault();const value=$('token-input').value.trim();if(!value) return;storeToken(value);$('token-input').value='';$('message-status').textContent='';loadDetail(false);});
-function filtersChanged() { state.events=[];state.before=null;$('view-note').textContent='Updates live';route();refresh(); }
+function filtersChanged() { state.events=[];state.before=null;route();refresh(); }
 $('filters').addEventListener('submit',event=>event.preventDefault());
 $('nav-search').addEventListener('toggle',()=>{if($('nav-search').open) $('search').focus();});
 $('nav-search').addEventListener('keydown',event=>{if(event.key==='Escape') {event.preventDefault();$('nav-search').open=false;$('nav-search').querySelector('summary').focus();}});
@@ -426,7 +426,7 @@ for (const id of ['host','project','agent','period','heartbeats']) $(id).addEven
 document.querySelectorAll('[data-view]').forEach(button=>button.addEventListener('click',()=>{state.view=button.dataset.view;state.filter='';filtersChanged();}));
 document.querySelectorAll('[data-state]').forEach(button=>button.addEventListener('click',()=>{state.view='now';state.filter=state.filter===button.dataset.state?'':button.dataset.state;route();render();}));
 $('clear-state').addEventListener('click',()=>{state.filter='';route();render();});
-$('resume-live').addEventListener('click',()=>{state.events=[];$('view-note').textContent='Updates live';refresh();});
+$('resume-live').addEventListener('click',()=>{state.events=[];refresh();});
 $('load-more').addEventListener('click',loadMore);
 $('close-detail').addEventListener('click',()=>$('session-dialog').close());
 $('session-dialog').addEventListener('close',()=>{state.selected=null;++state.detailRequest;route();});
