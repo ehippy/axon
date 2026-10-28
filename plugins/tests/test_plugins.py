@@ -200,6 +200,13 @@ class PluginTests(unittest.TestCase):
 
 class HermesTests(unittest.TestCase):
     def setUp(self):
+        # Never read the developer's saved settings, reach a real journal server, or write the real spool.
+        self.tmp=tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher=patch.dict(os.environ,{'AXON_ACTIVITY_HOME':str(Path(self.tmp.name)/'state'),
+                                       'AXON_CONFIG_FILE':str(Path(self.tmp.name)/'missing-env'),
+                                       'AXON_SERVER':'http://127.0.0.1:9'})
+        patcher.start(); self.addCleanup(patcher.stop)
         self.module=load(ROOT/'plugins/hermes/__init__.py','axon_hermes_test')
     def test_registers_observers_and_session_context_without_inspecting_user_text(self):
         hooks={}
@@ -227,6 +234,40 @@ class HermesTests(unittest.TestCase):
             self.module.child_start(child_session_id='child',parent_session_id='parent',child_goal='SECRET')
             self.assertIn('parent',emit.call_args.args[3])
             self.assertNotIn('SECRET',str(emit.call_args))
+    def test_dashboard_messages_inject_at_turn_tool_result_and_stop(self):
+        hooks={}
+        class Context:
+            def register_hook(self,name,callback): hooks[name]=callback
+        self.module.register(Context())
+        message={'at':time.time(),'text':'Push to the staging branch'}
+        with patch.object(self.module,'lifecycle'), patch.object(self.module,'inbox_due',return_value=True), patch.object(self.module,'claim',return_value=[message]) as claim:
+            self.assertIn('Push to the staging branch',hooks['pre_llm_call'](session_id='chat-one')['context'])
+            self.assertEqual(claim.call_args.args[:2],('hermes','chat-one'))
+            transformed=hooks['transform_tool_result'](result='{"ok": true}',session_id='chat-one')
+            self.assertTrue(transformed.startswith('{"ok": true}'))
+            self.assertIn('Push to the staging branch',transformed)
+            verdict=hooks['pre_verify'](session_id='chat-one')
+            self.assertEqual(verdict['action'],'continue')
+            self.assertIn('Push to the staging branch',verdict['message'])
+        # No pending input: the tool result passes through untouched.
+        with patch.object(self.module,'lifecycle'), patch.object(self.module,'inbox_due',return_value=True), patch.object(self.module,'claim',return_value=[]):
+            self.assertNotIn('Axon dashboard',hooks['pre_llm_call'](session_id='chat-one')['context'])
+            self.assertIsNone(hooks['transform_tool_result'](result='plain',session_id='chat-one'))
+            self.assertIsNone(hooks['pre_verify'](session_id='chat-one'))
+        # An unreachable journal never blocks the model, the tool loop, or the stop.
+        with patch.object(self.module,'lifecycle'), patch.object(self.module,'inbox_due',side_effect=OSError('offline')), patch.object(self.module,'claim',side_effect=OSError('offline')):
+            self.assertIn('context',hooks['pre_llm_call'](session_id='chat-one'))
+            self.assertIsNone(hooks['transform_tool_result'](result='plain',session_id='chat-one'))
+            self.assertIsNone(hooks['pre_verify'](session_id='chat-one'))
+    def test_tool_result_without_session_or_string_passes_through(self):
+        hooks={}
+        class Context:
+            def register_hook(self,name,callback): hooks[name]=callback
+        self.module.register(Context())
+        with patch.object(self.module,'claim') as claim:
+            self.assertIsNone(hooks['transform_tool_result'](result='plain',session_id=''))
+            self.assertIsNone(hooks['transform_tool_result'](result={'ok':True},session_id='chat-one'))
+            claim.assert_not_called()
 
 
 class PiTests(unittest.TestCase):

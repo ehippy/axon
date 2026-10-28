@@ -13,8 +13,10 @@ import uuid
 
 from . import report
 
-# Agents whose hooks can take dashboard input (Claude Code: context injection + asyncRewake).
-INBOX_AGENTS = {'claude'}
+# Agents whose hooks can take dashboard input (Claude Code: context injection + asyncRewake;
+# Hermes: in-process injection via pre_llm_call, transform_tool_result and pre_verify — no idle
+# listener, so input queued while idle arrives when the session next runs).
+INBOX_AGENTS = {'claude', 'hermes'}
 # Stays below the bundled Stop listener's hook timeout.
 LISTEN_CAP = 14000
 
