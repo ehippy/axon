@@ -234,6 +234,7 @@ def handler(journal, web=True, token=None):
                 assets = {'/': ('index.html', 'text/html; charset=utf-8'),
                           '/ui/app.css': ('app.css', 'text/css; charset=utf-8'),
                           '/ui/app.js': ('app.js', 'text/javascript; charset=utf-8'),
+                          '/ui/favicon.svg': ('favicon.svg', 'image/svg+xml'),
                           **{f'/ui/icons/{name}.svg': (f'icons/{name}.svg', 'image/svg+xml')
                              for name in ('laptop', 'pc-display', 'hdd-rack', 'chat-dots')}}
                 if web and url.path in assets:

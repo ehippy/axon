@@ -41,7 +41,7 @@ class WebTests(unittest.TestCase):
         with urlopen(self.base+path) as response:return json.load(response)
 
     def test_packaged_assets_have_security_headers(self):
-        for path, kind in [('/', 'text/html'),('/ui/app.js','text/javascript'),('/ui/app.css','text/css')]:
+        for path, kind in [('/', 'text/html'),('/ui/app.js','text/javascript'),('/ui/app.css','text/css'),('/ui/favicon.svg','image/svg+xml')]:
             with urlopen(self.base+path) as response:
                 self.assertIn(kind,response.headers['Content-Type'])
                 self.assertEqual(response.headers['Cache-Control'],'no-store')
