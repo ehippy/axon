@@ -14,6 +14,7 @@ import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createInterface } from "node:readline";
 
 // Installed as a symlink into ~/.config/opencode/plugins/, so resolve the
 // real package to find the hook runner.
@@ -65,6 +66,101 @@ function contextOf(stdout) {
   } catch {
     return "";
   }
+}
+
+// Unattended wake is opt-in twice over: AXON_WAKE lists `opencode` on the
+// host, and each session must be enabled in the dashboard with the input
+// token. The claim/lease/ack protocol lives in the Python bridge.
+function wakeEnabled() {
+  return /(^|[\s,])opencode($|[\s,])/.test(process.env.AXON_WAKE ?? "");
+}
+
+// One long-poll bridge per session; delivery only ever happens while the
+// session is idle. A busy session answers {accepted:false}, which releases
+// the server-side lease so the claim is retried after the turn settles.
+function makeWake(ctx, cwd) {
+  const bridges = new Map();
+  const busy = new Set();
+  let closed = false;
+
+  const stopBridge = (sessionID) => {
+    const child = bridges.get(sessionID);
+    bridges.delete(sessionID);
+    if (child) {
+      try {
+        child.stdin?.end();
+        child.kill();
+      } catch {
+        // The bridge is already gone.
+      }
+    }
+  };
+
+  const startBridge = (sessionID) => {
+    if (closed || bridges.has(sessionID) || !wakeEnabled()) return;
+    try {
+      const child = spawn(RUNNER, [SCRIPT, "inbox"], { stdio: ["pipe", "pipe", "ignore"] });
+      bridges.set(sessionID, child);
+      const lines = createInterface({ input: child.stdout });
+      child.stdin?.on("error", () => {});
+      child.on("error", () => {
+        if (bridges.get(sessionID) === child) bridges.delete(sessionID);
+      });
+      child.on("close", () => {
+        lines.close();
+        if (bridges.get(sessionID) === child) bridges.delete(sessionID);
+      });
+      let delivering = Promise.resolve();
+      lines.on("line", (line) => {
+        delivering = delivering
+          .then(async () => {
+            if (closed || bridges.get(sessionID) !== child) return;
+            let batch;
+            try {
+              batch = JSON.parse(line);
+            } catch {
+              return;
+            }
+            if (!Array.isArray(batch.messages) || !batch.messages.length) return;
+            let accepted = false;
+            if (!busy.has(sessionID)) {
+              try {
+                const text = batch.messages.map((message) => String(message.text)).join("\n\n");
+                await ctx.session.prompt({
+                  sessionID,
+                  text: "The user sent this from the Axon dashboard:\n" + text,
+                });
+                accepted = true;
+              } catch {
+                // Releasing a failed native call preserves the message for retry.
+              }
+            }
+            if (bridges.get(sessionID) === child && child.stdin?.writable) {
+              child.stdin.write(JSON.stringify({ accepted }) + "\n");
+            }
+          })
+          .catch(() => {});
+      });
+      child.stdin?.write(JSON.stringify({ session_id: sessionID, cwd }) + "\n");
+    } catch {
+      bridges.delete(sessionID);
+    }
+  };
+
+  return {
+    turnStarted(sessionID) {
+      if (sessionID) busy.add(String(sessionID));
+    },
+    turnIdle(sessionID) {
+      if (!sessionID) return;
+      busy.delete(String(sessionID));
+      startBridge(String(sessionID));
+    },
+    close() {
+      closed = true;
+      for (const sessionID of [...bridges.keys()]) stopBridge(sessionID);
+    },
+  };
 }
 
 // Per-session bookkeeping shared by the v1 and v2 surfaces (only one runs).
@@ -119,12 +215,14 @@ export default {
   async setup(ctx) {
     const cwd = ctx?.location?.directory ?? process.cwd();
     const tracker = makeTracker(cwd);
+    const wake = makeWake(ctx, cwd);
     let alive = true;
 
     // A new user turn: SessionStart once, then UserPromptSubmit per turn.
     await ctx.session.hook("prompt", async (event) => {
       try {
         if (!tracker.track(event?.sessionID)) return;
+        wake.turnStarted(event.sessionID);
         await tracker.firstTurn(event.sessionID);
         await tracker.userTurn(event.sessionID);
       } catch {
@@ -164,13 +262,19 @@ export default {
         for await (const event of ctx.event.subscribe()) {
           if (!alive) return;
           try {
-            const properties = event?.properties ?? event;
+            const properties = event?.properties ?? event?.data ?? event;
             const sessionID =
               properties?.sessionID ?? properties?.info?.sessionID ?? properties?.info?.id;
             if (!tracker.track(sessionID)) continue;
-            if (event?.type === "session.idle") {
+            const type = event?.type;
+            // v2 generations signal turn end as session.execution.succeeded/
+            // failed; older buses emit session.idle. All map to the same
+            // settle point: the session is reachable by native injection now.
+            if (type === "session.idle" || type === "session.execution.succeeded") {
+              wake.turnIdle(sessionID);
               send({ ...tracker.base(sessionID), hook_event_name: "Stop" }, false);
-            } else if (event?.type === "session.error") {
+            } else if (type === "session.error" || type === "session.execution.failed") {
+              wake.turnIdle(sessionID);
               send({ ...tracker.base(sessionID), hook_event_name: "Interrupt" }, false);
             }
           } catch {
@@ -184,6 +288,7 @@ export default {
 
     return async () => {
       alive = false;
+      wake.close();
       tracker.endAll();
     };
   },
@@ -199,9 +304,9 @@ export default {
           const sessionID =
             event?.properties?.sessionID ?? event?.properties?.info?.sessionID ?? event?.properties?.info?.id;
           if (!tracker.track(sessionID)) return;
-          if (event?.type === "session.idle") {
+          if (event?.type === "session.idle" || event?.type === "session.execution.succeeded") {
             await send({ ...tracker.base(sessionID), hook_event_name: "Stop" }, false);
-          } else if (event?.type === "session.error") {
+          } else if (event?.type === "session.error" || event?.type === "session.execution.failed") {
             await send({ ...tracker.base(sessionID), hook_event_name: "Interrupt" }, false);
           }
         } catch {

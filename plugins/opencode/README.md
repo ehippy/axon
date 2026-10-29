@@ -31,6 +31,23 @@ Reporter settings come from the opencode process environment: `AXON_BROKER`,
 `AXON_PORT`, `AXON_MACHINE`, `AXON_SOURCE`, `AXON_ACTIVITY_HOME`, and
 optionally `AXON_PYTHON` (defaults to `python3`).
 
+## Dashboard wake (opt-in, v2 plugins only)
+
+Set `AXON_WAKE=opencode` (or add `opencode` to its comma-separated list) in
+the reporter's host settings, then restart opencode. Also enable **Allow
+dashboard messages to wake this session** in the session's dashboard detail,
+using the input token. Both switches default off. The host must have its
+claim credential from sync.
+
+Once a session has gone idle, one private bridge process per session
+long-polls the authenticated inbox and delivers with the v2
+`ctx.session.prompt` API: idle sessions start a turn. A session that is
+busy answering never receives native injection — the bridge releases the
+claim (lease) so the message is retried after the turn settles. The bridge
+acknowledges only accepted native calls; failures leave messages queued.
+Setup teardown stops every bridge. The v1 `server()` surface has no prompt
+API and stays passive.
+
 Pitfall: launching opencode from a terminal that already exports
 `AXON_SOURCE` (for example a Hermes or Claude Code session with Axon
 reporting) makes the opencode session report under the parent agent source.
