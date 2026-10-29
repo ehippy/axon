@@ -1,12 +1,15 @@
+import contextlib
 import importlib.util
 import json
 import os
 from pathlib import Path
 import shlex
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -31,9 +34,11 @@ def load(path,name):
 class PluginTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(); self.root=Path(self.tmp.name)
-        # Never read the developer's saved settings or reach a real journal server.
-        self.env={**os.environ,'AXON_ACTIVITY_HOME':str(self.root/'state'),'AXON_MOSQUITTO_PUB':'/missing/axon-pub','PYTHONDONTWRITEBYTECODE':'1',
-                  'AXON_CONFIG_FILE':str(self.root/'missing-env'),'AXON_SERVER':'http://127.0.0.1:9'}
+        # Never read the developer's saved settings or reach a real journal server. Ambient
+        # AXON_* values (a worker's own identity included) must not bleed into test events.
+        self.env={k:v for k,v in os.environ.items() if k != 'AXON_ACTIVITY_HOME' and not k.startswith('AXON_')}
+        self.env.update({'AXON_ACTIVITY_HOME':str(self.root/'state'),'AXON_MOSQUITTO_PUB':'/missing/axon-pub','PYTHONDONTWRITEBYTECODE':'1',
+                  'AXON_CONFIG_FILE':str(self.root/'missing-env'),'AXON_SERVER':'http://127.0.0.1:9'})
     def tearDown(self):
         self.tmp.cleanup()
     def hook(self,package,event,session='a',**extra):
@@ -41,6 +46,7 @@ class PluginTests(unittest.TestCase):
         return subprocess.run([sys.executable,str(package/'hooks/run.py')],input=json.dumps(data),text=True,capture_output=True,env=self.env,check=True)
     def events(self):
         with sqlite3.connect(self.root/'state/outbox.sqlite3') as db:
+            db.execute('CREATE TABLE IF NOT EXISTS outbox(seq INTEGER PRIMARY KEY, topic TEXT, payload TEXT)')
             return [json.loads(row[0]) for row in db.execute('SELECT payload FROM outbox ORDER BY seq')]
     def test_both_bundles_are_standalone_and_context_is_session_scoped(self):
         for agent in ('codex','claude'):
@@ -59,6 +65,51 @@ class PluginTests(unittest.TestCase):
         (package/'runtime/journal.py').write_text('obsolete server')
         manage.build('codex', package)
         self.assertFalse((package/'runtime/journal.py').exists())
+
+    def _fake_claude(self, listing):
+        fake = self.root/'claude'
+        fake.write_text('#!/bin/sh\ncat <<\'EOF\'\n'+listing+'\nEOF\n')
+        fake.chmod(fake.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        return str(fake)
+    def _liveness(self, listing, session='native-1', fields=None):
+        from axon_protocol import DATA_FIELDS
+        fields = sorted(DATA_FIELDS) if fields is None else fields
+        # Seed the capability cache the watcher reads (spool DB is per-test).
+        spool = self.root/'state/outbox.sqlite3'
+        spool.parent.mkdir(exist_ok=True)
+        with sqlite3.connect(spool) as db, db:
+            db.execute('CREATE TABLE IF NOT EXISTS server_protocol(at REAL, fields TEXT)')
+            db.execute('DELETE FROM server_protocol')
+            db.execute('INSERT INTO server_protocol VALUES(?,?)', (time.time(), json.dumps(sorted(fields))))
+        env = {**self.env, 'AXON_CLAUDE_BIN': self._fake_claude(listing), 'AXON_LIVENESS_POLL':'30',
+               'AXON_LISTEN_SECONDS':'2',
+               'PYTHONPATH':os.pathsep.join(str(ROOT/p) for p in ('packages/python/axon_reporter','packages/python/axon_protocol'))}
+        done = subprocess.run([sys.executable,'-m','axon_reporter.plugin_runtime','liveness','claude'],
+                              input=json.dumps({'session_id':session}), text=True, capture_output=True, env=env, timeout=30)
+        self.assertEqual(done.returncode, 0)
+        return [e for e in self.events() if e['data'].get('liveness')]
+    def test_liveness_watcher_reports_alive_then_exit(self):
+        listed = json.dumps({'agents':[{'sessionId':'native-1','status':'idle'}]})
+        gone = json.dumps({'agents':[]})
+        # The watcher only runs against a server that advertises the liveness field.
+        self.assertEqual(self._liveness(listed, fields=('tokens',)), [])
+        # A session missing from the listing is reported exited exactly once, with a long lease.
+        events = self._liveness(gone)
+        self.assertEqual([e['data']['liveness'] for e in events], ['exited'])
+        self.assertEqual(events[0]['data']['lease_seconds'], 3600)
+        # An unknown listing (claude absent) reports nothing: never guess. The outbox is
+        # shared across legs of this test, so compare against what was already there.
+        before = [e for e in self.events() if e['data'].get('liveness')]
+        env_missing = {**self.env, 'AXON_CLAUDE_BIN':str(self.root/'no-such-claude'), 'AXON_LISTEN_SECONDS':'1',
+                       'PYTHONPATH':os.environ.get('PYTHONPATH','')+os.pathsep+str(ROOT/'packages/python/axon_reporter')+os.pathsep+str(ROOT/'packages/python/axon_protocol')}
+        done = subprocess.run([sys.executable,'-m','axon_reporter.plugin_runtime','liveness','claude'],
+                              input=json.dumps({'session_id':'native-1'}), text=True, capture_output=True, env=env_missing, timeout=30)
+        self.assertEqual(done.returncode, 0)
+        self.assertEqual([e for e in self.events() if e['data'].get('liveness')], before)
+        # A listed live session renews the lease instead of exiting.
+        events = self._liveness(listed)
+        self.assertEqual(events[-1]['data']['liveness'], 'alive')
+        self.assertEqual(events[-1]['data']['lease_seconds'], 3600)
 
     def test_generated_report_command_runs_without_source_imports(self):
         package = manage.build('codex', self.root/'codex')
@@ -322,6 +373,22 @@ class InboxTests(unittest.TestCase):
     """Dashboard input reaches Claude sessions through hooks, using a real journal server."""
     hook=PluginTests.hook
     events=PluginTests.events
+    @contextlib.contextmanager
+    def clean_axon_env(self):
+        # Identity must be computed from the test env alone: an ambient AXON_SOURCE (a
+        # developer's own agent session) would otherwise outlive the strip in setUp and
+        # make the journal register a different source than the hook subprocess claims.
+        saved = dict(os.environ)
+        try:
+            for k in [k for k in os.environ if k.startswith('AXON_')]:
+                del os.environ[k]
+            for k, v in self.env.items():
+                if k.startswith('AXON_'):
+                    os.environ[k] = v
+            yield
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
     def setUp(self):
         PluginTests.setUp(self);self.addCleanup(self.tmp.cleanup)
         self.env['AXON_LISTEN_POLL']='1'
@@ -336,7 +403,7 @@ class InboxTests(unittest.TestCase):
         self.env['AXON_HOST_CREDENTIAL_FILE']=str(credential_file)
         self.package=manage.build('claude',self.root/'claude')
     def address(self,session='a'):
-        with patch.dict(os.environ,{k:v for k,v in self.env.items() if k.startswith('AXON_')}):
+        with self.clean_axon_env():
             source,key,_=report.identity('claude',session)
         self.journal.ingest(dict(version=1,source=source,session=key,id='s-'+session,at=time.time(),kind='start',data={'agent':'claude','machine':'workstation'}))
         self.journal.set_wake(source,key,True)
@@ -379,7 +446,7 @@ class InboxTests(unittest.TestCase):
         self.assertEqual(self.hook(self.package,'UserPromptSubmit').stdout.count('Use the staging broker'),0)
 
     def codex_address(self,session='c'):
-        with patch.dict(os.environ,{k:v for k,v in self.env.items() if k.startswith('AXON_')}):
+        with self.clean_axon_env():
             source,key,_=report.identity('codex',session)
         self.journal.ingest(dict(version=1,source=source,session=key,id='s-'+session,at=time.time(),kind='start',data={'agent':'codex','machine':'workstation'}))
         return source,key

@@ -2,7 +2,7 @@
 const $ = id => document.getElementById(id);
 const PAGE = 50;
 const ACTIVE = ['working', 'waiting', 'blocked'];
-const LABEL = {working:'Working', waiting:'Waiting', blocked:'Blocked', finished:'Finished', stopped:'Stopped', interrupted:'Interrupted', lost_contact:'Lost contact'};
+const LABEL = {working:'Working', waiting:'Waiting', blocked:'Blocked', finished:'Finished', stopped:'Stopped', interrupted:'Interrupted', lost_contact:'Lost contact', exited:'Exited'};
 const state = {compose:null, drafts:{}, view:'now', filter:'', sessions:[], events:[], before:null, more:false, selected:null, detailEvents:[], detailBefore:null, detailMore:false, synced:null, live:false, request:0, detailRequest:0};
 let timer;
 const loadedVersion=document.documentElement.dataset.axonVersion;
@@ -490,6 +490,7 @@ function inputNote(row, enabled=true) {
     // Codex hooks cannot start a turn, so an idle Codex thread reads input when it next runs.
     : row.agent==='codex' && ACTIVE.includes(row.effective_state) ? 'Idle: Codex reads this when its next turn starts.'
     : ACTIVE.includes(row.effective_state) ? 'Not listening: the message waits until the session next runs.'
+    : row.effective_state==='exited' ? 'Exited on its host: the message waits until it is resumed.'
     : 'Session has ended or lost contact: the message waits if it resumes.';
 }
 function composer(row) {

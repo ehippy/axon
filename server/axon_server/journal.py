@@ -193,6 +193,9 @@ class Journal(ProjectStore):
                            (v['source'], v['session'], v['at']))
             # Fields from a newer reporter stay in the stored event but never reach session state.
             current.update({k: value for k, value in known_data(patch).items() if k != 'user_turn'})
+            if 'liveness' in patch:
+                # Stamp the arrival so a later event (a resume) clears the exit reading.
+                current['liveness_at'] = v['at']
             state = {'start': 'working', 'waiting': 'waiting', 'blocked': 'blocked',
                      'finished': 'finished', 'stopped': 'stopped', 'interrupted': 'interrupted'}.get(v['kind'])
             # Late lifecycle/tool hooks cannot erase an explicitly recorded result.
@@ -225,7 +228,16 @@ class Journal(ProjectStore):
             if row['archived_at'] is not None:
                 item['archived_at'] = row['archived_at']
             item['fresh'] = time.time() - item['updated_at'] <= item['lease_seconds']
-            item['effective_state'] = item['state'] if item['fresh'] or item['state'] in TERMINAL else 'lost_contact'
+            # A host liveness watcher proves the process ended: say so instead of guessing.
+            # Any event newer than the exit report means the session came back; a reading
+            # older than a day is board furniture, not a live fact.
+            item['exited'] = (item.get('liveness') == 'exited' and not item['fresh']
+                              and item['updated_at'] <= item.get('liveness_at', item['updated_at'])
+                              and time.time() - item.get('liveness_at', 0) <= 24 * 3600)
+            if item['exited']:
+                item['effective_state'] = 'exited'
+            else:
+                item['effective_state'] = item['state'] if item['fresh'] or item['state'] in TERMINAL else 'lost_contact'
             if filters.get('project') and filters['project'] not in (item.get('project'),item.get('project_key'),item.get('project_id')):
                 continue
             if any(item.get(k if k != 'state' else 'effective_state') != v for k, v in filters.items() if k in ('source', 'session', 'agent', 'machine', 'state')):
