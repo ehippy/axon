@@ -43,11 +43,36 @@ Choose native loading or the managed installer for each agent, not both.
 
 `sync` is the canonical way to keep every machine's agents reporting after
 the checkout moves or a new agent appears. Keep a dedicated clone (never a
-working checkout), then run sync from your bootstrap loop — chezmoi
-`run_after`, cron, login hook — as often as you like:
+working checkout) and let a user timer run it, the same pattern as the
+server's `axon-update.timer`:
 
 ```sh
 SRC="$HOME/.local/share/axon/src"
+git clone -q https://github.com/ehippy/axon "$SRC"
+python3 "$SRC/plugins/tools/manage.py" install-timer --apply   # --interval MINUTES, default 15
+```
+
+On Linux this writes `axon-sync.service`/`.timer` to `~/.config/systemd/user`
+and enables them; on macOS it writes and bootstraps the launchd agent
+`~/Library/LaunchAgents/org.axon.sync.plist` (log in `~/.local/state/axon/sync.log`).
+Both bake in the installing shell's PATH so agents are detected; rerun
+`install-timer --apply` after moving them. Without `--apply` it prints the plan.
+Templates are in [deploy](deploy).
+
+Each run is `manage.py update --apply`: refuse if the clone has local changes,
+`git pull --ff-only`, then never go past the journal server's deployed commit
+(`GET <AXON_SERVER or http://AXON_BROKER:8510>/update`) — when the pulled HEAD
+is not in that commit's history, the clone is reset to the server's commit, so
+hooks that add protocol fields wait for the server deploy. An unreachable server
+is logged and the pulled revision is used; a server commit missing from the clone
+undoes the pull and fails the run. Then `sync --apply` runs from the updated code.
+The result lands in `~/.local/state/axon/sync-status.json`
+(`revision`, `at`, `ok`, `error`); `manage.py status` prints it.
+
+Alternatively, run the same steps from a bootstrap loop — chezmoi `run_after`,
+cron, login hook — as often as you like (this skips the server check):
+
+```sh
 git -C "$SRC" pull -q --ff-only 2>/dev/null || git clone -q https://github.com/ehippy/axon "$SRC"
 python3 "$SRC/plugins/tools/manage.py" sync --apply
 ```

@@ -1,0 +1,10 @@
+[Unit]
+Description=Keep Axon agent hooks current every {interval} minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec={interval}min
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

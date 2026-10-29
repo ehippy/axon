@@ -525,4 +525,101 @@ class SyncTests(unittest.TestCase):
         self.assertTrue(json.loads(second.stdout)['skipped'])
 
 
+class TimerTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(); self.root=Path(self.tmp.name)
+        self.home=self.root/'home'
+        self.env=patch.dict(os.environ,{'AXON_ACTIVITY_HOME':str(self.root/'state'),'PATH':'/opt/agents/bin:/usr/bin'})
+        self.env.start()
+    def tearDown(self):
+        self.env.stop(); self.tmp.cleanup()
+    def git(self,repo,*args):
+        return subprocess.run(['git','-C',str(repo),*args],capture_output=True,text=True,check=True).stdout.strip()
+    def commit(self,repo,name):
+        (repo/name).write_text(name)
+        self.git(repo,'add',name)
+        self.git(repo,'-c','user.name=t','-c','user.email=t@example.invalid','-c','commit.gpgsign=false','commit','-qm',name)
+        return self.git(repo,'rev-parse','HEAD')
+    def clones(self):
+        """An upstream with two commits and a managed clone still at the first."""
+        origin=self.root/'origin'; origin.mkdir(); self.git(origin,'init','-q')
+        first=self.commit(origin,'a')
+        clone=self.root/'clone'
+        subprocess.run(['git','clone','-q',str(origin),str(clone)],check=True)
+        return origin,clone,first,self.commit(origin,'b')
+    def test_systemd_units_run_update_on_the_interval(self):
+        files=manage.timer_files(self.home,20,'Linux')
+        units=self.home/'.config/systemd/user'
+        self.assertEqual(set(files),{units/'axon-sync.service',units/'axon-sync.timer'})
+        service=files[units/'axon-sync.service']
+        self.assertIn(f'ExecStart={sys.executable} {manage.ROOT}/plugins/tools/manage.py update --apply',service)
+        self.assertIn('Environment=PATH=/opt/agents/bin:/usr/bin',service)
+        self.assertIn('Type=oneshot',service)
+        self.assertIn('OnUnitActiveSec=20min',files[units/'axon-sync.timer'])
+        self.assertIn('WantedBy=timers.target',files[units/'axon-sync.timer'])
+    def test_launchd_plist_is_valid_and_runs_update(self):
+        import plistlib
+        (path,text),=manage.timer_files(self.home,15,'Darwin').items()
+        self.assertEqual(path,self.home/'Library/LaunchAgents/org.axon.sync.plist')
+        plist=plistlib.loads(text.encode())
+        self.assertEqual(plist['Label'],'org.axon.sync')
+        self.assertEqual(plist['ProgramArguments'],
+                         [sys.executable,str(manage.ROOT/'plugins/tools/manage.py'),'update','--apply'])
+        self.assertEqual(plist['StartInterval'],900)
+        self.assertEqual(plist['EnvironmentVariables']['PATH'],'/opt/agents/bin:/usr/bin')
+        self.assertEqual(plist['StandardOutPath'],str(self.root/'state/sync.log'))
+    def test_install_timer_plan_writes_nothing_and_apply_enables(self):
+        calls=[]
+        for system in ('Linux','Darwin'):
+            plan=manage.install_timer(self.home,False,system=system,run=lambda *a,**k: calls.append(a))
+            self.assertFalse(plan['apply']); self.assertTrue(plan['commands'])
+        self.assertFalse(self.home.exists()); self.assertEqual(calls,[])
+        plan=manage.install_timer(self.home,True,system='Linux',run=lambda c,**k: calls.append(c))
+        self.assertTrue(all(Path(f).is_file() for f in plan['files']))
+        self.assertEqual(calls[-1],['systemctl','--user','enable','--now','axon-sync.timer'])
+        with self.assertRaises(ValueError): manage.timer_files(self.home,0,'Linux')
+    def test_update_pulls_but_never_past_the_server_commit(self):
+        origin,clone,first,second=self.clones()
+        synced=[]
+        sync=lambda home,root: synced.append(self.git(root,'rev-parse','HEAD')) or {'skipped':False}
+        # Server still runs the first commit: the clone is held there.
+        report=manage.update(self.home,True,clone,server=lambda: first,sync_fn=sync)
+        self.assertTrue(report['ok']); self.assertTrue(report['held_at_server'])
+        self.assertEqual((report['revision'],synced),(first,[first]))
+        # Once the server deploys the second commit, the host follows.
+        report=manage.update(self.home,True,clone,server=lambda: second,sync_fn=sync)
+        self.assertEqual((report['revision'],report['held_at_server']),(second,False))
+        # A server ahead of the clone or out of reach does not hold anything back.
+        third=self.commit(origin,'c')
+        report=manage.update(self.home,True,clone,server=lambda: None,sync_fn=sync)
+        self.assertEqual((report['revision'],report['ok']),(third,True))
+        self.assertEqual(synced,[first,second,third])
+    def test_update_refuses_unknown_server_commit_and_dirty_clone(self):
+        _,clone,first,second=self.clones()
+        sync=lambda home,root: self.fail('must not sync')
+        report=manage.update(self.home,True,clone,server=lambda: 'f'*40,sync_fn=sync)
+        self.assertFalse(report['ok']); self.assertIn('not in this clone',report['error'])
+        (clone/'a').write_text('edited')
+        report=manage.update(self.home,True,clone,server=lambda: second,sync_fn=sync)
+        self.assertIn('local changes',report['error'])
+        self.assertEqual(self.git(clone,'rev-parse','HEAD'),first)
+    def test_update_status_file_records_success_and_failure(self):
+        _,clone,first,second=self.clones()
+        self.assertIsNone(manage.status(self.home))
+        manage.update(self.home,True,clone,server=lambda: second,sync_fn=lambda h,r: {})
+        current=manage.status(self.home)
+        self.assertEqual({k:current[k] for k in ('revision','ok','error')},{'revision':second,'ok':True,'error':None})
+        self.assertIn('at',current)
+        def broken(home,root): raise RuntimeError('sync failed: codex')
+        manage.update(self.home,True,clone,server=lambda: second,sync_fn=broken)
+        self.assertEqual(manage.status(self.home)['error'],'sync failed: codex')
+        self.assertFalse(manage.status(self.home)['ok'])
+    def test_update_plan_changes_nothing(self):
+        _,clone,first,second=self.clones()
+        report=manage.update(self.home,False,clone,server=lambda: second,sync_fn=lambda h,r: self.fail('synced'))
+        self.assertEqual(report,{'root':str(clone),'revision':first,'server_commit':second,'apply':False})
+        self.assertEqual(self.git(clone,'rev-parse','HEAD'),first)
+        self.assertIsNone(manage.status(self.home))
+
+
 if __name__=='__main__': unittest.main()

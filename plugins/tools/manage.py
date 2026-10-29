@@ -5,18 +5,21 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import platform
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.request
+from xml.sax.saxutils import escape as xml_escape
 
 ROOT = Path(__file__).resolve().parents[2]
 for project in ('packages/python/axon_protocol', 'packages/python/axon_reporter'):
     path = str(ROOT/project)
     if path not in sys.path:
         sys.path.insert(0, path)
-from axon_reporter.report import MACHINE_ALIAS_AUTO, detected_machine_alias
+from axon_reporter.report import MACHINE_ALIAS_AUTO, detected_machine_alias, setting
 
 AGENTS = ('codex','claude','hermes','pi','opencode')
 
@@ -290,6 +293,128 @@ def sync(home=Path.home(), apply=False, force=False):
             'installed': installed, 'failed': failed, 'skipped': False}
 
 
+def state_dir(home):
+    return Path(os.environ.get('AXON_ACTIVITY_HOME', Path(home).expanduser()/'.local/state/axon'))
+
+
+def timer_files(home, interval=15, system=None):
+    """Unit or agent files for this platform, rendered from plugins/deploy."""
+    home = Path(home).expanduser()
+    system = system or platform.system()
+    if interval < 1:
+        raise ValueError('Interval must be at least one minute')
+    values = {'python': sys.executable, 'manage': str(ROOT/'plugins/tools/manage.py'),
+              'path': os.environ.get('PATH', '/usr/bin:/bin'), 'interval': interval,
+              'seconds': interval*60, 'log': str(state_dir(home)/'sync.log')}
+    deploy = ROOT/'plugins/deploy'
+    if system == 'Darwin':
+        escaped = {k: xml_escape(str(v)) for k, v in values.items()}
+        return {home/'Library/LaunchAgents/org.axon.sync.plist':
+                (deploy/'org.axon.sync.plist').read_text().format(**escaped)}
+    if system == 'Linux':
+        units = home/'.config/systemd/user'
+        return {units/name: (deploy/name).read_text().format(**values)
+                for name in ('axon-sync.service', 'axon-sync.timer')}
+    raise ValueError(f'No user timer for {system}; run `manage.py update --apply` from cron')
+
+
+def install_timer(home=Path.home(), apply=False, interval=15, system=None, run=subprocess.run):
+    """Install a user timer that runs `update --apply`; without apply, only plan."""
+    home = Path(home).expanduser()
+    system = system or platform.system()
+    files = timer_files(home, interval, system)
+    if system == 'Darwin':
+        plist = next(iter(files))
+        domain = f'gui/{os.getuid()}'
+        commands = [['launchctl', 'bootout', f'{domain}/org.axon.sync'],
+                    ['launchctl', 'bootstrap', domain, str(plist)]]
+    else:
+        commands = [['systemctl', '--user', 'daemon-reload'],
+                    ['systemctl', '--user', 'enable', '--now', 'axon-sync.timer']]
+    plan = {'files': [str(p) for p in files], 'commands': [shlex.join(c) for c in commands],
+            'interval_minutes': interval, 'apply': apply}
+    if not apply:
+        return plan
+    for path, text in files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    state_dir(home).mkdir(parents=True, exist_ok=True)
+    for i, command in enumerate(commands):
+        # bootout only clears a previous load, so its failure is expected on first install.
+        run(command, check=not (system == 'Darwin' and i == 0), capture_output=True)
+    return plan
+
+
+def server_commit(timeout=10):
+    """The journal server's deployed commit, or None when unknown."""
+    url = setting('AXON_SERVER') or 'http://%s:8510' % setting('AXON_BROKER', 'localhost')
+    try:
+        with urllib.request.urlopen(url.rstrip('/')+'/update', timeout=timeout) as response:
+            commit = json.load(response).get('commit')
+    except (OSError, ValueError, AttributeError):
+        return None
+    return commit if isinstance(commit, str) and commit else None
+
+
+def git(root, *args, check=True):
+    return subprocess.run(['git', '-C', str(root), *args], capture_output=True, text=True, check=check)
+
+
+def run_sync(home, root):
+    """Sync with the freshly pulled code, not the code already loaded here."""
+    done = subprocess.run([sys.executable, str(Path(root)/'plugins/tools/manage.py'), 'sync', '--apply',
+                           '--home', str(home)], capture_output=True, text=True)
+    try:
+        report = json.loads(done.stdout)
+    except ValueError:
+        report = {}
+    if done.returncode:
+        raise RuntimeError(f'sync failed: {report.get("failed") or done.stderr.strip()}')
+    return report
+
+
+def update(home=Path.home(), apply=False, root=ROOT, server=server_commit, sync_fn=run_sync):
+    """Fast-forward the managed clone, hold it at the server's commit, then sync.
+
+    Hooks that add protocol fields need the server deployed first, so a host
+    never runs a revision the server's `/update` commit does not contain.
+    """
+    home = Path(home).expanduser().resolve()
+    deployed = server()
+    revision = git(root, 'rev-parse', 'HEAD', check=False).stdout.strip() or 'unknown'
+    if not apply:
+        return {'root': str(root), 'revision': revision, 'server_commit': deployed, 'apply': False}
+    held, error, report = False, None, {}
+    try:
+        if git(root, 'status', '--porcelain', '--untracked-files=no').stdout.strip():
+            raise RuntimeError(f'{root} has local changes; keep a dedicated clone for the timer')
+        pulled = git(root, 'pull', '-q', '--ff-only', check=False)
+        if pulled.returncode:
+            raise RuntimeError('git pull failed: '+pulled.stderr.strip())
+        if deployed is None:
+            print('Axon server commit unknown; syncing the pulled revision', file=sys.stderr)
+        elif git(root, 'merge-base', '--is-ancestor', 'HEAD', deployed, check=False).returncode:
+            if git(root, 'cat-file', '-e', deployed+'^{commit}', check=False).returncode:
+                # Cannot prove the pull is not ahead of the server: undo it.
+                git(root, 'reset', '-q', '--hard', revision)
+                raise RuntimeError(f'server commit {deployed} is not in this clone')
+            git(root, 'reset', '-q', '--hard', deployed)
+            held = True
+        revision = git(root, 'rev-parse', 'HEAD').stdout.strip()
+        report = sync_fn(home, root)
+    except (RuntimeError, OSError, subprocess.CalledProcessError) as failure:
+        error = str(failure)
+    status = {'revision': revision, 'at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+              'ok': error is None, 'error': error}
+    write_json(state_dir(home)/'sync-status.json', status)
+    return {**status, 'server_commit': deployed, 'held_at_server': held, 'sync': report}
+
+
+def status(home=Path.home()):
+    path = state_dir(home)/'sync-status.json'
+    return json.loads(path.read_text()) if path.exists() else None
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     sub=p.add_subparsers(dest='command',required=True)
@@ -300,6 +425,13 @@ def main():
     s=sub.add_parser('sync',help='install every detected agent; stamp-skipped when unchanged')
     s.add_argument('--home',type=Path,default=Path.home())
     s.add_argument('--apply',action='store_true'); s.add_argument('--force',action='store_true')
+    t=sub.add_parser('install-timer',help='run `update --apply` from a systemd --user timer or launchd agent')
+    t.add_argument('--home',type=Path,default=Path.home())
+    t.add_argument('--apply',action='store_true'); t.add_argument('--interval',type=int,default=15,metavar='MINUTES')
+    u=sub.add_parser('update',help='pull this clone, never past the server commit, then sync')
+    u.add_argument('--home',type=Path,default=Path.home()); u.add_argument('--apply',action='store_true')
+    st=sub.add_parser('status',help='print the last timer sync result')
+    st.add_argument('--home',type=Path,default=Path.home())
     args=p.parse_args()
     try:
         if args.command=='build':
@@ -310,6 +442,18 @@ def main():
             if report.get('failed'):
                 # 'skipped' reports carry no failure map
                 p.exit(2)
+        elif args.command=='install-timer':
+            print(json.dumps(install_timer(args.home,args.apply,args.interval),indent=2))
+        elif args.command=='update':
+            report=update(args.home,args.apply)
+            print(json.dumps(report,indent=2))
+            if report.get('ok') is False:
+                p.exit(2)
+        elif args.command=='status':
+            current=status(args.home)
+            print(json.dumps(current,indent=2))
+            if current is None:
+                p.exit(1,'No timer sync has run yet\n')
         else:
             print(json.dumps(install(args.agent,args.home,args.apply,not args.no_enable,args.hermes_command),indent=2))
     except (ValueError,OSError,subprocess.CalledProcessError) as error:
