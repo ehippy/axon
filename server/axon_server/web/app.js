@@ -241,8 +241,11 @@ function hostName(row) { return row.machine || 'Host not reported'; }
 const HOST_KINDS = ['laptop', 'desktop', 'server'];
 const INPUT_AGENTS = ['claude','codex','hermes'];
 const TOKEN_KEY = 'axon-input-token';
-function storedToken() { try { return (localStorage.getItem(TOKEN_KEY) || '').replace(/\s+/g,''); } catch { return ''; } }
-function storeToken(value) { try { value ? localStorage.setItem(TOKEN_KEY,value) : localStorage.removeItem(TOKEN_KEY); } catch {} }
+// Input tokens are URL-safe ([A-Za-z0-9_-]); anything else — spaces, newlines, curly quotes and
+// zero-width characters smuggled in by mobile keyboards or paste apps — is dropped at both ends,
+// so a mangled paste can never poison the Authorization header with a character fetch rejects.
+function storedToken() { try { return (localStorage.getItem(TOKEN_KEY) || '').replace(/[^A-Za-z0-9_-]/g,''); } catch { return ''; } }
+function storeToken(value) { const clean=(value||'').replace(/[^A-Za-z0-9_-]/g,''); try { clean ? localStorage.setItem(TOKEN_KEY,clean) : localStorage.removeItem(TOKEN_KEY); } catch {} }
 function listeningLeft(row) {
   const left=Number(row.listening_until||0)-Date.now()/1000;
   return row.effective_state==='waiting' && left>0 ? left : 0;
@@ -657,7 +660,11 @@ $('close-detail').addEventListener('click',()=>$('session-dialog').close());
 $('session-dialog').addEventListener('close',()=>{state.selected=null;++state.detailRequest;route();});
 $('session-dialog').addEventListener('click',event=>{if(event.target===$('session-dialog') && event.clientX<$('session-dialog').getBoundingClientRect().left) $('session-dialog').close();});
 function readRoute() {
-  const params=new URLSearchParams(location.hash.slice(1));state.view=params.get('view')==='timeline'?'timeline':'now';state.filter=ACTIVE.includes(params.get('state'))?params.get('state'):'';
+  const params=new URLSearchParams(location.hash.slice(1));
+  // One-tap setup: any #...&token=... link stores the token and vanishes from the URL (fragments
+  // never reach the server, so it leaves no trail) — no typing required on phones.
+  if (params.get('token')) { storeToken(params.get('token')); history.replaceState(null,'',location.pathname); }
+  state.view=params.get('view')==='timeline'?'timeline':'now';state.filter=ACTIVE.includes(params.get('state'))?params.get('state'):'';
   $('search').value=params.get('search')||'';
   const horizon=params.get('period')||'3600';
   $('period').value=[...$('period').options].some(option=>option.value===horizon)?horizon:'3600';
