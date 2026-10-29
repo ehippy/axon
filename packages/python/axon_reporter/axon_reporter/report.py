@@ -225,6 +225,21 @@ def drain(path=None):
                 break
 
 
+# A raised permission prompt is not the same as a needed person. Claude fires
+# PermissionRequest only when a person must answer (auto-mode sessions never emit it,
+# #23 pilot); Codex's built-in approver resolves its own prompts unattended (#26 report).
+# Unknown agents keep the old human-gated reading. Hosts can pin either with
+# AXON_APPROVAL_GATE=human|auto for runner-started sessions.
+AUTO_APPROVING_AGENTS = {'codex'}
+
+
+def approval_gate(agent):
+    env = os.environ.get('AXON_APPROVAL_GATE', '').strip().lower()
+    if env in ('human', 'auto'):
+        return env
+    return 'auto' if agent in AUTO_APPROVING_AGENTS else 'human'
+
+
 def hook(data, agent):
     session = data.get('session_id')
     if not session:
@@ -240,6 +255,7 @@ def hook(data, agent):
         patch['user_turn'] = True
     if event == 'PermissionRequest':
         patch['activity'] = 'needs approval'
+        patch['approval_gate'] = approval_gate(agent)
     elif event in ('Stop', 'SessionStart'):
         patch['activity'] = 'awaiting input'
     elif event in ('PreToolUse', 'PostToolUse'):

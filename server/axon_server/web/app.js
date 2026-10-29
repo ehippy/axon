@@ -428,7 +428,10 @@ function card(row, grouped=false) {
   const time=node('time','card-time',relative(activity)); time.dataset.at=activity; time.title='Last activity: '+new Date(activity*1000).toLocaleString()+' · Last report: '+new Date(row.updated_at*1000).toLocaleString();
   const project=node('div','project-line');project.append(node('span','project-name',row.project || row.topic || 'No project'),time);
   const label=statusName(row.effective_state), bottom=node('div','card-bottom');
-  const detail=label==='blocked' ? row.blocker || row.step : label==='finished' ? row.outcome : row.step || row.activity;
+  const detail=label==='blocked' ? row.blocker || row.step : label==='finished' ? row.outcome
+    : row.approval_pending && row.blocked_on==='automation' ? row.step || 'Auto-approving'
+    : label==='waiting' && row.blocked_on==='human' && row.activity==='needs approval' ? 'Needs your approval'
+    : row.step || row.activity;
   bottom.append(status(label));
   if (listeningLeft(row)) bottom.append(node('span','listening-label','Listening · '+duration(listeningLeft(row))));
   if (row.last_wake) {const wake=node('span','listening-label','Dashboard wake · '+relative(row.last_wake.at));wake.title=row.last_wake.activity;bottom.append(wake);}

@@ -105,9 +105,36 @@ class JournalTests(unittest.TestCase):
         self.assertEqual(row['step'], 'Catalog abilities')
         self.assertEqual(row['activity'], 'reading')
 
+    def test_auto_approved_prompts_never_paint_the_board_yellow(self):
+        now = time.time()
+        # Within its beat, an auto-resolving prompt keeps the card working: the session
+        # waits on its own approver, not on a person.
+        self.journal.ingest(self.event('start', session='auto', at=now - 300))
+        self.journal.ingest(self.event('waiting', session='auto', activity='needs approval', approval_gate='auto', at=now - 10))
+        row = self.journal.sessions({'session': 'auto'})[0]
+        self.assertEqual((row['effective_state'], row['blocked_on']), ('working', 'automation'))
+        # Any newer event proves the prompt resolved; the reading drops entirely.
+        self.journal.ingest(self.event('heartbeat', session='auto', state='working', activity='running tools', at=now - 5))
+        row = self.journal.sessions({'session': 'auto'})[0]
+        self.assertEqual(row['effective_state'], 'working')
+        self.assertNotIn('blocked_on', row)
+        # An auto prompt whose beat lapsed with nothing following admits it is stuck — on automation.
+        self.journal.ingest(self.event('start', session='slow', at=now - 300))
+        self.journal.ingest(self.event('waiting', session='slow', activity='needs approval', approval_gate='auto', at=now - 120))
+        row = self.journal.sessions({'session': 'slow'})[0]
+        self.assertEqual((row['effective_state'], row['blocked_on']), ('waiting', 'automation'))
+        # A human-gated prompt is waiting immediately; a gate-less reporter keeps that reading.
+        self.journal.ingest(self.event('waiting', session='human', activity='needs approval', approval_gate='human', at=now - 10))
+        row = self.journal.sessions({'session': 'human'})[0]
+        self.assertEqual((row['effective_state'], row['blocked_on']), ('waiting', 'human'))
+        self.journal.ingest(self.event('waiting', session='legacy', activity='needs approval', at=now - 10))
+        row = self.journal.sessions({'session': 'legacy'})[0]
+        self.assertEqual((row['effective_state'], row['blocked_on']), ('waiting', 'human'))
+
     def test_validation_and_pagination(self):
         for bad in [self.event('oops'), self.event(goal='x'*401), self.event(state='banana'),
-                    self.event(liveness='zombie'), self.event(at=time.time()+1000),
+                    self.event(liveness='zombie'), self.event(approval_gate='whenever'),
+                    self.event(at=time.time()+1000),
                     self.event(lease_seconds=-1), self.event(evidence='commit')]:
             with self.assertRaises(ValueError):
                 self.journal.ingest(bad)
@@ -169,6 +196,21 @@ class ReporterTests(unittest.TestCase):
         with patch.object(report, 'report') as emit:
             report.hook(dict(session_id='one', hook_event_name='Stop'), 'claude')
             self.assertEqual(emit.call_args.args[2], 'waiting')
+
+    def test_permission_prompts_carry_their_approval_gate(self):
+        with patch.object(report, 'report') as emit:
+            report.hook(dict(session_id='one', hook_event_name='PermissionRequest'), 'codex')
+            self.assertEqual(emit.call_args.args[3]['approval_gate'], 'auto')
+            report.hook(dict(session_id='two', hook_event_name='PermissionRequest'), 'claude')
+            self.assertEqual(emit.call_args.args[3]['approval_gate'], 'human')
+            report.hook(dict(session_id='three', hook_event_name='PermissionRequest'), 'mystery-agent')
+            self.assertEqual(emit.call_args.args[3]['approval_gate'], 'human')
+            with patch.dict(os.environ, AXON_APPROVAL_GATE='auto'):
+                report.hook(dict(session_id='four', hook_event_name='PermissionRequest'), 'claude')
+                self.assertEqual(emit.call_args.args[3]['approval_gate'], 'auto')
+            with patch.dict(os.environ, AXON_APPROVAL_GATE='whenever'):
+                report.hook(dict(session_id='five', hook_event_name='PermissionRequest'), 'claude')
+                self.assertEqual(emit.call_args.args[3]['approval_gate'], 'human')
 
 
 class RetentionTests(unittest.TestCase):
