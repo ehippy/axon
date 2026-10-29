@@ -8,6 +8,12 @@ from pathlib import Path
 DEFAULT_POLL = 55  # long-poll horizon; the server caps waits at 55s anyway
 
 
+# Codex sandbox values the runner will pass; anything else (notably
+# danger-full-access) is refused — the issue rule is "workspace-write with no
+# bypass flags", and host config may only narrow from there.
+SANDBOXES = ('read-only', 'workspace-write')
+
+
 class Policy:
     def __init__(self, server=None, allow=(), executable=None):
         self.server = server
@@ -17,8 +23,10 @@ class Policy:
         self.executable = dict(executable or {})
 
     def resolve(self, agent, project):
-        """Return (path, permission_mode, refusal) for a job; a request may only
-        narrow host policy, never widen it, so matching is exact."""
+        """Return (path, settings, refusal) for a job; settings carries the
+        per-entry knobs each executor reads (permission_mode for Claude,
+        sandbox for Codex). A request may only narrow host policy, never widen
+        it, so matching is exact."""
         for entry in self.allow:
             if entry['project'] != project:
                 continue
@@ -27,7 +35,8 @@ class Policy:
             path = Path(entry['path']).expanduser()
             if not path.is_dir():
                 return None, None, 'project_path_missing'
-            return path, entry['permission_mode'], None
+            settings = {'permission_mode': entry['permission_mode'], 'sandbox': entry['sandbox']}
+            return path, settings, None
         return None, None, 'not_allowed'
 
 
@@ -43,5 +52,6 @@ def load(path=None):
         if 'project' in entry and 'path' in entry:
             allow.append({'project': str(entry['project']), 'path': str(entry['path']),
                           'agents': [str(a) for a in entry.get('agents', [])],
-                          'permission_mode': str(entry.get('permission_mode', 'dontAsk'))})
+                          'permission_mode': str(entry.get('permission_mode', 'dontAsk')),
+                          'sandbox': str(entry.get('sandbox', 'workspace-write'))})
     return Policy(server=raw.get('server'), allow=allow, executable=raw.get('executable', {}))

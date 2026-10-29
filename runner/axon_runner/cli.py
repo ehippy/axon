@@ -1,10 +1,11 @@
 """Pull dashboard start jobs for this host and do only what host policy allows (#19).
 
 The host pulls, so nothing on it listens for connections. This increment ships
-the queue loop, host-local allowlist, and job-state reporting; the Claude start
-path is wired to the verified `claude --bg -w <name> -n <name> "<prompt>"`
-(checked against CLI 2.1.312), and agents without an executor yet are refused
-with `no_executor` so no request is ever dropped silently."""
+the queue loop, host-local allowlist, and job-state reporting. Claude starts via
+the verified `claude --bg -n <name> -w <name> "<prompt>"` (CLI 2.1.312); Codex
+via `codex exec --json -s <sandbox> -C <path>` (CLI 0.162.1), reporting started
+once the JSONL stream yields `thread.started`. Agents without an executor yet
+are refused with `no_executor` so no request is ever dropped silently."""
 import argparse
 import json
 import os
@@ -45,11 +46,12 @@ def post(url, payload=None, credential=None, timeout=15):
     return json.loads(raw) if raw else {}
 
 
-def start_claude(job, path, permission_mode, executable='claude'):
+def start_claude(job, path, settings, executable=None):
     """Background start inside the project; Claude creates the worktree itself
     with -w, and the session reports itself through its own hooks."""
     name = 'axon-' + job['id'][:8]
-    command = [executable, '--bg', '-n', name, '--permission-mode', permission_mode]
+    command = [executable or 'claude', '--bg', '-n', name,
+               '--permission-mode', settings['permission_mode']]
     if job['worktree']:
         command += ['-w', name]
     command.append(job['prompt'])
@@ -63,19 +65,70 @@ def start_claude(job, path, permission_mode, executable='claude'):
     return 'launched as %s' % name
 
 
-STARTERS = {'claude': start_claude}
+def thread_id_from(log_text):
+    """First `thread.started` thread id in a codex --json stream; None if absent."""
+    for line in log_text.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get('type') == 'thread.started' and event.get('thread_id'):
+            return str(event['thread_id'])[:64]
+    return None
+
+
+def start_codex(job, path, settings, executable=None):
+    """Headless session through the agent's own exec; it stays on this host and
+    reports itself through its hooks. Output goes to a host-local per-job log
+    (never a pipe) so an orphaned child can never block on a closed reader.
+    Sandbox is capped by config.SANDBOXES; bypass flags are never passed."""
+    sandbox = settings.get('sandbox', 'workspace-write')
+    if sandbox not in config.SANDBOXES:
+        raise StartError('bad_sandbox')
+    command = [executable or 'codex', 'exec', '--json', '-s', sandbox, '-C', str(path)]
+    if job['worktree']:
+        command.append('--worktree')
+    command.append(job['prompt'])
+    log_dir = Path(os.environ.get('AXON_ACTIVITY_HOME', Path.home() / '.local' / 'state' / 'axon')) / 'runner'
+    log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    log_path = log_dir / ('job-%s.log' % job['id'][:8])
+    try:
+        with log_path.open('a', encoding='utf-8', errors='replace') as log:
+            proc = subprocess.Popen(command, cwd=str(path), stdin=subprocess.DEVNULL,
+                                    stdout=log, stderr=subprocess.STDOUT)
+    except OSError as error:
+        raise StartError('launch_failed: %s' % type(error).__name__) from None
+    deadline = time.time() + START_TIMEOUT
+    text = ''
+    while time.time() < deadline:
+        try:
+            text = log_path.read_text(errors='replace')
+        except OSError:
+            pass
+        thread = thread_id_from(text)
+        if thread:
+            return 'thread ' + thread
+        if proc.poll() is not None:
+            tail = text.strip().replace('\n', ' ')[-180:]
+            raise StartError('launch_failed: ' + (tail or 'exit %d' % proc.returncode))
+        time.sleep(0.05)
+    proc.kill()
+    raise StartError('launch_timeout')
+
+
+STARTERS = {'claude': start_claude, 'codex': start_codex}
 
 
 def decide(job, policy):
     """Apply host policy and, when allowed, run the agent's native start path."""
-    path, mode, refusal = policy.resolve(job['agent'], job['project'])
+    path, settings, refusal = policy.resolve(job['agent'], job['project'])
     if refusal:
         return None, refusal
     starter = STARTERS.get(job['agent'])
     if starter is None:
         return None, 'no_executor'
     try:
-        return (starter(job, path, mode, policy.executable.get(job['agent'])) or 'started'), None
+        return (starter(job, path, settings, policy.executable.get(job['agent'])) or 'started'), None
     except StartError as error:
         return None, str(error)
 

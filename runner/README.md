@@ -18,6 +18,7 @@ project = "axon"                  # bare project name as the dashboard shows it
 path = "~/Projects/axon"          # host-local; paths never leave this machine
 agents = ["claude"]               # empty list = any agent with an executor
 permission_mode = "dontAsk"       # Claude only; default shown
+sandbox = "workspace-write"       # Codex only; read-only or workspace-write
 ```
 
 `[executable]` maps an agent name to a specific binary (tests and pilots);
@@ -39,8 +40,18 @@ an executor reports back. Refusal reasons are reported verbatim:
 
 Implemented executors: **claude** (`claude --bg -n <name> -w <name>
 --permission-mode <mode> "<prompt>"` in the project directory, checked against
-CLI 2.1.312; Claude creates its own worktree). Codex, Pi, OpenCode and Hermes
-land as follow-up increments and are refused with `no_executor` until then.
+CLI 2.1.312; Claude creates its own worktree) and **codex** (`codex exec
+--json -s <sandbox> -C <path> [--worktree] "<prompt>"`, checked against CLI
+0.162.1; the job reports started once the JSONL stream yields `thread.started`,
+and the session's own hooks put it on the board). Bypass flags are never
+passed, and a `sandbox` config value outside read-only/workspace-write is
+refused with `bad_sandbox`. Pi, OpenCode and Hermes land as follow-up
+increments and are refused with `no_executor` until then.
+
+The Codex child keeps running after the runner reports started; its `--json`
+output is appended to a host-local log under
+`$AXON_ACTIVITY_HOME/runner/job-<id>.log` (default `~/.local/state/axon/`)
+instead of a pipe, so an orphaned child can never block on a closed reader.
 
 ## Running
 
