@@ -15,4 +15,4 @@ axon-server = "axon_server.journal:main"
 packages = ['axon_server']
 
 [tool.setuptools.package-data]
-axon_server = ["web/*.html", "web/*.css", "web/*.js", "web/*.svg", "web/icons/*.svg", "web/icons/LICENSE"]
+axon_server = ["web/*.html", "web/*.css", "web/*.js", "web/*.svg", "web/*.png", "web/icons/*.svg", "web/icons/LICENSE"]
