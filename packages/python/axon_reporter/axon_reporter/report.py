@@ -13,6 +13,7 @@ import socket
 import sqlite3
 import subprocess
 import time
+import urllib.request
 import uuid
 import sys
 
@@ -135,6 +136,33 @@ def spool_path():
     return root / 'outbox.sqlite3'
 
 
+def server_fields(now=None):
+    """Data fields the journal server says it understands, cached for an hour; None when unknown.
+    Lets a host that updated first leave out fields an older server would reject."""
+    now = time.time() if now is None else now
+    path = spool_path()
+    try:
+        with closing(sqlite3.connect(path, timeout=0.2)) as db, db:
+            db.execute('CREATE TABLE IF NOT EXISTS server_protocol(at REAL, fields TEXT)')
+            row = db.execute('SELECT at, fields FROM server_protocol').fetchone()
+            # A failed check is retried after five minutes, a successful one after an hour.
+            if row and 0 <= now - row[0] < (3600 if row[1] else 300):
+                return set(json.loads(row[1])) or None if row[1] else None
+            fields = None
+            try:
+                url = (setting('AXON_SERVER') or 'http://%s:8510' % setting('AXON_BROKER', 'localhost')).rstrip('/')
+                with urllib.request.urlopen(url + '/health', timeout=0.5) as response:
+                    advertised = json.load(response).get('protocol', {}).get('data_fields')
+                fields = sorted(advertised) if isinstance(advertised, list) else []
+            except (OSError, ValueError):
+                pass  # unreachable: try again next hook rather than caching a guess
+            db.execute('DELETE FROM server_protocol')
+            db.execute('INSERT INTO server_protocol VALUES(?,?)', (now, '' if fields is None else json.dumps(fields)))
+            return set(fields) if fields else None
+    except sqlite3.Error:
+        return None
+
+
 def report(agent, raw_session, kind, data, flush=True):
     if not raw_session:
         raise ValueError('a stable session identity is required')
@@ -144,6 +172,9 @@ def report(agent, raw_session, kind, data, flush=True):
     if (chassis := machine_kind()):
         event['data']['machine_kind'] = chassis
     validate(event)
+    # An empty advertisement is a server from before capabilities existed: send as before.
+    if (known := server_fields()):
+        event['data'] = {k: v for k, v in event['data'].items() if k in known}
     path = spool_path()
     # Explicitly create the file privately before SQLite opens it.
     fd = os.open(path, os.O_CREAT | os.O_WRONLY, 0o600)

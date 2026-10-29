@@ -45,7 +45,8 @@ def claude_snapshot(data, now=None):
 
 
 def publish(value):
-    validate_resource(value)
+    # Only what this version understands is sent; anything else never leaves the host.
+    value=validate_resource(value)
     path=report.spool_path();fd=os.open(path,os.O_CREAT|os.O_WRONLY,0o600);os.close(fd)
     signature=json.dumps({k:v for k,v in value.items() if k!='observed_at'},sort_keys=True)
     queued=False

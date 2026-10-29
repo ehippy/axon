@@ -47,7 +47,10 @@ class ResourceTests(unittest.TestCase):
         for key,value in [('account','bad/topic'),('provider',[]),('version',True),('observed_at',self.now+1000)]:
             sample=self.sample();sample[key]=value
             with self.assertRaises(ValueError):validate_resource(sample)
+        # A field this version does not know is dropped, never stored or forwarded (#22).
         sample=self.sample();sample['credential']='private'
+        self.assertNotIn('credential',validate_resource(sample))
+        sample=self.sample();sample['credential']='x'*4000
         with self.assertRaises(ValueError):validate_resource(sample)
         sample=self.sample();sample['windows'].append(copy.deepcopy(sample['windows'][0]))
         with self.assertRaises(ValueError):validate_resource(sample)

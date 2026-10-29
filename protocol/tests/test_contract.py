@@ -113,3 +113,53 @@ class ContractTests(unittest.TestCase):
             self.assertFalse(hasattr(report, 'publish_summary'))
 
 if __name__ == '__main__': unittest.main()
+
+
+class CompatibilityTests(unittest.TestCase):
+    """Hosts and the server update separately, so either may be one release ahead (#22)."""
+    def event(self, **data):
+        return dict(version=1, source='claude-x', session='s', id='e1', at=__import__('time').time(), kind='heartbeat', data=data)
+
+    def test_newer_reporter_fields_are_kept_out_of_session_state(self):
+        event = self.event(agent='claude', step='x', future_field={'n': 1})
+        self.assertEqual(validate(event), event)
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = Journal(Path(tmp)/'journal.db', retention_days=0)
+            self.assertTrue(journal.ingest(event))
+            self.assertNotIn('future_field', journal.sessions()[0])
+            self.assertEqual(journal.events()[0]['data']['future_field'], {'n': 1})
+
+    def test_unknown_fields_stay_small_and_plainly_named(self):
+        for bad in ({'Bad-Key': 1}, {'blob': 'x'*3000}, {'n': float('nan')}):
+            with self.assertRaises(ValueError): validate(self.event(**bad))
+        with self.assertRaises(ValueError): validate(self.event(step=5))  # known fields stay strict
+
+    def test_previous_release_fixtures_still_validate(self):
+        for name in ('start', 'finished'):
+            event = json.loads((ROOT/'protocol/fixtures'/f'{name}.json').read_text())
+            self.assertEqual(validate(event), event)
+
+    def test_resources_tolerate_new_readings(self):
+        from axon_protocol.resources import validate_resource
+        quota = dict(version=1, provider='codex', account='primary', observed_at=__import__('time').time(), windows=[], plan='pro')
+        self.assertNotIn('plan', validate_resource(quota))
+        inference = dict(version=1, provider='inference', account='nf', observed_at=__import__('time').time(), online=True,
+                         metrics={'running': 1, 'new_metric': 3}, gpus=[{'id': 'g', 'name': 'GPU', 'utilization_percent': 5, 'fan_rpm': 900}], region='lab')
+        value = validate_resource(inference)
+        self.assertEqual(value['metrics'], {'running': 1}); self.assertEqual(value['gpus'][0], {'id': 'g', 'name': 'GPU', 'utilization_percent': 5})
+        self.assertNotIn('region', value)
+        with self.assertRaises(ValueError):
+            validate_resource({**inference, 'metrics': {'new_metric': 'text'*1000}})
+
+    def test_reporter_leaves_out_fields_the_server_does_not_know(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'AXON_ACTIVITY_HOME': tmp, 'HOME': tmp}, clear=True):
+            with patch.object(report, 'server_fields', return_value={'agent', 'machine', 'step'}), patch.object(report, 'drain'):
+                event = report.report('claude', 'abc', 'progress', {'step': 'x', 'tokens': {'input': 1, 'cached': 0, 'output': 1}})
+            self.assertEqual(set(event['data']), {'agent', 'machine', 'step'})
+            with patch.object(report, 'server_fields', return_value=None), patch.object(report, 'drain'):
+                event = report.report('claude', 'abc', 'progress', {'step': 'x', 'tokens': {'input': 1, 'cached': 0, 'output': 1}})
+            self.assertIn('tokens', event['data'])
+
+    def test_server_advertises_what_it_understands(self):
+        from axon_protocol import capabilities, DATA_FIELDS
+        self.assertEqual(set(capabilities()['data_fields']), DATA_FIELDS)

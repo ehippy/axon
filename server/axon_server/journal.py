@@ -21,7 +21,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import urlopen
 
-from axon_protocol import STATES, FIELDS, TERMINAL, validate
+from axon_protocol import STATES, FIELDS, TERMINAL, capabilities, known_data, validate
 from axon_protocol.resources import parse_inference_metrics, validate_resource
 
 IDENTITY = re.compile(r'[a-zA-Z0-9_.-]{1,128}')
@@ -171,7 +171,8 @@ class Journal:
             if patch.get('user_turn') is True:
                 db.execute('DELETE FROM session_archives WHERE source=? AND session=? AND archived_at<?',
                            (v['source'], v['session'], v['at']))
-            current.update({k: value for k, value in patch.items() if k != 'user_turn'})
+            # Fields from a newer reporter stay in the stored event but never reach session state.
+            current.update({k: value for k, value in known_data(patch).items() if k != 'user_turn'})
             state = {'start': 'working', 'waiting': 'waiting', 'blocked': 'blocked',
                      'finished': 'finished', 'stopped': 'stopped', 'interrupted': 'interrupted'}.get(v['kind'])
             # Late lifecycle/tool hooks cannot erase an explicitly recorded result.
@@ -409,7 +410,7 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
                     self.send_header('Content-Length', str(len(body)))
                     self.end_headers(); self.wfile.write(body); return
                 if url.path == '/health':
-                    data = {'ok': True, 'retention_days': journal.retention_days}
+                    data = {'ok': True, 'retention_days': journal.retention_days, 'protocol': capabilities()}
                 elif url.path == '/resources':
                     data = {'resources': journal.resources()}
                 elif url.path == '/resources/tokens':

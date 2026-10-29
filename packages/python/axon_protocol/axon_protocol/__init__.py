@@ -1,4 +1,5 @@
 """Axon activity protocol v1: validation without server or transport dependencies."""
+import json
 import re
 import time
 
@@ -9,6 +10,32 @@ FIELDS = {'agent': 80, 'machine': 80, 'project': 120, 'goal': 400, 'step': 400,
           'activity': 120, 'outcome': 1000, 'parent': 160, 'branch': 200, 'blocker': 400}
 TERMINAL = {'finished', 'stopped', 'interrupted'}
 MACHINE_KINDS = {'laptop', 'desktop', 'server'}
+# Data keys this version understands; FIELDS are the free-text ones among them.
+DATA_FIELDS = set(FIELDS) | {'state', 'evidence', 'lease_seconds', 'machine_kind', 'listening_until', 'user_turn', 'tokens'}
+# A newer reporter may send fields this version does not know yet. They are accepted within a
+# small budget and ignored, so hosts can update before the server without losing events.
+EXTRA_KEY = re.compile(r'[a-z][a-z0-9_]{0,39}')
+EXTRA_LIMIT = 2048
+
+
+def extras_ok(extra):
+    """Unknown fields are tolerated only as short, plainly named, JSON-safe values."""
+    if any(not isinstance(k, str) or not EXTRA_KEY.fullmatch(k) for k in extra):
+        return False
+    try:
+        return len(json.dumps(extra, allow_nan=False)) <= EXTRA_LIMIT
+    except (TypeError, ValueError):
+        return False
+
+
+def known_data(patch):
+    """The part of an event's data this version acts on."""
+    return {k: v for k, v in patch.items() if k in DATA_FIELDS}
+
+
+def capabilities():
+    """What this protocol version understands, for servers to advertise and reporters to honour."""
+    return {'version': PROTOCOL_VERSION, 'data_fields': sorted(DATA_FIELDS)}
 
 
 def validate(v):
@@ -23,7 +50,7 @@ def validate(v):
     if isinstance(at, bool) or not isinstance(at, (int, float)) or not 0 < at <= time.time() + 60:
         raise ValueError('invalid timestamp')
     patch = v.get('data', {})
-    if not isinstance(patch, dict) or set(patch) - (set(FIELDS) | {'state', 'evidence', 'lease_seconds', 'machine_kind', 'listening_until', 'user_turn', 'tokens'}):
+    if not isinstance(patch, dict) or not extras_ok({k: v for k, v in patch.items() if k not in DATA_FIELDS}):
         raise ValueError('invalid data fields')
     for key, limit in FIELDS.items():
         if key in patch and (not isinstance(patch[key], str) or len(patch[key]) > limit):

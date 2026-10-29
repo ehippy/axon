@@ -28,9 +28,11 @@ class InferenceTests(unittest.TestCase):
             for name in ('neuralforge','moar'):journal.ingest_resource(self.sample(name))
             self.assertEqual({r['account'] for r in Journal(path).resources() if r['provider']=='inference'},{'neuralforge','moar'})
     def test_invalid_payloads(self):
-        for key,value in [('account','bad/topic'),('online',1),('metrics',{'running':float('nan')}),('metrics',{'secret':1})]:
+        for key,value in [('account','bad/topic'),('online',1),('metrics',{'running':float('nan')}),('metrics',{'secret':'x'*4000})]:
             sample=self.sample();sample[key]=value
             with self.assertRaises(ValueError):validate_resource(sample)
+        sample=self.sample();sample['metrics']={'running':1,'secret':1}
+        self.assertEqual(validate_resource(sample)['metrics'],{'running':1},'an unknown reading is dropped, not stored (#22)')
     def test_offline_retains_hardware(self):
         with patch('axon_reporter.inference.urlopen',side_effect=OSError),patch('axon_reporter.inference.gpu_stats',return_value=[{'id':'0','name':'AMD','utilization_percent':0}]):
             result=collect('neuralforge','http://localhost/metrics')

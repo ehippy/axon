@@ -42,6 +42,15 @@ and updated_at. Terminal rows remain queryable; the display view includes only
 the last 24 hours. The handset recomputes stale active leases on replay and
 rejects unsupported view versions. See [fixtures](fixtures/) and contract tests.
 
+### Rolling out new fields
+
+Hosts and the server update separately, so either may be a release ahead.
+
+- A server accepts `data` keys it does not know if they are plainly named (`[a-z][a-z0-9_]{0,39}`) and together serialize to at most 2 KB of JSON. It keeps them in the stored event but never merges them into session state or the published view. Known fields stay strictly validated.
+- Resource snapshots work the same way: unknown top-level keys, metrics and GPU readings are dropped within the same budget, not stored.
+- `GET /health` advertises `protocol: {version, data_fields}`. Reporters cache it for an hour (five minutes after a failed check) and leave out fields the server does not list. A server too old to advertise gets events unfiltered, as before.
+- Reporters publish only what their own validator returns, so a field no version understands never leaves the host.
+
 ## Integration status and voice
 
 Integration status requires `state` (`idle`, `running`, `error`) and a positive
