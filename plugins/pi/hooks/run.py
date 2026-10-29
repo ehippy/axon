@@ -9,4 +9,9 @@ else:
     for project in ('axon_protocol', 'axon_reporter'):
         sys.path.insert(0, str(root.parents[1] / 'packages/python' / project))
 from axon_reporter.plugin_runtime import run_hook
-run_hook('pi')
+if sys.argv[1:] == ['inbox']:
+    from axon_reporter.native_inbox import main
+    try:main('pi')
+    except Exception:pass
+else:
+    run_hook('pi')
