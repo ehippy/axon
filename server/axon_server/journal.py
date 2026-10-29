@@ -453,17 +453,23 @@ class Journal(ProjectStore):
                 return []
             with self.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
+                now = time.time()
+                blocked = False
                 if credential is not None:
                     self.claim_machine(db, credential, source, session)
                 if wake_path:
                     consent = db.execute('SELECT enabled FROM session_wake WHERE source=? AND session=?',(source,session)).fetchone()
                     owner = db.execute('SELECT payload FROM sessions WHERE source=? AND session=?',(source,session)).fetchone()
                     archived = db.execute('SELECT 1 FROM session_archives WHERE source=? AND session=?',(source,session)).fetchone()
-                    if archived or not consent or not consent[0] or json.loads(owner[0]).get('agent') != WAKE_PATHS[wake_path]:
-                        return []
-                now = time.time()
-                rows = [dict(r) for r in db.execute('SELECT m.* FROM messages m LEFT JOIN message_claims c ON c.message_id=m.id WHERE source=? AND session=? AND delivered_at IS NULL AND (c.until_at IS NULL OR c.until_at<=?) ORDER BY at LIMIT 100',
-                                                    (source, session, now)).fetchall()]
+                    blocked = bool(archived or not consent or not consent[0] or json.loads(owner[0]).get('agent') != WAKE_PATHS[wake_path])
+                if blocked:
+                    # Consent off must not answer instantly: a waiting listener would
+                    # re-claim in a tight loop all night. Hold the wait; set_wake
+                    # notifies this condition, so delivery resumes the moment consent flips.
+                    rows = []
+                else:
+                    rows = [dict(r) for r in db.execute('SELECT m.* FROM messages m LEFT JOIN message_claims c ON c.message_id=m.id WHERE source=? AND session=? AND delivered_at IS NULL AND (c.until_at IS NULL OR c.until_at<=?) ORDER BY at LIMIT 100',
+                                                        (source, session, now)).fetchall()]
                 lease = uuid.uuid4().hex
                 for row in rows:
                     if wake_path:
