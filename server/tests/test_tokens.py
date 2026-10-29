@@ -61,7 +61,7 @@ class TranscriptTokenTests(unittest.TestCase):
     def test_hook_events_carry_counts(self):
         path = self.root/'c.jsonl'; path.write_text(claude_line('m1', 12))
         sent = []
-        with patch.object(report, 'report', side_effect=lambda agent, session, kind, patch: sent.append(patch)):
+        with patch.object(report, 'report', side_effect=lambda agent, session, kind, patch, **kwargs: sent.append(patch)):
             report.hook({'session_id': 'abc', 'hook_event_name': 'Stop', 'cwd': '/tmp/p', 'transcript_path': str(path)}, 'claude')
             report.hook({'session_id': 'abc', 'hook_event_name': 'SessionStart', 'transcript_path': str(path)}, 'claude')
         self.assertEqual(sent[0]['tokens'], {'input': 1102, 'cached': 1000, 'output': 12})

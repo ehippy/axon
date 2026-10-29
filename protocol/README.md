@@ -124,3 +124,19 @@ A newer observation replaces the previous one for that provider/account; duplica
 or older snapshots do not overwrite it. Snapshots do not create activity sessions
 or event history, and are never added across hosts. `GET /resources` includes
 unknown standing entries for Codex/Claude until their first observation.
+
+## Git project identity
+
+New reporters add `project_id` (64 lowercase hexadecimal characters), `worktree`
+(up to 120 characters), and optional `topic` (up to 400 characters). Empty project
+fields clear a previous association when a session moves outside git. Old events
+retain their string `project`; no stored history is rewritten.
+
+The reporter hashes the normalized origin URL, or sorted root commits when there
+is no origin. Worktrees use the main checkout's name. The origin, checkout paths,
+and native agent session IDs remain in the host-local registry; events contain
+only public project metadata and Axon's hashed session identity. Explicit
+`--project` labels that differ from the detected repository name become topics.
+An unborn repository without an origin has no stable project ID until its first
+commit. Adding/changing an origin changes its identity; the project merge API
+planned in #21 will handle that migration without rewriting historical events.

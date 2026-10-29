@@ -7,7 +7,8 @@ PROTOCOL_VERSION = 1
 
 STATES = {'working', 'waiting', 'blocked', 'finished', 'stopped', 'interrupted'}
 FIELDS = {'agent': 80, 'machine': 80, 'project': 120, 'goal': 400, 'step': 400,
-          'activity': 120, 'outcome': 1000, 'parent': 160, 'branch': 200, 'blocker': 400}
+          'activity': 120, 'outcome': 1000, 'parent': 160, 'branch': 200, 'blocker': 400,
+          'project_id': 64, 'worktree': 120, 'topic': 400}
 TERMINAL = {'finished', 'stopped', 'interrupted'}
 MACHINE_KINDS = {'laptop', 'desktop', 'server'}
 # Data keys this version understands; FIELDS are the free-text ones among them.
@@ -57,6 +58,8 @@ def validate(v):
             raise ValueError('invalid ' + key)
     if 'machine_kind' in patch and patch['machine_kind'] not in MACHINE_KINDS:
         raise ValueError('invalid machine_kind')
+    if patch.get('project_id') and not re.fullmatch(r'[a-f0-9]{64}', patch['project_id']):
+        raise ValueError('invalid project_id')
     tokens = patch.get('tokens')
     if 'tokens' in patch and (not isinstance(tokens, dict) or set(tokens) != {'input', 'cached', 'output'}
                               or any(type(n) is not int or not 0 <= n < 10**13 for n in tokens.values())

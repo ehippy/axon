@@ -163,10 +163,21 @@ def server_fields(now=None):
         return None
 
 
-def report(agent, raw_session, kind, data, flush=True):
+def report(agent, raw_session, kind, data, flush=True, cwd=None):
     if not raw_session:
         raise ValueError('a stable session identity is required')
     source, session, machine = identity(agent, raw_session)
+    if cwd is not None:
+        from axon_reporter.project import remember
+        try:
+            metadata = remember(cwd, agent, raw_session)
+        except (OSError, sqlite3.Error):
+            metadata = {'project': '', 'project_id': '', 'branch': '', 'worktree': ''}
+        data = dict(data)
+        label = data.pop('project', '')
+        if label and label != metadata['project']:
+            data['topic'] = label[:400]
+        data.update(metadata)
     event = dict(version=1, source=source, session=session, id=uuid.uuid4().hex,
                  at=time.time(), kind=kind, data={'agent': agent, 'machine': machine, **data})
     if (chassis := machine_kind()):
@@ -219,13 +230,12 @@ def hook(data, agent):
     if not session:
         return
     event = data.get('hook_event_name')
-    project = re.sub(r'[^\w .-]', '', Path(data.get('cwd') or '.').name)[:120]
     kind = {'SessionStart': 'waiting', 'UserPromptSubmit': 'start', 'PermissionRequest': 'waiting',
             'Stop': 'waiting', 'Interrupt': 'interrupted', 'SessionEnd': 'stopped',
             'PreToolUse': 'heartbeat', 'PostToolUse': 'heartbeat'}.get(event)
     if not kind:
         return
-    patch = {'project': project} if data.get('cwd') else {}
+    patch = {}
     if event == 'UserPromptSubmit':
         patch['user_turn'] = True
     if event == 'PermissionRequest':
@@ -245,7 +255,7 @@ def hook(data, agent):
                 patch['tokens'] = tokens
         except Exception:
             pass  # counts are a bonus; the lifecycle report still goes out
-    report(agent, session, kind, patch)
+    report(agent, session, kind, patch, cwd=data.get('cwd'))
 
 
 def main():
@@ -274,7 +284,7 @@ def main():
         p.error('pass --session or set AXON_SESSION_ID / CODEX_THREAD_ID')
     data = {key: value for key, value in vars(args).items() if key not in ('agent', 'session', 'command') and value is not None}
     try:
-        event = report(args.agent, args.session, args.command, data)
+        event = report(args.agent, args.session, args.command, data, cwd=os.getcwd())
     except ValueError as e:
         p.error(str(e))
     print(json.dumps({'queued': True, 'source': event['source'], 'session': event['session'], 'event': event['id']}))

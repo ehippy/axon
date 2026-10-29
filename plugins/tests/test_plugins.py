@@ -469,7 +469,8 @@ class SyncTests(unittest.TestCase):
             (self.home/('.local' if d.startswith('local') else f'.{d.split("/")[0]}')/d.split('/')[1]).mkdir(parents=True,exist_ok=True)
         fake=self.home/'.opencode/bin/opencode'
         fake.write_text('#!/bin/sh\n'); fake.chmod(0o755)
-        self.env={'AXON_ACTIVITY_HOME':str(self.root/'state'),'PATH':str(self.home/'.opencode/bin')}
+        self.env={'AXON_ACTIVITY_HOME':str(self.root/'state'),'PATH':str(self.home/'.opencode/bin'),
+                  'AXON_CONFIG_FILE':str(self.root/'reporter-env'),'AXON_SERVER':'http://127.0.0.1:9'}
     def tearDown(self):
         self.tmp.cleanup()
     def test_sync_installs_detected_agents_stamps_and_skips(self):
@@ -519,7 +520,7 @@ class SyncTests(unittest.TestCase):
 
     def test_sync_cli_skip_path_exits_zero(self):
         # main() must tolerate the 'skipped' report shape (no failure map).
-        env={**os.environ,'PATH':str(self.home/'.opencode/bin'),'AXON_ACTIVITY_HOME':str(self.root/'state')}
+        env={**os.environ,**self.env}
         run=lambda: subprocess.run([sys.executable,str(ROOT/'plugins/tools/manage.py'),'sync','--apply','--home',str(self.home)],
                                    capture_output=True,text=True,env=env)
         first=run(); self.assertEqual(first.returncode,0,first.stderr)

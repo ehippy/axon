@@ -1,0 +1,81 @@
+"""Axon activity protocol v1: validation without server or transport dependencies."""
+import json
+import re
+import time
+
+PROTOCOL_VERSION = 1
+
+STATES = {'working', 'waiting', 'blocked', 'finished', 'stopped', 'interrupted'}
+FIELDS = {'agent': 80, 'machine': 80, 'project': 120, 'goal': 400, 'step': 400,
+          'activity': 120, 'outcome': 1000, 'parent': 160, 'branch': 200, 'blocker': 400}
+TERMINAL = {'finished', 'stopped', 'interrupted'}
+MACHINE_KINDS = {'laptop', 'desktop', 'server'}
+# Data keys this version understands; FIELDS are the free-text ones among them.
+DATA_FIELDS = set(FIELDS) | {'state', 'evidence', 'lease_seconds', 'machine_kind', 'listening_until', 'user_turn', 'tokens'}
+# A newer reporter may send fields this version does not know yet. They are accepted within a
+# small budget and ignored, so hosts can update before the server without losing events.
+EXTRA_KEY = re.compile(r'[a-z][a-z0-9_]{0,39}')
+EXTRA_LIMIT = 2048
+
+
+def extras_ok(extra):
+    """Unknown fields are tolerated only as short, plainly named, JSON-safe values."""
+    if any(not isinstance(k, str) or not EXTRA_KEY.fullmatch(k) for k in extra):
+        return False
+    try:
+        return len(json.dumps(extra, allow_nan=False)) <= EXTRA_LIMIT
+    except (TypeError, ValueError):
+        return False
+
+
+def known_data(patch):
+    """The part of an event's data this version acts on."""
+    return {k: v for k, v in patch.items() if k in DATA_FIELDS}
+
+
+def capabilities():
+    """What this protocol version understands, for servers to advertise and reporters to honour."""
+    return {'version': PROTOCOL_VERSION, 'data_fields': sorted(DATA_FIELDS)}
+
+
+def validate(v):
+    if not isinstance(v, dict) or v.get('version') != 1:
+        raise ValueError('version must be 1')
+    for key in ('source', 'session', 'id'):
+        if not isinstance(v.get(key), str) or not re.fullmatch(r'[a-zA-Z0-9_.-]{1,128}', v[key]):
+            raise ValueError('invalid ' + key)
+    if v.get('kind') not in {'start', 'progress', 'heartbeat', 'waiting', 'blocked', 'finished', 'stopped', 'interrupted'}:
+        raise ValueError('invalid kind')
+    at = v.get('at')
+    if isinstance(at, bool) or not isinstance(at, (int, float)) or not 0 < at <= time.time() + 60:
+        raise ValueError('invalid timestamp')
+    patch = v.get('data', {})
+    if not isinstance(patch, dict) or not extras_ok({k: v for k, v in patch.items() if k not in DATA_FIELDS}):
+        raise ValueError('invalid data fields')
+    for key, limit in FIELDS.items():
+        if key in patch and (not isinstance(patch[key], str) or len(patch[key]) > limit):
+            raise ValueError('invalid ' + key)
+    if 'machine_kind' in patch and patch['machine_kind'] not in MACHINE_KINDS:
+        raise ValueError('invalid machine_kind')
+    tokens = patch.get('tokens')
+    if 'tokens' in patch and (not isinstance(tokens, dict) or set(tokens) != {'input', 'cached', 'output'}
+                              or any(type(n) is not int or not 0 <= n < 10**13 for n in tokens.values())
+                              or tokens['cached'] > tokens['input']):
+        raise ValueError('invalid tokens')
+    if 'user_turn' in patch and type(patch['user_turn']) is not bool:
+        raise ValueError('invalid user_turn')
+    listening = patch.get('listening_until', 0)
+    if isinstance(listening, bool) or not isinstance(listening, (int, float)) or not 0 <= listening <= time.time() + 86400:
+        raise ValueError('invalid listening_until')
+    if 'state' in patch and patch['state'] not in STATES:
+        raise ValueError('invalid state')
+    evidence = patch.get('evidence', [])
+    if not isinstance(evidence, list) or len(evidence) > 12 or any(not isinstance(x, str) or not x.strip() or len(x) > 500 for x in evidence):
+        raise ValueError('invalid evidence')
+    lease = patch.get('lease_seconds', 900)
+    if type(lease) is not int or not 30 <= lease <= 3600:
+        raise ValueError('invalid lease')
+    if v['kind']=='finished' or patch.get('state')=='finished':
+        if not patch.get('outcome','').strip() or not evidence:
+            raise ValueError('finished requires outcome and evidence')
+    return v

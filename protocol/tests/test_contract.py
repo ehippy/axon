@@ -121,6 +121,19 @@ class CompatibilityTests(unittest.TestCase):
     def event(self, **data):
         return dict(version=1, source='claude-x', session='s', id='e1', at=__import__('time').time(), kind='heartbeat', data=data)
 
+    def test_current_events_against_frozen_previous_release_validator(self):
+        import importlib.util
+        package=ROOT/'protocol/compat/previous'
+        spec=importlib.util.spec_from_file_location('axon_previous_protocol',package/'__init__.py',
+                                                   submodule_search_locations=[str(package)])
+        previous=importlib.util.module_from_spec(spec);spec.loader.exec_module(previous)
+        event=self.event(agent='codex',project='example',project_id='a'*64,worktree='parallel',topic='Work')
+        self.assertEqual(previous.validate(event),validate(event))
+        self.assertNotIn('project_id',previous.DATA_FIELDS)
+        for name in ('start','finished'):
+            old=json.loads((ROOT/'protocol/fixtures'/f'{name}.json').read_text())
+            self.assertEqual(validate(previous.validate(old)),old)
+
     def test_newer_reporter_fields_are_kept_out_of_session_state(self):
         event = self.event(agent='claude', step='x', future_field={'n': 1})
         self.assertEqual(validate(event), event)

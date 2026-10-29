@@ -84,7 +84,6 @@ def lifecycle(agent, data):
         if agent in INBOX_AGENTS:
             patch['listening_until'] = 0
         if safe.get('cwd'):
-            patch['project'] = Path(safe['cwd']).name[:120]
             current_branch = branch(safe['cwd'])
             if current_branch:
                 patch['branch'] = current_branch
@@ -92,7 +91,7 @@ def lifecycle(agent, data):
         if parent:
             source, hashed, _ = report.identity(agent,str(parent))
             patch['parent'] = f'{source}/{hashed}'
-        report.report(agent,str(session),'progress',patch)
+        report.report(agent,str(session),'progress',patch,cwd=safe.get('cwd'))
     else:
         report.hook(safe,agent)
 

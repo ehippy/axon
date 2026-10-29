@@ -122,7 +122,8 @@ class ReporterTests(unittest.TestCase):
             args = emit.call_args.args
             self.assertEqual(args[2], 'heartbeat')
             self.assertNotIn('SECRET', json.dumps(args))
-            self.assertEqual(args[3]['project'], 'glass')
+            self.assertNotIn('project', args[3])  # git identity is resolved by the reporter
+            self.assertEqual(emit.call_args.kwargs['cwd'], '/projects/glass')
             self.assertEqual(args[3]['state'], 'working')
 
     def test_outbox_survives_failure_and_retries_same_event_id(self):
