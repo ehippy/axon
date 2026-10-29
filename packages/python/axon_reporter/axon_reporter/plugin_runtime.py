@@ -22,6 +22,10 @@ from .credentials import read_credential
 # and pre_verify; input queued while idle arrives when the session next runs.
 INBOX_AGENTS = {'claude', 'codex', 'hermes'}
 LISTEN_AGENTS = {'claude'}
+# Codex cannot rewake from a hook, but a durable per-thread queue wakes the
+# thread that has it open (or the next client that loads it). The watcher is a
+# detached child of the Stop hook and hands input to `codex queue`.
+QUEUE_AGENTS = {'codex': 'codex-queue'}
 # Stays below the bundled Stop listener's hook timeout.
 LISTEN_CAP = 14000
 
@@ -225,6 +229,94 @@ def listen(agent):
         return 0
 
 
+def queue_delivery(agent, session, messages):
+    """Hand dashboard input to the agent's own durable queue; True when accepted."""
+    path = QUEUE_AGENTS.get(agent)
+    if not path:
+        return False
+    import shutil
+    binary = report.setting('AXON_CODEX_BIN') or shutil.which('codex') or str(Path.home()/'.local/bin/codex')
+    for message in messages:
+        try:
+            done = subprocess.run([binary, 'queue', '--thread', str(session),
+                                   '--message', message['text']], capture_output=True, timeout=15)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        if done.returncode != 0:
+            return False
+    return True
+
+
+def queue_listen(agent):
+    """Detached idle watcher: wake claims for this session go to the agent's queue."""
+    try:
+        data = json.load(sys.stdin)
+        session = data.get('session_id') if isinstance(data, dict) else None
+        path = QUEUE_AGENTS.get(agent)
+        seconds = min(LISTEN_CAP, max(0, int(report.setting('AXON_LISTEN_SECONDS', '10800'))))
+        if session and agent in QUEUE_AGENTS and not wake_enabled(agent):
+            cancel_listener(agent, session)
+        if not session or not path or not seconds or not wake_enabled(agent):
+            return 0
+        poll = min(50, max(1, int(report.setting('AXON_LISTEN_POLL', '50'))))
+        token = arm_listener(agent, session)
+        deadline, renewed = time.time() + seconds, 0
+        while time.time() < deadline and armed(agent, session, token):
+            if time.time() - renewed >= 1800:
+                renewed = time.time()
+                try:
+                    report.report(agent, str(session), 'heartbeat', {'queue_watching_until': round(deadline), 'lease_seconds': 3600})
+                except Exception:
+                    pass
+            try:
+                messages = claim(agent, session, wait=min(poll, max(1, deadline - time.time())), wake_path=path)
+            except (OSError, ValueError):
+                time.sleep(15)
+                continue
+            if not messages:
+                continue
+            from .native_inbox import accepted_ids
+            known = accepted_ids(agent, session, [m['id'] for m in messages])
+            already = [m for m in messages if m['id'] in known]
+            if already:
+                acknowledge_wake(agent, session, already)
+            messages = [m for m in messages if m['id'] not in known]
+            if not messages:
+                continue
+            # Accepted input becomes Codex's responsibility (its queue is durable
+            # across clients); a failed call releases the lease for a later retry.
+            accepted = queue_delivery(agent, session, messages)
+            if accepted:
+                accepted_ids(agent, session, [m['id'] for m in messages], remember=True)
+            try:
+                acknowledge_wake(agent, session, messages, accepted)
+            except (OSError, ValueError):
+                pass
+            if not accepted:
+                time.sleep(5)
+        return 0
+    except Exception:
+        return 0
+
+
+def spawn_queue_listener(agent, session):
+    """Detach one watcher per session from the Stop hook; earlier watchers notice
+    the new registration or a cancel and exit on their own poll."""
+    try:
+        here = Path(__file__).resolve()
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join(
+            str(p) for p in (here.parents[1], here.parents[2] / 'axon_protocol') if p.is_dir()))
+        child = subprocess.Popen([sys.executable, '-m', 'axon_reporter.plugin_runtime',
+                                  'queue-listen', agent], stdin=subprocess.PIPE,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True, env=env)
+        if child.stdin is not None:
+            child.stdin.write(json.dumps({'session_id': session}).encode())
+            child.stdin.close()
+    except OSError:
+        pass
+
+
 def run_hook(agent):
     try:
         data = json.load(sys.stdin)
@@ -251,7 +343,7 @@ def run_hook(agent):
                 if messages:
                     notes.append(delivery(messages))
             # Codex keeps going when Stop blocks, taking the reason as its next prompt, so input
-            # that arrived after the last tool call is answered now instead of waiting for the user.
+            # that arrived after the last tool call is answered now instead of waiting for a user.
             if agent == 'codex' and event == 'Stop':
                 try:
                     messages = claim(agent,session,timeout=.5)
@@ -260,7 +352,18 @@ def run_hook(agent):
                 if messages:
                     print(json.dumps({'decision':'block','reason':delivery(messages)}))
                     return
+                # The turn is over and nothing pending: watch for dashboard input while
+                # the thread idles, and hand whatever arrives to Codex's own queue.
+                if wake_enabled(agent):
+                    spawn_queue_listener(agent, session)
+                    report.report(agent, str(session), 'heartbeat', {'queue_watching': True})
         if notes:
             print(json.dumps({'hookSpecificOutput':{'hookEventName':event,'additionalContext':'\n\n'.join(notes)}}))
     except Exception:
         pass  # no decisions, stderr, or nonzero exits from a reporting hook
+
+
+if __name__ == '__main__':
+    if sys.argv[1:2] == ['queue-listen'] and len(sys.argv) == 3:
+        sys.exit(queue_listen(sys.argv[2]))
+    sys.exit(2)
