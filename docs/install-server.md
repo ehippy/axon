@@ -136,7 +136,7 @@ session tiles stack vertically inside each host; narrow screens stack hosts.
 
 ## Session input
 
-The session detail view can send messages into running Claude Code sessions.
+The session detail view can send messages into running Claude Code, Codex and Hermes sessions.
 Input is disabled until the server has a token, because a message makes an agent
 act with that user's permissions:
 
@@ -160,7 +160,14 @@ Delivery depends on the session's state:
   locally ends that listen window. The board shows *Listening* with the time left.
 - **Otherwise** the message stays queued until the session next runs a hook.
 
-Codex and Hermes sessions cannot receive input yet.
+Codex gets the same in-turn delivery through its `PostToolUse` and `UserPromptSubmit`
+hooks. Its hooks cannot start a turn, so there is no idle listener. Instead, its Stop
+hook claims anything that arrived after the last tool call and returns
+`decision: "block"`, so Codex answers it before the turn ends. A message sent to an
+idle Codex thread waits for its next turn, and the board says so.
+
+Hermes takes input in-process (before each model call and after tool results) and has
+no idle listener either; input queued while it is idle arrives when it next runs.
 
 ## Archive sessions
 

@@ -13,10 +13,12 @@ import uuid
 
 from . import report
 
-# Agents whose hooks can take dashboard input (Claude Code: context injection + asyncRewake;
-# Hermes: in-process injection via pre_llm_call, transform_tool_result and pre_verify — no idle
-# listener, so input queued while idle arrives when the session next runs).
-INBOX_AGENTS = {'claude', 'hermes'}
+# Agents whose hooks can take dashboard input as in-turn context. Claude also has an idle
+# listener (asyncRewake). Codex cannot wake an idle thread, so its Stop hook takes input that
+# arrived late in the turn. Hermes injects in-process via pre_llm_call, transform_tool_result
+# and pre_verify; input queued while idle arrives when the session next runs.
+INBOX_AGENTS = {'claude', 'codex', 'hermes'}
+LISTEN_AGENTS = {'claude'}
 # Stays below the bundled Stop listener's hook timeout.
 LISTEN_CAP = 14000
 
@@ -163,7 +165,7 @@ def listen(agent):
         data = json.load(sys.stdin)
         session = data.get('session_id') if isinstance(data, dict) else None
         seconds = min(LISTEN_CAP, max(0, int(report.setting('AXON_LISTEN_SECONDS', '10800'))))
-        if not session or agent not in INBOX_AGENTS or not seconds:
+        if not session or agent not in LISTEN_AGENTS or not seconds:
             return 0
         poll = min(50, max(1, int(report.setting('AXON_LISTEN_POLL', '50'))))
         token = arm_listener(agent, session)
@@ -214,6 +216,16 @@ def run_hook(agent):
                     messages = []
                 if messages:
                     notes.append(delivery(messages))
+            # Codex keeps going when Stop blocks, taking the reason as its next prompt, so input
+            # that arrived after the last tool call is answered now instead of waiting for the user.
+            if agent == 'codex' and event == 'Stop':
+                try:
+                    messages = claim(agent,session,timeout=.5)
+                except Exception:
+                    messages = []
+                if messages:
+                    print(json.dumps({'decision':'block','reason':delivery(messages)}))
+                    return
         if notes:
             print(json.dumps({'hookSpecificOutput':{'hookEventName':event,'additionalContext':'\n\n'.join(notes)}}))
     except Exception:

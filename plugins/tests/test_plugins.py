@@ -373,6 +373,33 @@ class InboxTests(unittest.TestCase):
         self.assertIn('Use the staging broker',output['additionalContext'])
         self.assertEqual(self.hook(self.package,'UserPromptSubmit').stdout.count('Use the staging broker'),0)
 
+    def codex_address(self,session='c'):
+        with patch.dict(os.environ,{k:v for k,v in self.env.items() if k.startswith('AXON_')}):
+            source,key,_=report.identity('codex',session)
+        self.journal.ingest(dict(version=1,source=source,session=key,id='s-'+session,at=time.time(),kind='start',data={'agent':'codex'}))
+        return source,key
+
+    def test_codex_takes_input_in_turn_and_answers_late_input_at_turn_end(self):
+        codex=manage.build('codex',self.root/'codex')
+        source,key=self.codex_address()
+        self.send(source,key,'Check the staging logs too')
+        output=json.loads(self.hook(codex,'PostToolUse',session='c',tool_name='exec').stdout)['hookSpecificOutput']
+        self.assertIn('Check the staging logs too',output['additionalContext'])
+        self.assertEqual(self.hook(codex,'Stop',session='c').stdout,'','nothing left to answer, so the turn ends')
+        self.send(source,key,'And bump the version')
+        stop=json.loads(self.hook(codex,'Stop',session='c').stdout)
+        self.assertEqual(stop['decision'],'block')
+        self.assertIn('And bump the version',stop['reason'])
+        self.assertEqual(self.hook(codex,'Stop',session='c',stop_hook_active=True).stdout,'','a claimed message is answered once')
+
+    def test_codex_has_no_idle_listener(self):
+        codex=manage.build('codex',self.root/'codex')
+        self.codex_address()
+        result=subprocess.run([sys.executable,str(codex/'hooks/run.py')],input=json.dumps({'session_id':'c','hook_event_name':'Stop'}),
+                              text=True,capture_output=True,env=self.env,timeout=10)
+        self.assertEqual((result.returncode,result.stderr),(0,''))
+        self.assertFalse(any(e['data'].get('listening_until',0)>time.time() for e in self.events()))
+
     def test_installer_keeps_listener_argument_and_async_wake(self):
         stop=manage.merged_config({},'claude',self.package)['hooks']['Stop'][0]['hooks']
         listener=[h for h in stop if h.get('asyncRewake')]

@@ -239,7 +239,7 @@ function agentClass(row) { return ['codex','claude','hermes','pi','opencode'].in
 function agentName(row) { return ({codex:'Codex',claude:'Claude',hermes:'Hermes',pi:'Pi',opencode:'OpenCode'})[row.agent] || row.agent || 'Agent'; }
 function hostName(row) { return row.machine || 'Host not reported'; }
 const HOST_KINDS = ['laptop', 'desktop', 'server'];
-const INPUT_AGENTS = ['claude','hermes'];
+const INPUT_AGENTS = ['claude','codex','hermes'];
 const TOKEN_KEY = 'axon-input-token';
 function storedToken() { try { return (localStorage.getItem(TOKEN_KEY) || '').replace(/\s+/g,''); } catch { return ''; } }
 function storeToken(value) { try { value ? localStorage.setItem(TOKEN_KEY,value) : localStorage.removeItem(TOKEN_KEY); } catch {} }
@@ -374,6 +374,8 @@ function inputNote(row, enabled=true) {
   return !enabled ? 'Session input is disabled on this server.'
     : listeningLeft(row) ? 'Idle and listening: a message wakes it immediately.'
     : row.effective_state==='working' ? 'Working: the message arrives at its next tool call.'
+    // Codex hooks cannot start a turn, so an idle Codex thread reads input when it next runs.
+    : row.agent==='codex' && ACTIVE.includes(row.effective_state) ? 'Idle: Codex reads this when its next turn starts.'
     : ACTIVE.includes(row.effective_state) ? 'Not listening: the message waits until the session next runs.'
     : 'Session has ended or lost contact: the message waits if it resumes.';
 }
