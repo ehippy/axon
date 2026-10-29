@@ -186,7 +186,7 @@ class RunnerTests(unittest.TestCase):
         self.assertIsNone(result)
 
     def git_init(self,path):
-        for cmd in (['git','init','-q','-b','main'],['git','commit','-q','--allow-empty','-m','seed']):
+        for cmd in (['git','init','-q','-b','main'],['git','-c','user.name=axon','-c','user.email=axon@example.invalid','commit','-q','--allow-empty','-m','seed']):
             subprocess.run(cmd,cwd=path,check=True,capture_output=True)
 
     def test_allowed_pi_starts_with_verified_flags_and_reports_session(self):
