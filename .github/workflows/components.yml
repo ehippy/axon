@@ -1,7 +1,15 @@
 name: Components
+# Server, protocol, package and plugin checks only. The handset has its own path in
+# handset.yml, so Rust builds never hold up a server deploy.
 on:
   push:
+    paths-ignore:
+      - 'handset/**'
+      - '.github/workflows/handset.yml'
   pull_request:
+    paths-ignore:
+      - 'handset/**'
+      - '.github/workflows/handset.yml'
   workflow_dispatch:
 permissions:
   contents: read
@@ -19,14 +27,9 @@ jobs:
       - name: Install test broker
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y mosquitto mosquitto-clients
-      - name: Check portable handset
-        run: |
-          cargo fmt --check --manifest-path handset/native/Cargo.toml
-          cargo test --locked --manifest-path handset/native/Cargo.toml
-          cargo build --locked --example project --manifest-path handset/native/Cargo.toml
-      - name: Check Python components and broker-to-handset path
+      - name: Check Python components and broker path
         env:
-          AXON_HANDSET_PROJECTOR: ${{ github.workspace }}/handset/native/target/debug/examples/project
+          # The Rust projector is exercised by handset.yml; the broker test skips it when unset.
           PYTHONDONTWRITEBYTECODE: '1'
         run: python tools/test.py
       - name: Check source privacy patterns
@@ -48,21 +51,3 @@ jobs:
         with:
           name: python-and-plugin-artifacts
           path: dist/release
-  linux-handset:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Install cross toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-          rustup target add aarch64-unknown-linux-gnu
-      - name: Build Linux ARM64 handset
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
-        run: cargo build --locked --release --target aarch64-unknown-linux-gnu --features hardware --manifest-path handset/native/Cargo.toml
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: handset-linux-aarch64
-          path: handset/native/target/aarch64-unknown-linux-gnu/release/axon-native
