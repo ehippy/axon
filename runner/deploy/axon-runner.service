@@ -1,13 +1,16 @@
 [Unit]
-Description=Axon host job runner (pulls dashboard start jobs for this machine)
+Description=Axon host runner (dashboard resumes and start jobs)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-# Point at the installed axon-runner; ships disabled with no allowlist.
-ExecStart=/usr/local/bin/axon-runner
-Restart=on-failure
+ExecStart={runner}
+# The agents' CLIs are found on the PATH they were installed on (often ~/.local/bin).
+Environment=PATH={path}
+# Resumed agents run in this unit's cgroup; a restart of the runner must not kill them.
+KillMode=process
+Restart=always
 RestartSec=15
 UMask=0077
 NoNewPrivileges=true

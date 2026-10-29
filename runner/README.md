@@ -114,6 +114,9 @@ file), copy it to `~/Library/LaunchAgents/`, and
 `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.axon.runner.plist`.
 `uv tool install ./runner` installs `axon-runner` to `~/.local/bin`.
 
-User service: copy `deploy/axon-runner.service` (after `pipx install ./runner`
-or equivalent) and `systemctl --user enable --now axon-runner.service` —
-enabling it is the explicit opt-in; nothing installs it automatically.
+Linux: fill in `deploy/axon-runner.service` the same way (`{runner}` and
+`{path}`; output goes to the journal, `journalctl --user -u axon-runner`), copy it
+to `~/.config/systemd/user/`, and `systemctl --user enable --now axon-runner.service`.
+On a headless host, `loginctl enable-linger $USER` keeps it running without a login.
+`KillMode=process` lets resumed agents outlive a runner restart. Enabling either
+service is the explicit opt-in; nothing installs it automatically.
