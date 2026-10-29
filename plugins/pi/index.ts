@@ -15,6 +15,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createInterface } from "node:readline";
 
 const RUNNER = process.env.AXON_PYTHON ?? "python3";
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "hooks", "run.py");
@@ -69,6 +70,55 @@ function contextOf(stdout: string): string {
 export default function axonActivity(pi: ExtensionAPI) {
   // Constant per session, so the forced system prompt stays cache-warm.
   let activityContext = "";
+  let inbox: ReturnType<typeof spawn> | undefined;
+  let generation = 0;
+
+  const stopInbox = () => {
+    generation++;
+    const child = inbox;
+    inbox = undefined;
+    if (child) {
+      child.stdin?.end();
+      child.kill();
+    }
+  };
+  process.once("exit", stopInbox);
+
+  const startInbox = (payload: Record<string, unknown>) => {
+    if (inbox || !payload.session_id) return;
+    try {
+      const child = spawn(RUNNER, [SCRIPT, "inbox"], { stdio: ["pipe", "pipe", "ignore"] });
+      inbox = child;
+      const epoch = generation;
+      const lines = createInterface({ input: child.stdout! });
+      child.stdin?.on("error", () => {});
+      child.on("error", () => { if (inbox === child) inbox = undefined; });
+      child.on("close", () => { lines.close(); if (inbox === child) inbox = undefined; });
+      let delivering = Promise.resolve();
+      lines.on("line", (line) => {
+        delivering = delivering.then(async () => {
+          if (inbox !== child || epoch !== generation) return;
+          let accepted = false;
+          try {
+            const batch = JSON.parse(line);
+            if (!Array.isArray(batch.messages) || !batch.messages.length) return;
+            const text = batch.messages.map((message: any) => String(message.text)).join("\n\n");
+            // followUp waits for the current work to finish and also starts an idle turn.
+            await pi.sendUserMessage("The user sent this from the Axon dashboard:\n" + text, { deliverAs: "followUp" });
+            accepted = true;
+          } catch {
+            // Releasing a failed native call preserves the message for retry.
+          }
+          if (inbox === child && epoch === generation && child.stdin?.writable) {
+            child.stdin.write(JSON.stringify({ accepted }) + "\n");
+          }
+        }).catch(() => {});
+      });
+      child.stdin?.write(JSON.stringify(payload) + "\n");
+    } catch {
+      inbox = undefined;
+    }
+  };
 
   // Read identifiers synchronously; the session may be gone when the child runs.
   const base = (ctx: any): Record<string, unknown> => {
@@ -82,9 +132,13 @@ export default function axonActivity(pi: ExtensionAPI) {
   };
 
   pi.on("session_start", (_event, ctx) => {
-    void send({ ...base(ctx), hook_event_name: "SessionStart" }, true).then((out) => {
+    stopInbox();
+    const epoch = generation, payload = base(ctx);
+    void send({ ...payload, hook_event_name: "SessionStart" }, true).then((out) => {
+      if (epoch !== generation) return;
       const text = contextOf(out);
       if (text) activityContext = text;
+      startInbox(payload);
     });
   });
 
@@ -93,6 +147,7 @@ export default function axonActivity(pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event: any, ctx) => {
     if (event?.messageType !== "user") return undefined;
     const out = await send({ ...base(ctx), hook_event_name: "UserPromptSubmit" }, true);
+    startInbox(base(ctx));
     const text = contextOf(out) || activityContext;
     if (!text) return undefined;
     activityContext = text;
@@ -120,6 +175,8 @@ export default function axonActivity(pi: ExtensionAPI) {
 
   // A reload re-emits session_start for the same session; keep its history.
   pi.on("session_shutdown", (event: any, ctx) => {
+    process.off("exit", stopInbox);
+    stopInbox();
     if (event?.reason !== "reload") void send({ ...base(ctx), hook_event_name: "SessionEnd" }, false);
   });
 }

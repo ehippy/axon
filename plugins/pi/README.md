@@ -32,3 +32,17 @@ Pitfall: launching Pi from a terminal that already exports `AXON_SOURCE`
 (for example a Hermes or Claude Code session with Axon reporting) makes the
 Pi session report under the parent agent source. Start Pi from a clean shell,
 or unset `AXON_SOURCE` for it, so it falls back to `pi-<installation-id>`.
+
+## Dashboard wake (opt-in)
+
+Set `AXON_WAKE=pi` (or add `pi` to its comma-separated list) in the reporter's
+host settings, then restart/reload Pi. Also enable **Allow dashboard messages to
+wake this session** in the session's dashboard detail, using the input token.
+Both switches default off. The host must have its claim credential from sync.
+
+While the session is open, one private bridge process long-polls the authenticated
+inbox. It calls Pi's `sendUserMessage` with `deliverAs: followUp`: an idle session
+starts a turn, and a busy one finishes its current work before following up.
+The bridge acknowledges only accepted native calls; failures leave messages
+queued. Reload, session replacement, and quit stop the bridge and its request.
+No keystrokes or additional agent process are used to deliver the message.
