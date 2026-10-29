@@ -10,6 +10,7 @@ import logging
 import re
 import os
 import select
+import secrets
 import signal
 import sqlite3
 import subprocess
@@ -80,6 +81,12 @@ class Journal:
                 id TEXT PRIMARY KEY, source TEXT, session TEXT, at REAL, text TEXT,
                 delivered_at REAL);
               CREATE INDEX IF NOT EXISTS message_session ON messages(source, session, at);
+              CREATE TABLE IF NOT EXISTS host_credentials (
+                digest TEXT PRIMARY KEY, machine TEXT NOT NULL, created_at REAL NOT NULL,
+                revoked_at REAL);
+              CREATE TABLE IF NOT EXISTS session_wake (
+                source TEXT, session TEXT, enabled INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(source, session));
             ''')
 
 
@@ -190,9 +197,11 @@ class Journal:
         filters = filters or {}
         with self.connect() as db:
             rows = db.execute('SELECT s.payload, a.archived_at FROM sessions s LEFT JOIN session_archives a ON s.source=a.source AND s.session=a.session ORDER BY s.at DESC').fetchall()
+            wake = {(r['source'], r['session']): bool(r['enabled']) for r in db.execute('SELECT * FROM session_wake')}
         result = []
         for row in rows:
             item = json.loads(row[0])
+            item['wake'] = wake.get((item['source'], item['session']), False)
             if row['archived_at'] is not None:
                 item['archived_at'] = row['archived_at']
             item['fresh'] = time.time() - item['updated_at'] <= item['lease_seconds']
@@ -340,7 +349,40 @@ class Journal:
             rows = db.execute('SELECT * FROM messages WHERE source=? AND session=? ORDER BY at', (source, session)).fetchall()
         return [dict(r) for r in rows]
 
-    def claim(self, source, session, wait=0):
+    def mint_host_credential(self, machine):
+        if not isinstance(machine, str) or not re.fullmatch(r'[a-zA-Z0-9_.-]{1,80}', machine):
+            raise ValueError('invalid machine')
+        credential = secrets.token_urlsafe(32)
+        digest = hashlib.sha256(credential.encode()).hexdigest()
+        with self.connect() as db:
+            db.execute('INSERT INTO host_credentials VALUES(?,?,?,NULL)', (digest, machine, time.time()))
+        return {'machine': machine, 'credential': credential, 'credential_id': digest}
+
+    def revoke_host_credential(self, digest):
+        with self.connect() as db:
+            db.execute('UPDATE host_credentials SET revoked_at=? WHERE digest=?', (time.time(), digest))
+        with self.inbox:
+            self.inbox.notify_all()
+
+    def claim_machine(self, db, credential, source, session):
+        digest = hashlib.sha256(credential.encode()).hexdigest()
+        host = db.execute('SELECT machine FROM host_credentials WHERE digest=? AND revoked_at IS NULL', (digest,)).fetchone()
+        row = db.execute('SELECT payload FROM sessions WHERE source=? AND session=?', (source, session)).fetchone()
+        if not host or not row or json.loads(row['payload']).get('machine') != host['machine']:
+            raise PermissionError('invalid host credential or session ownership')
+        return host['machine']
+
+    def set_wake(self, source, session, enabled):
+        if type(enabled) is not bool:
+            raise ValueError('wake must be a boolean')
+        with self.connect() as db:
+            if not db.execute('SELECT 1 FROM sessions WHERE source=? AND session=?', (source, session)).fetchone():
+                raise LookupError('unknown session')
+            db.execute('INSERT OR REPLACE INTO session_wake VALUES(?,?,?)', (source, session, enabled))
+        self.changed()
+        return {'wake': enabled}
+
+    def claim(self, source, session, wait=0, credential=None):
         """Atomically hand pending messages to the session's hook, waiting up to `wait` seconds."""
         if not (IDENTITY.fullmatch(source) and IDENTITY.fullmatch(session)):
             raise ValueError('invalid session identity')
@@ -348,6 +390,8 @@ class Journal:
         while True:
             with self.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
+                if credential is not None:
+                    self.claim_machine(db, credential, source, session)
                 rows = [dict(r) for r in db.execute('SELECT * FROM messages WHERE source=? AND session=? AND delivered_at IS NULL ORDER BY at',
                                                     (source, session)).fetchall()]
                 now = time.time()
@@ -360,7 +404,8 @@ class Journal:
             if rows or remaining <= 0:
                 return rows
             with self.inbox:
-                self.inbox.wait(remaining)
+                # Recheck ownership and revocation even if a notification raced this wait.
+                self.inbox.wait(min(remaining, 1))
 
 
 def update_status(root):
@@ -391,7 +436,7 @@ def request_update(root):
     return update_status(root)
 
 
-def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_url=None, inference=()):
+def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_url=None, inference=(), allow_legacy_claims=True):
     revision = server_revision()
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -410,7 +455,8 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
                     self.send_header('Content-Length', str(len(body)))
                     self.end_headers(); self.wfile.write(body); return
                 if url.path == '/health':
-                    data = {'ok': True, 'retention_days': journal.retention_days, 'protocol': capabilities()}
+                    data = {'ok': True, 'retention_days': journal.retention_days, 'protocol': capabilities(),
+                            'host_claims': {'enrollment': True, 'required': not allow_legacy_claims}}
                 elif url.path == '/resources':
                     data = {'resources': journal.resources()}
                 elif url.path == '/resources/tokens':
@@ -455,6 +501,24 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
             return True
         def do_POST(self):
             url = urlsplit(self.path)
+            if url.path in ('/hosts/credentials', '/hosts/credentials/revoke'):
+                if not self.authorized('Host enrollment is disabled'): return
+                try:
+                    length = int(self.headers.get('Content-Length', 0))
+                    if not 0 < length <= 1024: raise ValueError('invalid body')
+                    payload = json.loads(self.rfile.read(length))
+                    if url.path.endswith('/revoke'):
+                        journal.revoke_host_credential(payload['credential_id'])
+                        data = {'revoked': True}
+                    else:
+                        data = journal.mint_host_credential(payload['machine'])
+                    body = json.dumps(data).encode()
+                except (ValueError, KeyError, TypeError):
+                    self.send_error(400, 'Invalid enrollment'); return
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers(); self.wfile.write(body); return
             if url.path == '/update' and updater:
                 if not self.authorized('Update requests are disabled'): return
                 try:
@@ -467,27 +531,37 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
                 self.send_header('Content-Length', str(len(body)))
                 self.end_headers(); self.wfile.write(body); return
             parts = session_path(url.path)
-            if not parts or parts[2] not in ('messages', 'inbox/claim', 'archive'):
+            if not parts or parts[2] not in ('messages', 'inbox/claim', 'archive', 'wake'):
                 self.send_error(501); return
             try:
-                if parts[2] in ('messages', 'archive'):
+                if parts[2] in ('messages', 'archive', 'wake'):
                     if not self.authorized('Session input is disabled'): return
                     length = int(self.headers.get('Content-Length', 0))
                     if not 0 < length <= 4 * MESSAGE_LIMIT + 1024:
                         raise ValueError('invalid body')
                     payload = json.loads(self.rfile.read(length))
-                    if parts[2] == 'archive':
+                    if parts[2] == 'wake':
+                        data, status = journal.set_wake(parts[0], parts[1], payload.get('wake')), 200
+                    elif parts[2] == 'archive':
                         data, status = journal.archive(parts[0], parts[1], payload.get('archived')), 200
                     else:
                         data, status = journal.send_message(parts[0], parts[1], payload.get('text')), 201
                 else:
+                    auth = self.headers.get('Authorization', '')
+                    credential = auth[7:] if auth.startswith('Bearer ') else None
+                    if not credential:
+                        if not allow_legacy_claims:
+                            self.send_error(401, 'Host credential required'); return
+                        logging.warning('Legacy unauthenticated inbox claim')
                     wait = float(parse_qs(url.query).get('wait', ['0'])[-1])
-                    data, status = {'messages': journal.claim(parts[0], parts[1], wait)}, 200
+                    data, status = {'messages': journal.claim(parts[0], parts[1], wait, credential=credential)}, 200
                 body = json.dumps(data).encode()
                 self.send_response(status)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Content-Length', str(len(body)))
                 self.end_headers(); self.wfile.write(body)
+            except PermissionError:
+                self.send_error(401, 'Invalid host credential')
             except LookupError:
                 self.send_error(404, 'Unknown session')
             except (ValueError, TypeError, AttributeError):
@@ -764,6 +838,8 @@ def main():
     p.add_argument('--retention-days', type=int, default=30, help='History lifetime in days (default 30; 0 disables cleanup)')
     p.add_argument('--no-mqtt', action='store_true')
     p.add_argument('--no-web', action='store_true', help='Disable the browser UI')
+    p.add_argument('--require-host-credentials', action='store_true',
+                   help='Reject legacy unauthenticated inbox claims after hosts have enrolled')
     p.add_argument('--input-token-file', default=os.environ.get('AXON_INPUT_TOKEN_FILE'),
                    help='File holding the bearer token that allows sending input to sessions; input is disabled without it')
     p.add_argument('--inference', action='append', default=[], metavar='LABEL=URL',
@@ -805,7 +881,7 @@ def main():
         poller.start(); threads.append(poller)
         logging.info('Polling inference servers%s: %s', ' through Prometheus' if args.prometheus else '', ', '.join(sorted(inference)))
     server = ThreadingHTTPServer((args.listen, args.port), handler(journal, web=not args.no_web, token=token, stop=stop, updater=args.updater,
-        prometheus_url=args.prometheus, inference=inference))
+        prometheus_url=args.prometheus, inference=inference, allow_legacy_claims=not args.require_host_credentials))
     def shutdown(*_):
         stop.set()
         journal.changed()  # release open streams

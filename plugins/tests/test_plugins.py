@@ -326,15 +326,18 @@ class InboxTests(unittest.TestCase):
         PluginTests.setUp(self);self.addCleanup(self.tmp.cleanup)
         self.env['AXON_LISTEN_POLL']='1'
         self.journal=Journal(self.root/'journal.db')
-        self.server=ThreadingHTTPServer(('127.0.0.1',0),handler(self.journal,token='t'*20))
+        self.server=ThreadingHTTPServer(('127.0.0.1',0),handler(self.journal,token='t'*20,allow_legacy_claims=False))
         threading.Thread(target=self.server.serve_forever,daemon=True).start()
         self.addCleanup(self.server.server_close);self.addCleanup(self.server.shutdown)
         self.env.update(AXON_SERVER=f'http://127.0.0.1:{self.server.server_port}',AXON_MACHINE='workstation')
+        credential=self.journal.mint_host_credential('workstation')['credential']
+        credential_file=self.root/'host-credential';credential_file.write_text(credential);credential_file.chmod(0o600)
+        self.env['AXON_HOST_CREDENTIAL_FILE']=str(credential_file)
         self.package=manage.build('claude',self.root/'claude')
     def address(self,session='a'):
         with patch.dict(os.environ,{k:v for k,v in self.env.items() if k.startswith('AXON_')}):
             source,key,_=report.identity('claude',session)
-        self.journal.ingest(dict(version=1,source=source,session=key,id='s-'+session,at=time.time(),kind='start',data={'agent':'claude'}))
+        self.journal.ingest(dict(version=1,source=source,session=key,id='s-'+session,at=time.time(),kind='start',data={'agent':'claude','machine':'workstation'}))
         return source,key
     def send(self,source,key,text,token='t'*20):
         request=Request(f'http://127.0.0.1:{self.server.server_port}/sessions/{source}/{key}/messages',method='POST',
@@ -376,7 +379,7 @@ class InboxTests(unittest.TestCase):
     def codex_address(self,session='c'):
         with patch.dict(os.environ,{k:v for k,v in self.env.items() if k.startswith('AXON_')}):
             source,key,_=report.identity('codex',session)
-        self.journal.ingest(dict(version=1,source=source,session=key,id='s-'+session,at=time.time(),kind='start',data={'agent':'codex'}))
+        self.journal.ingest(dict(version=1,source=source,session=key,id='s-'+session,at=time.time(),kind='start',data={'agent':'codex','machine':'workstation'}))
         return source,key
 
     def test_codex_takes_input_in_turn_and_answers_late_input_at_turn_end(self):

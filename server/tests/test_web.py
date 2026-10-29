@@ -169,6 +169,53 @@ class WebTests(unittest.TestCase):
         self.journal.claim('example','one')
         self.assertEqual(self.get('/sessions?session=one')['sessions'][0]['queued_messages'],0)
 
+    def test_host_claim_authentication_enrollment_revocation_and_wake(self):
+        self.event(kind='start', machine='host-a')
+        self.stop()
+        self.server=ThreadingHTTPServer(('127.0.0.1',0),handler(self.journal,token='s'*20,allow_legacy_claims=False))
+        self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start()
+        self.base=f'http://127.0.0.1:{self.server.server_port}'
+        for path, body in [('/hosts/credentials',{'machine':'host-a'}),('/sessions/example/one/wake',{'wake':True})]:
+            with self.assertRaises(HTTPError) as error:self.post(path,body)
+            self.assertEqual(error.exception.code,401);error.exception.close()
+        _,right=self.post('/hosts/credentials',{'machine':'host-a'},'s'*20)
+        _,wrong=self.post('/hosts/credentials',{'machine':'host-b'},'s'*20)
+        self.journal.send_message('example','one','Keep this queued')
+        path='/sessions/example/one/inbox/claim'
+        for credential in (None,'invalid',wrong['credential']):
+            with self.assertRaises(HTTPError) as error:self.post(path,token=credential)
+            self.assertEqual(error.exception.code,401);error.exception.close()
+        self.assertFalse(self.get('/sessions')['sessions'][0]['wake'])
+        self.post('/sessions/example/one/wake',{'wake':True},'s'*20)
+        self.assertTrue(self.get('/sessions')['sessions'][0]['wake'])
+        self.assertEqual([m['text'] for m in self.post(path,token=right['credential'])[1]['messages']],['Keep this queued'])
+        self.post('/hosts/credentials/revoke',{'credential_id':right['credential_id']},'s'*20)
+        with self.assertRaises(HTTPError) as error:self.post(path,token=right['credential'])
+        self.assertEqual(error.exception.code,401);error.exception.close()
+        self.assertTrue(self.get('/health')['host_claims']['required'])
+
+    def test_legacy_claim_migration_logs_and_still_rejects_invalid_credentials(self):
+        self.event(kind='start',machine='host-a')
+        path='/sessions/example/one/inbox/claim'
+        with self.assertLogs(level='WARNING') as logs:self.post(path)
+        self.assertIn('Legacy unauthenticated',logs.output[0])
+        with self.assertRaises(HTTPError) as error:self.post(path,token='invalid')
+        self.assertEqual(error.exception.code,401);error.exception.close()
+
+    def test_revocation_during_long_poll_preserves_pending_input(self):
+        self.event(kind='start',machine='host-a')
+        host=self.journal.mint_host_credential('host-a')
+        result=[]
+        def claim():
+            try:self.journal.claim('example','one',wait=5,credential=host['credential'])
+            except PermissionError:result.append('revoked')
+        waiter=threading.Thread(target=claim);waiter.start();time.sleep(.1)
+        self.journal.revoke_host_credential(host['credential_id'])
+        waiter.join(2)
+        self.assertEqual(result,['revoked'])
+        self.journal.send_message('example','one','Still here')
+        self.assertEqual(self.journal.queued()[('example','one')],1)
+
     def test_claim_long_poll_wakes_when_input_arrives(self):
         self.event(kind='start',agent='claude')
         result={}

@@ -12,6 +12,7 @@ import urllib.request
 import uuid
 
 from . import report
+from .credentials import read_credential
 
 # Agents whose hooks can take dashboard input as in-turn context. Claude also has an idle
 # listener (asyncRewake). Codex cannot wake an idle thread, so its Stop hook takes input that
@@ -103,8 +104,10 @@ def server_url():
 def claim(agent, session, wait=0, timeout=None):
     """Take this session's pending dashboard messages from the journal server."""
     source, key, _ = report.identity(agent, str(session))
+    credential = read_credential()
     request = urllib.request.Request(f'{server_url().rstrip("/")}/sessions/{source}/{key}/inbox/claim?wait={wait:g}',
-                                     data=b'', method='POST')
+                                     data=b'', method='POST',
+                                     headers={'Authorization': 'Bearer '+credential} if credential else {})
     with urllib.request.urlopen(request, timeout=timeout or wait + 5) as response:
         return json.load(response).get('messages', [])
 

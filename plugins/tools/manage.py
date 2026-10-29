@@ -20,6 +20,7 @@ for project in ('packages/python/axon_protocol', 'packages/python/axon_reporter'
     if path not in sys.path:
         sys.path.insert(0, path)
 from axon_reporter.report import MACHINE_ALIAS_AUTO, detected_machine_alias, setting
+from axon_reporter.credentials import enroll
 
 AGENTS = ('codex','claude','hermes','pi','opencode')
 
@@ -275,6 +276,17 @@ def sync(home=Path.home(), apply=False, force=False):
     stamp = state/'hooks-synced'
     want = f'{revision} {" ".join(agents)}\n'
     label = ensure_machine_label(home, apply)
+    # During the migration, older servers have no enrollment API. Retry on every sync,
+    # even a stamp-skipped one, so credentials arrive as soon as the server does.
+    if apply:
+        url = setting('AXON_SERVER') or 'http://%s:8510' % setting('AXON_BROKER', 'localhost')
+        try:
+            with urllib.request.urlopen(url.rstrip('/')+'/health', timeout=1) as response:
+                supports_enrollment = json.load(response).get('host_claims', {}).get('enrollment', False)
+        except (OSError, ValueError):
+            supports_enrollment = False
+        if supports_enrollment:
+            enroll(home)
     if not force and agents and stamp.exists() and stamp.read_text() == want:
         return {'revision': revision, 'agents': agents, 'machine_label': label, 'skipped': True}
     installed, failed = [], {}
@@ -432,10 +444,14 @@ def main():
     u.add_argument('--home',type=Path,default=Path.home()); u.add_argument('--apply',action='store_true')
     st=sub.add_parser('status',help='print the last timer sync result')
     st.add_argument('--home',type=Path,default=Path.home())
+    en=sub.add_parser('enroll-host',help='mint and store this host claim credential; reuse it on later runs')
+    en.add_argument('--home',type=Path,default=Path.home())
     args=p.parse_args()
     try:
         if args.command=='build':
             print(json.dumps({a:str(build(a,args.output/f'axon-{a}')) for a in AGENTS},indent=2))
+        elif args.command=='enroll-host':
+            print(json.dumps({'enrolled': True, 'path': str(enroll(args.home))}))
         elif args.command=='sync':
             report=sync(args.home,args.apply,args.force)
             print(json.dumps(report,indent=2))
