@@ -265,9 +265,11 @@ class Journal(ProjectStore):
                 for r in db.execute("SELECT * FROM events WHERE id LIKE 'wake-%' ORDER BY at")}
         result = []
         overrides = self.project_overrides()
+        names = self.project_names()
         for row in rows:
             item = json.loads(row[0])
-            item = self.apply_project_override(item, overrides)
+            label = item.get('project')
+            item = self.apply_project_override(item, overrides, names)
             item['wake'] = wake.get((item['source'], item['session']), False)
             if (last_wake:=last_wakes.get((item['source'],item['session']))):
                 item['last_wake']=last_wake
@@ -295,7 +297,7 @@ class Journal(ProjectStore):
                     item['blocked_on'] = 'automation'
                 else:
                     item['blocked_on'] = 'human' if gate == 'human' else 'automation'
-            if filters.get('project') and filters['project'] not in (item.get('project'),item.get('project_key'),item.get('project_id')):
+            if filters.get('project') and filters['project'] not in (item.get('project'),item.get('project_key'),item.get('project_id'),label):
                 continue
             if any(item.get(k if k != 'state' else 'effective_state') != v for k, v in filters.items() if k in ('source', 'session', 'agent', 'machine', 'state')):
                 continue

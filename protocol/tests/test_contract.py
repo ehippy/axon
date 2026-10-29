@@ -31,8 +31,8 @@ class ContractTests(unittest.TestCase):
             expected = self.fixture('view')['sessions'][0]
             expected['wake'] = False
             expected['exited'] = False
-            expected['project_key'] = 'legacy:'+expected['project']
-            expected['project_hidden'] = False
+            # No repository is known by the old label, so it reads as a topic.
+            expected['topic'] = expected.pop('project')
             self.assertEqual(journal.sessions(), [expected])
 
     def test_reporter_identity_is_stable_private_and_explicitly_overridable(self):

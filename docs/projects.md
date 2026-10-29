@@ -5,8 +5,9 @@ Open a project to see its sessions (live first), host inventory, last activity,
 and token growth over the selected period. A shared ID has one stable display
 name even when hosts use different clone directory names. Labels outside git
 appear as topics.
-Old sessions retain their reported project names and are grouped by name until
-their reporter sends a git identity.
+Sessions reported before git identities carry only a free-text project label.
+A label that matches the name of exactly one known repository joins that project;
+any other label is shown as the session's topic and stays out of Projects.
 
 Project settings require the same input token used for messaging. A rename only
 changes the display. Hiding removes the project's sessions from the board while
@@ -18,8 +19,9 @@ remote can be merged with its earlier identity.
 The API exposes `GET /projects?since=<unix-seconds>` and `GET /projects/<id>`.
 The default token period is 24 hours; `since=0` includes retained history.
 `POST /projects/<id>` accepts `name`, `hidden`, and/or `merge_into`, protected by
-the input token. IDs are git hashes for new reports and `legacy:<name>` for old
-reports; URL-encode them in paths. Session and event project filters accept the
-canonical identity as well as legacy names. Project inventories never contain
+the input token. IDs are git hashes; a `legacy:<name>` ID remains only where an
+override was saved for it before labels became topics. URL-encode IDs in paths.
+Session and event project filters accept the canonical identity, the project
+name, or the label a session originally reported. Project inventories never contain
 checkout paths or remote URLs. Allowed start agents remain empty until the host
 runner publishes an explicit policy (#19).

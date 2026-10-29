@@ -34,8 +34,12 @@ class ProjectAPITests(unittest.TestCase):
                    tokens={'input':50,'cached':0,'output':5})
         self.event(session='other',project_id='b'*64) # same name, different repository
         self.event(session='old',project_id=None,project='legacy')
+        self.event(session='ambiguous',project_id=None) # 'sample' names two repositories
         groups={p['id']:p for p in self.journal.projects(since=0)}
-        self.assertEqual(set(groups),{'a'*64,'b'*64,'legacy:legacy'})
+        self.assertEqual(set(groups),{'a'*64,'b'*64})
+        for session,topic in (('old','legacy'),('ambiguous','sample')):
+            row,=self.journal.sessions({'session':session})
+            self.assertEqual((row.get('project'),row.get('project_key'),row['topic']),(None,None,topic))
         shared=groups['a'*64]
         self.assertEqual(len(shared['sessions']),2)
         self.assertEqual({s['project'] for s in shared['sessions']},{'sample'})
@@ -44,6 +48,14 @@ class ProjectAPITests(unittest.TestCase):
         self.assertEqual(next(h for h in shared['hosts'] if h['machine']=='host-b')['checkouts'],
                          [{'branch':'feature','worktree':'parallel'}])
         self.assertGreater(shared['last_activity'],0)
+
+    def test_legacy_label_joins_the_one_repository_with_that_name(self):
+        self.event(project='axon',machine='host-b')
+        self.event(session='old',project_id=None,project='axon',topic='Earlier work')
+        group,=self.journal.projects(since=0)
+        self.assertEqual((group['id'],group['name'],len(group['sessions'])),('a'*64,'axon',2))
+        row,=self.journal.sessions({'session':'old'})
+        self.assertEqual((row['project_id'],row['project_key'],row['topic']),('a'*64,'a'*64,'Earlier work'))
 
     def test_overrides_merge_and_hide_without_rewriting_history(self):
         self.event(project='fork')

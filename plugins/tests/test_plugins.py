@@ -155,7 +155,8 @@ class PluginTests(unittest.TestCase):
         journal=Journal(self.root/'journal.db')
         for event in self.events(): journal.ingest(event)
         row=journal.sessions()[0]
-        self.assertEqual((row['goal'],row['project'],row['step']),('Build plugin','axon','Test hooks'))
+        # Without a checkout the label names no repository, so it is kept as the topic.
+        self.assertEqual((row['goal'],row['topic'],row['step']),('Build plugin','axon','Test hooks'))
     def test_config_install_preserves_other_hooks_and_is_idempotent(self):
         for agent in ('codex','claude'):
             home=self.root/agent

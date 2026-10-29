@@ -48,10 +48,23 @@ class ProjectStore:
         with self.connect() as db:
             return {r['project_id']:dict(r) for r in db.execute('SELECT * FROM project_overrides')}
 
-    def apply_project_override(self, session, overrides):
+    def project_names(self):
+        with self.connect() as db:
+            return {r['project_id']:r['name'] for r in db.execute('SELECT * FROM project_names')}
+
+    def apply_project_override(self, session, overrides, names):
         key=project_key(session)
         if not key:
             return session
+        if key.startswith('legacy:') and key not in overrides:
+            # A label from before git identities names a repository only when exactly one
+            # known repository has that name; any other label was a topic, not a project.
+            ids=[i for i,name in names.items() if name==session['project']]
+            if len(ids)!=1:
+                session={k:v for k,v in session.items() if k!='project'}
+                session['topic']=session.get('topic') or key.removeprefix('legacy:')
+                return session
+            key=ids[0]
         target=canonical(key,overrides)
         override=overrides.get(target,{})
         session={**session,'project_key':target,'project_hidden':bool(override.get('hidden'))}
@@ -59,10 +72,8 @@ class ProjectStore:
             session['project_id']=target
         if override.get('name'):
             session['project']=override['name']
-        elif not target.startswith('legacy:'):
-            with self.connect() as db:
-                row=db.execute('SELECT name FROM project_names WHERE project_id=?',(target,)).fetchone()
-            if row:session['project']=row['name']
+        elif names.get(target):
+            session['project']=names[target]
         return session
 
     def projects(self, since=None):
