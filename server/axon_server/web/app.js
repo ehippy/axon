@@ -145,7 +145,16 @@ function renderResources(values=[]) {
   for(const item of inference){
     const stale=now-item.observed_at>30;
     const seg=node('span','strip-seg inference-seg'+(stale?' stale':''));
-    seg.append(node('b','strip-name',item.account),node('span','strip-detail',inferenceSummary(item,stale)));
+    const spark=miniSpark(state.history?.[item.account]);
+    seg.setAttribute('title',inferenceSummary(item,stale));
+    seg.append(node('b','strip-name',item.account),spark.node);
+    if(!item.online)seg.append(node('span','strip-detail','offline'));
+    else if(stale)seg.append(node('span','strip-detail','stale '+inferenceAge(item.observed_at)));
+    else{
+      const series=spark.name ? state.history?.[item.account]?.series?.[spark.name] : null;
+      const value=spark.name==='output_tps' ? item.metrics?.generation_tps : series?.length ? series[series.length-1][1] : null;
+      seg.append(node('b','strip-pct',value==null?'–':Math.round(value)+(spark.name==='output_tps'?' tok/s':'%')));
+    }
     strip.append(seg);
   }
   const compact=resourcesCompact();
@@ -282,6 +291,23 @@ function miniBar(label,window) {
   bar.setAttribute('aria-valuemin','0');bar.setAttribute('aria-valuemax','100');
   if(window.remaining!==null)bar.setAttribute('aria-valuenow',String(window.remaining));else bar.setAttribute('aria-valuetext','Unknown');
   return bar;
+}
+function miniSpark(history) {
+  // The strip's inference mark: same glance language as the quota bars, but over time.
+  const name=['gpu_busy_percent','output_tps','kv_cache_percent'].find(key=>(history?.series?.[key]||[]).some(point=>point[1]!=null));
+  if(!name){const bar=node('span','mini-bar unknown');bar.setAttribute('aria-label','Inference history unavailable');return {node:bar,name};}
+  const take=(history.series[name].filter(point=>point[1]!=null)).slice(-48);
+  const W=56,H=12,max=Math.max(...take.map(point=>point[1]),1e-9);
+  const x=index=>index*(W/Math.max(1,take.length-1)), y=value=>H-1-(value/max)*(H-2);
+  const line=take.map((point,index)=>(index?'L':'M')+x(index).toFixed(1)+' '+y(point[1]).toFixed(1)).join('');
+  const element=document.createElementNS('http://www.w3.org/2000/svg','svg');
+  element.setAttribute('viewBox',`0 0 ${W} ${H}`);element.setAttribute('class','mini-spark');element.setAttribute('aria-hidden','true');
+  const area=document.createElementNS('http://www.w3.org/2000/svg','path');
+  area.setAttribute('class','mini-spark-area');area.setAttribute('d',line+`L ${W} ${H} L 0 ${H} Z`);
+  const stroke=document.createElementNS('http://www.w3.org/2000/svg','path');
+  stroke.setAttribute('class','mini-spark-line');stroke.setAttribute('d',line);
+  element.append(area,stroke);
+  return {node:element,name};
 }
 function inferenceSummary(row,stale) {
   // The collapsed one-liner: status plus the few numbers worth a glance on a phone.
