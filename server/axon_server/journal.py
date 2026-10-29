@@ -42,6 +42,16 @@ WAKE_PATHS = {'pi-native':'pi', 'hermes-native':'hermes', 'opencode-native':'ope
               'codex-queue':'codex', 'claude-resume':'claude', 'claude-listener':'claude'}
 WAKE_LEASE = 90
 
+# Start-job queue for host runners (#19). Projects travel as bare names only:
+# folder paths stay host-local and never cross the wire.
+MACHINE = re.compile(r'[a-zA-Z0-9_.-]{1,80}')
+JOB_AGENTS = {'claude', 'codex', 'pi', 'opencode', 'hermes'}
+JOB_STATES = {'queued': {'claimed'}, 'claimed': {'started', 'refused'},
+              'started': {'finished', 'failed'}}
+JOB_REPORTS = {'started', 'refused', 'failed', 'finished'}
+JOB_DETAIL_LIMIT = 512
+JOB_LIST_LIMIT = 100
+
 
 WEB_ASSETS = {'/': ('index.html', 'text/html; charset=utf-8'),
                           '/ui/app.css': ('app.css', 'text/css; charset=utf-8'),
@@ -102,6 +112,12 @@ class Journal(ProjectStore):
               CREATE TABLE IF NOT EXISTS host_sync (
                 machine TEXT PRIMARY KEY, at REAL, synced_revision TEXT,
                 ok INTEGER, error TEXT);
+              CREATE TABLE IF NOT EXISTS host_jobs (
+                id TEXT PRIMARY KEY, machine TEXT NOT NULL, at REAL NOT NULL,
+                agent TEXT NOT NULL, project TEXT NOT NULL, prompt TEXT NOT NULL,
+                worktree INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'queued',
+                detail TEXT, claimed_at REAL, ended_at REAL);
+              CREATE INDEX IF NOT EXISTS host_job_queue ON host_jobs(machine, status, at);
             ''')
 
 
@@ -136,6 +152,7 @@ class Journal(ProjectStore):
             db.execute('DELETE FROM messages WHERE at < ?', (cutoff,))
             db.execute('DELETE FROM message_claims WHERE NOT EXISTS (SELECT 1 FROM messages WHERE messages.id=message_claims.message_id)')
             db.execute('DELETE FROM session_archives WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.source=session_archives.source AND s.session=session_archives.session)')
+            db.execute('DELETE FROM host_jobs WHERE ended_at IS NOT NULL AND ended_at < ?', (cutoff,))
         if events or sessions:
             self.changed()
         return {'events': events, 'sessions': sessions}
@@ -410,7 +427,7 @@ class Journal(ProjectStore):
         return [dict(r) for r in rows]
 
     def mint_host_credential(self, machine):
-        if not isinstance(machine, str) or not re.fullmatch(r'[a-zA-Z0-9_.-]{1,80}', machine):
+        if not isinstance(machine, str) or not MACHINE.fullmatch(machine):
             raise ValueError('invalid machine')
         credential = secrets.token_urlsafe(32)
         digest = hashlib.sha256(credential.encode()).hexdigest()
@@ -459,6 +476,88 @@ class Journal(ProjectStore):
         return [{'machine': machine, **sync.get(machine, {}),
                  'behind': bool(revision and sync.get(machine, {}).get('synced_revision') != revision)}
                 for machine in sorted(machines)]
+
+    def enqueue_job(self, machine, payload):
+        """Queue a start job for one host's runner (#19).
+
+        Projects travel as bare names: the server never sees or stores folder
+        paths, the runner resolves names host-local and refuses unknown ones."""
+        if not isinstance(machine, str) or not MACHINE.fullmatch(machine):
+            raise ValueError('invalid machine')
+        if not isinstance(payload, dict):
+            raise ValueError('invalid job')
+        agent, project, prompt = payload.get('agent'), payload.get('project'), payload.get('prompt')
+        if agent not in JOB_AGENTS:
+            raise ValueError('unknown agent')
+        if not isinstance(project, str) or not 0 < len(project.strip()) <= 80 or any(sep in project for sep in ('/', '\\')):
+            raise ValueError('project must be a bare name of at most 80 characters')
+        if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > MESSAGE_LIMIT:
+            raise ValueError('prompt must be 1..%d characters' % MESSAGE_LIMIT)
+        worktree = payload.get('worktree', True)
+        if type(worktree) is not bool:
+            raise ValueError('worktree must be a boolean')
+        job = {'id': uuid.uuid4().hex, 'machine': machine, 'at': time.time(), 'agent': agent,
+               'project': project.strip(), 'prompt': prompt.strip(), 'worktree': worktree,
+               'status': 'queued', 'detail': None, 'claimed_at': None, 'ended_at': None}
+        with self.connect() as db:
+            db.execute('INSERT INTO host_jobs VALUES(:id,:machine,:at,:agent,:project,:prompt,'
+                       ':worktree,:status,:detail,:claimed_at,:ended_at)',
+                       {**job, 'worktree': int(worktree)})
+        self.changed()
+        with self.inbox:
+            self.inbox.notify_all()
+        return job
+
+    def claim_job(self, machine, credential, wait=0):
+        """Atomically hand a host its oldest queued job; it stays claimed until reported."""
+        if not isinstance(machine, str) or not MACHINE.fullmatch(machine):
+            raise ValueError('invalid machine')
+        deadline = time.time() + min(CLAIM_WAIT_LIMIT, max(0, wait))
+        while True:
+            with self.connect() as db:
+                if self.host_machine(credential, db) != machine:
+                    raise PermissionError('invalid host credential or machine')
+                row = db.execute("SELECT * FROM host_jobs WHERE machine=? AND status='queued'"
+                                 ' ORDER BY at,id LIMIT 1', (machine,)).fetchone()
+                if row and db.execute("UPDATE host_jobs SET status='claimed', claimed_at=?"
+                                      " WHERE id=? AND status='queued'", (now := time.time(), row['id'])).rowcount:
+                    job = dict(row)
+                    job.update(status='claimed', claimed_at=now, worktree=bool(row['worktree']))
+                    return job
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None
+            with self.inbox:
+                self.inbox.wait(min(remaining, 1))
+
+    def report_job(self, machine, credential, job_id, payload):
+        """Runner-side job lifecycle reports; transitions follow JOB_STATES, terminal states stick."""
+        if not isinstance(payload, dict):
+            raise ValueError('invalid report')
+        status, detail = payload.get('status'), payload.get('detail')
+        if status not in JOB_REPORTS:
+            raise ValueError('invalid job status')
+        if detail is not None and (not isinstance(detail, str) or not 0 < len(detail) <= JOB_DETAIL_LIMIT):
+            raise ValueError('detail must be at most %d characters' % JOB_DETAIL_LIMIT)
+        with self.connect() as db:
+            if self.host_machine(credential, db) != machine:
+                raise PermissionError('invalid host credential or machine')
+            row = db.execute('SELECT status FROM host_jobs WHERE id=? AND machine=?', (job_id, machine)).fetchone()
+            if row is None:
+                raise LookupError('unknown job')
+            if status not in JOB_STATES.get(row['status'], ()):
+                raise ValueError('invalid job transition from %s' % row['status'])
+            db.execute('UPDATE host_jobs SET status=?, detail=COALESCE(?, detail), ended_at=? WHERE id=?',
+                       (status, detail, None if status == 'started' else time.time(), job_id))
+        self.changed()
+        return {'id': job_id, 'status': status}
+
+    def jobs(self, machine=None):
+        """Recent jobs newest first; the board reads these, prompts are user-authored input."""
+        with self.connect() as db:
+            rows = db.execute('SELECT * FROM host_jobs ' + ('WHERE machine=? ' if machine else '') +
+                              'ORDER BY at DESC LIMIT ?', ((machine,) if machine else ()) + (JOB_LIST_LIMIT,)).fetchall()
+        return [{**dict(r), 'worktree': bool(r['worktree'])} for r in rows]
 
     def set_wake(self, source, session, enabled):
         if type(enabled) is not bool:
@@ -605,7 +704,8 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
                     self.end_headers(); self.wfile.write(body); return
                 if url.path == '/health':
                     data = {'ok': True, 'retention_days': journal.retention_days, 'protocol': capabilities(),
-                            'host_claims': {'enrollment': True, 'required': not allow_legacy_claims, 'wake_leases':True}}
+                            'host_claims': {'enrollment': True, 'required': not allow_legacy_claims, 'wake_leases':True},
+                            'host_jobs': True}
                 elif url.path == '/resources':
                     data = {'resources': journal.resources()}
                 elif url.path == '/resources/tokens':
@@ -627,6 +727,8 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
                                          for s in journal.sessions(filters)]}
                 elif url.path == '/hosts':
                     data = {'hosts': journal.hosts(update_status(updater).get('commit') if updater else None)}
+                elif (job_route := host_job_path(url.path)) and len(job_route) == 4:
+                    data = {'jobs': journal.jobs(job_route[2])}
                 elif url.path == '/projects':
                     data = {'projects': journal.projects(float(filters['since']) if 'since' in filters else None)}
                 elif url.path.startswith('/projects/'):
@@ -705,6 +807,43 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
                 except (ValueError, KeyError, TypeError):
                     self.send_error(400, 'Invalid enrollment'); return
                 self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers(); self.wfile.write(body); return
+            if (job_route := host_job_path(url.path)):
+                machine = job_route[2]
+                action = job_route[4] if len(job_route) == 5 else job_route[5] if len(job_route) == 6 else ''
+                if len(job_route) == 4:
+                    if not self.authorized('Host jobs are disabled'): return
+                    try:
+                        length = int(self.headers.get('Content-Length', 0))
+                        if not 0 < length <= 4 * MESSAGE_LIMIT + 1024: raise ValueError('invalid body')
+                        data, status = {'job': journal.enqueue_job(machine, json.loads(self.rfile.read(length)))}, 201
+                    except (ValueError, TypeError):
+                        self.send_error(400, 'Invalid job'); return
+                else:
+                    auth = self.headers.get('Authorization', '')
+                    credential = auth[7:] if auth.startswith('Bearer ') else ''
+                    if not credential:
+                        self.send_error(401, 'Host credential required'); return
+                    try:
+                        if action == 'claim':
+                            wait = float(parse_qs(url.query).get('wait', ['0'])[-1])
+                            data, status = {'job': journal.claim_job(machine, credential, wait)}, 200
+                        elif action == 'report':
+                            length = int(self.headers.get('Content-Length', 0))
+                            if not 0 < length <= JOB_DETAIL_LIMIT + 1024: raise ValueError('invalid body')
+                            data, status = journal.report_job(machine, credential, job_route[4], json.loads(self.rfile.read(length))), 200
+                        else:
+                            self.send_error(404); return
+                    except PermissionError:
+                        self.send_error(401, 'Invalid host credential'); return
+                    except LookupError:
+                        self.send_error(404, 'Unknown job'); return
+                    except (ValueError, TypeError):
+                        self.send_error(400, 'Invalid job request'); return
+                body = json.dumps(data).encode()
+                self.send_response(status)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Content-Length', str(len(body)))
                 self.end_headers(); self.wfile.write(body); return
@@ -812,6 +951,14 @@ def session_path(path):
     parts = path.split('/')
     if len(parts) >= 5 and parts[:2] == ['', 'sessions'] and IDENTITY.fullmatch(parts[2]) and IDENTITY.fullmatch(parts[3]):
         return parts[2], parts[3], '/'.join(parts[4:])
+    return None
+
+
+def host_job_path(path):
+    """Split /hosts/<machine>/jobs[...job routes] into parts, or None (#19)."""
+    parts = [unquote(p) for p in path.rstrip('/').split('/')]
+    if len(parts) in (4, 5, 6) and parts[1] == 'hosts' and parts[3] == 'jobs' and MACHINE.fullmatch(parts[2]):
+        return parts
     return None
 
 

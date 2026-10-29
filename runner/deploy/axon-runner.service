@@ -1,0 +1,16 @@
+[Unit]
+Description=Axon host job runner (pulls dashboard start jobs for this machine)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Point at the installed axon-runner; ships disabled with no allowlist.
+ExecStart=/usr/local/bin/axon-runner
+Restart=on-failure
+RestartSec=15
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

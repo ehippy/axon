@@ -33,6 +33,7 @@ old source paths and superseded implementations are removed.
 | `packages/python/` | Shared validation and reporter runtime |
 | `plugins/` | Native agent adapters, builder, installer |
 | `clients/query/` | Standalone read-only query CLI |
+| `runner/` | Host job runner pulling dashboard start jobs (#19) |
 | `protocol/` | Versioned contracts and shared fixtures |
 | `integrations/` | Gabbie and Glass integration instructions |
 | `hardware/` | Parts and enclosure planning |
