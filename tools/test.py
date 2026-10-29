@@ -6,7 +6,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 suite = unittest.TestSuite()
-for path in ('protocol/tests', 'server/tests', 'plugins/tests', 'tests'):
+for path in ('protocol/tests', 'server/tests', 'plugins/tests', 'runner/tests', 'tests'):
     suite.addTests(unittest.TestLoader().discover(str(ROOT/path)))
 for path in sorted((ROOT/'plugins').glob('*/tests')):
     suite.addTests(unittest.TestLoader().discover(str(path)))
