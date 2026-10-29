@@ -69,7 +69,9 @@ function renderResources(values=[]) {
   const counted=new Set();
   for(const row of view){
     const panel=node('article','resource-panel agent-'+row.provider+(row.stale?' stale':'')+(row.unavailable?' unavailable':''));
-    const header=node('div','resource-heading');header.append(node('h2','',agentName({agent:row.provider})+(row.account==='primary'?'':' · '+row.account)),node('span','resource-age',!row.updated?'Waiting for data':(row.stale?'Stale · ':'Updated ')+row.updated));panel.append(header);
+    const header=node('div','resource-heading');
+    header.append(node('h2','',agentName({agent:row.provider})+(row.account==='primary'?'':' · '+row.account)),node('span','resource-age',!row.updated?'Waiting for data':(row.stale?'Stale · ':'Updated ')+row.updated));
+    panel.append(header);
     const windows=node('div','resource-windows');
     for(const window of row.windows){
       const box=node('div','resource-window'), label=node('div','quota-label');
@@ -127,12 +129,45 @@ function renderResources(values=[]) {
     const line=tokenLine(history?.tokens);if(line)panel.append(line);
     fragment.append(panel);
   }
-  // Every quota and inference panel gets its own column: one row, however many there are.
-  const row=$('resources');
-  row.style.setProperty('--resource-count',String(Math.max(1,fragment.children.length)));
+  // One row to watch everything, one disclosure to open the detail grid beneath it.
+  const container=$('resources');
+  const strip=node('div','resource-strip');
+  for(const item of view){
+    const seg=node('span','strip-seg agent-'+item.provider+(item.stale?' stale':''));
+    seg.append(node('b','strip-name',agentName({agent:item.provider})+(item.account==='primary'?'':' · '+item.account)));
+    for(const window of item.windows){
+      seg.append(miniBar(agentName({agent:item.provider}),window));
+      seg.append(node('b','strip-pct',window.remaining===null?'?':Math.floor(window.remaining)+'%'));
+    }
+    if(item.unavailable)seg.append(node('b','out-label','out · '+item.unavailable));
+    strip.append(seg);
+  }
+  for(const item of inference){
+    const stale=now-item.observed_at>30;
+    const seg=node('span','strip-seg inference-seg'+(stale?' stale':''));
+    seg.append(node('b','strip-name',item.account),node('span','strip-detail',inferenceSummary(item,stale)));
+    strip.append(seg);
+  }
+  const compact=resourcesCompact();
+  const toggle=node('button','strip-toggle');toggle.type='button';
+  const chevron=node('span','collapse-chevron',compact?'▸':'▾');
+  toggle.append(chevron);
+  const labelState=expanded=>toggle.setAttribute('aria-label',expanded?'Collapse resource details':'Expand resource details');
+  toggle.setAttribute('aria-expanded',String(!compact));labelState(!compact);
+  toggle.addEventListener('click',()=>{
+    const next=!container.classList.contains('compact');
+    container.classList.toggle('compact',next);chevron.textContent=next?'▸':'▾';
+    toggle.setAttribute('aria-expanded',String(!next));labelState(!next);
+    try{localStorage.setItem(COMPACT_KEY,next?'1':'0');}catch{}
+  });
+  strip.append(toggle);
+  const panels=document.createElement('div');panels.className='resource-panels';
   // Phones give inference panels their own full rows, so only the quota panels share the first.
-  row.style.setProperty('--quota-count',String(Math.max(1,view.length)));
-  row.replaceChildren(fragment);
+  panels.style.setProperty('--resource-count',String(Math.max(1,fragment.children.length)));
+  panels.style.setProperty('--quota-count',String(Math.max(1,view.length)));
+  panels.append(fragment);
+  container.classList.toggle('compact',compact);
+  container.replaceChildren(strip,panels);
 }
 function statusName(value) { return Object.hasOwn(LABEL, value) ? value : 'lost_contact'; }
 function status(value) {
@@ -231,6 +266,40 @@ function inferenceAge(at) {
   // Inference turns stale in 30s, too soon for relative()'s minute floor to read as stale.
   const seconds = Math.max(0, Math.floor(Date.now()/1000-Number(at)));
   return seconds < 60 ? seconds+'s ago' : relative(at);
+}
+const COMPACT_KEY='axon:resources-compact';
+function resourcesCompact() {
+  // The strip is the resting state on every screen; width decides how much of each segment fits.
+  try { const saved=localStorage.getItem(COMPACT_KEY); if(saved!==null) return saved==='1'; } catch {}
+  return true;
+}
+function miniBar(label,window) {
+  // Tiny bar for the strip: fill is amount left, identity rides on the agent color.
+  const bar=node('span','mini-bar'+(window.remaining===null?' unknown':''));
+  if(window.remaining!==null){const fill=node('i');fill.style.width=window.remaining+'%';bar.append(fill);}
+  const detail=label+' '+window.label+': '+(window.remaining===null?'unknown':Math.floor(window.remaining)+'% left');
+  bar.setAttribute('title',detail);bar.setAttribute('role','progressbar');bar.setAttribute('aria-label',detail);
+  bar.setAttribute('aria-valuemin','0');bar.setAttribute('aria-valuemax','100');
+  if(window.remaining!==null)bar.setAttribute('aria-valuenow',String(window.remaining));else bar.setAttribute('aria-valuetext','Unknown');
+  return bar;
+}
+function inferenceSummary(row,stale) {
+  // The collapsed one-liner: status plus the few numbers worth a glance on a phone.
+  const parts=[stale?'stale '+inferenceAge(row.observed_at):row.online?'live':'offline'];
+  const metrics=row.metrics||{};
+  if(row.online){
+    if(metrics.generation_tps!=null)parts.push(Math.round(metrics.generation_tps)+' tok/s');
+    parts.push((metrics.running??'–')+'/'+(metrics.queued??'–')+' rq');
+  }
+  const gpus=row.gpus||[];
+  const gib=bytes=>Math.round(bytes/1073741824);
+  gpus.forEach((gpu,index)=>{
+    if(gpu.utilization_percent!=null)parts.push((gpus.length>1?'GPU'+(index+1)+' ':'gpu ')+Math.round(gpu.utilization_percent)+'%');
+    const [used,total]=gpu.shared_total_bytes!=null?[gpu.shared_used_bytes,gpu.shared_total_bytes]:[gpu.memory_used_bytes,gpu.memory_total_bytes];
+    if(used!=null&&total!=null)parts.push(gib(used)+'/'+gib(total)+'G');
+  });
+  if(!gpus.length&&row.online&&metrics.kv_cache_percent!=null)parts.push('kv '+Math.round(metrics.kv_cache_percent)+'%');
+  return parts.join(' · ');
 }
 function clock(at) { return new Date(Number(at)*1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); }
 function date(at) { return new Date(Number(at)*1000).toLocaleDateString([], {month:'long', day:'numeric', year:'numeric'}); }
