@@ -21,6 +21,9 @@ class RunnerTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name)
+        # The codex executor drops per-job logs under this; keep them in the sandbox.
+        self.addCleanup(os.environ.__setitem__,'AXON_ACTIVITY_HOME',os.environ.get('AXON_ACTIVITY_HOME',''))
+        os.environ['AXON_ACTIVITY_HOME']=str(self.root)
         self.journal=Journal(self.root/'journal.db')
         self.server=ThreadingHTTPServer(('127.0.0.1',0),handler(self.journal,token=TOKEN))
         self.addCleanup(self.server.server_close)
@@ -113,6 +116,68 @@ class RunnerTests(unittest.TestCase):
         job=self.enqueue()
         self.poll(policy)
         self.assertEqual(self.outcome(job['id'])['detail'],'project_path_missing')
+
+    def stub_codex(self,stdout,code=0):
+        """A fake `codex` that records argv and streams the given lines as its exec log."""
+        trace=self.root/'codex-argv.json'
+        payload=self.root/'codex-out'
+        payload.write_text(stdout)
+        script=self.root/'fake-codex'
+        script.write_text('#!/bin/sh\nprintf "%s" "$@" > %s\ncat %s\nexit %d\n'
+                          % ('%s\\n', trace, payload, code))
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+        return str(script),trace
+
+    def test_allowed_codex_starts_with_verified_flags_and_reports_thread(self):
+        stub,trace=self.stub_codex('{"type":"thread.started","thread_id":"01a18791-46d2-7960-8748-3bd03d2f2859"}\n'
+                                   '{"type":"turn.started"}\n')
+        policy=self.config_for([('sample',str(self.project),['codex'])],executable={'codex':stub})
+        job=self.enqueue(agent='codex')
+        result,_=self.poll(policy)
+        argv=trace.read_text().strip().split('\n')
+        self.assertEqual((result['id'],self.outcome(job['id'])['status']), (job['id'],'started'))
+        self.assertEqual(argv[:6],['exec','--json','-s','workspace-write','-C',str(self.project)])
+        self.assertEqual(argv[6],'--worktree')
+        self.assertEqual(argv[7],'Do the thing')
+        self.assertEqual(self.outcome(job['id'])['detail'],'thread 01a18791-46d2-7960-8748-3bd03d2f2859')
+
+    def test_codex_sandbox_narrows_from_config(self):
+        stub,trace=self.stub_codex('{"type":"thread.started","thread_id":"t-1"}\n')
+        path=self.root/'runner.toml'
+        path.write_text('server="%s"\n[[allow]]\nproject="sample"\npath="%s"\nagents=["codex"]\nsandbox="read-only"\n[executable]\ncodex="%s"\n'
+                        % (self.base,self.project,stub))
+        job=self.enqueue(agent='codex')
+        self.poll(config.load(path))
+        argv=trace.read_text().strip().split('\n')
+        self.assertEqual(argv[:4],['exec','--json','-s','read-only'])
+        self.assertEqual(self.outcome(job['id'])['status'],'started')
+
+    def test_codex_bypass_sandbox_refused(self):
+        stub,_=self.stub_codex('{"type":"thread.started","thread_id":"t-1"}\n')
+        path=self.root/'runner.toml'
+        path.write_text('server="%s"\n[[allow]]\nproject="sample"\npath="%s"\nagents=["codex"]\nsandbox="danger-full-access"\n[executable]\ncodex="%s"\n'
+                        % (self.base,self.project,stub))
+        job=self.enqueue(agent='codex')
+        self.poll(config.load(path))
+        self.assertEqual((self.outcome(job['id'])['status'],self.outcome(job['id'])['detail']),
+                         ('refused','bad_sandbox'))
+
+    def test_codex_failure_before_thread_reports_launch_failed(self):
+        stub,trace=self.stub_codex('error: workspace not trusted\n',code=2)
+        policy=self.config_for([('sample',str(self.project),['codex'])],executable={'codex':stub})
+        job=self.enqueue(agent='codex')
+        self.poll(policy)
+        outcome=self.outcome(job['id'])
+        self.assertEqual(outcome['status'],'refused')
+        self.assertIn('launch_failed',outcome['detail'])
+        self.assertIn('workspace not trusted',outcome['detail'])
+
+    def test_codex_ignores_non_json_noise_before_thread(self):
+        stub,_=self.stub_codex('warning: updating\r\n{"type":"thread.started","thread_id":"t-2"}\n')
+        policy=self.config_for([('sample',str(self.project),['codex'])],executable={'codex':stub})
+        job=self.enqueue(agent='codex')
+        self.poll(policy)
+        self.assertEqual(self.outcome(job['id'])['detail'],'thread t-2')
 
     def test_idle_claim_returns_none(self):
         result,_=self.poll(self.config_for([]))
