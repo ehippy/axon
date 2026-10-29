@@ -69,12 +69,12 @@ undoes the pull and fails the run. Then `sync --apply` runs from the updated cod
 The result lands in `~/.local/state/axon/sync-status.json`
 (`revision`, `at`, `ok`, `error`); `manage.py status` prints it.
 
-Alternatively, run the same steps from a bootstrap loop — chezmoi `run_after`,
-cron, login hook — as often as you like (this skips the server check):
+Bootstrap steps such as chezmoi `run_after` install the timer instead of syncing
+hooks themselves. That keeps every unattended sync behind the server check:
 
 ```sh
 git -C "$SRC" pull -q --ff-only 2>/dev/null || git clone -q https://github.com/ehippy/axon "$SRC"
-python3 "$SRC/plugins/tools/manage.py" sync --apply
+python3 "$SRC/plugins/tools/manage.py" install-timer --apply
 ```
 
 Sync detects installed agents (PATH plus `~/.local/bin`,
