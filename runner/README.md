@@ -28,6 +28,46 @@ worktree_root = "~/.local/state/axon/worktrees"  # optional; where runner-manage
 `[executable]` maps an agent name to a specific binary (tests and pilots);
 unset agents use the CLI on `PATH`.
 
+## Resuming ended sessions (#18)
+
+A message sent from the dashboard (your phone included) to a session that has
+ended on this host resumes it, if all of these hold:
+
+1. the session has **wake** allowed (session details, needs the input token);
+2. nothing in the session can take the message itself: no armed listener or
+   Codex queue watcher, and not mid-turn (the journal waits 10s for one first);
+3. `runner.toml` has a `[resume]` section listing the agent.
+
+```toml
+[resume]
+agents = ["claude", "codex"]      # default when the section is present
+permission_mode = "dontAsk"       # Claude: default; bypassPermissions is refused
+sandbox = "workspace-write"       # Codex: read-only or workspace-write
+```
+
+No section means no resuming. The journal hands over Axon's hashed session key
+only. The runner finds the agent's own id and folder in the agent's local store
+(`~/.claude/projects`, `~/.codex/sessions`), so ids and paths stay on the host.
+
+- **Claude:** if `claude agents --json` still lists the session it is open, so
+  `--resume` would fork a copy, and the runner refuses with `session_open`.
+  Otherwise it runs `claude --bg --resume <id> --permission-mode <mode>
+  "<message>"` in the session's folder. The resumed turn reports through its own
+  hooks, and `claude attach <id>` opens it on the host.
+- **Codex:** if a client holds the thread's writer lock
+  (`~/.codex/thread-writer-locks/<id>.lock`), the message goes to `codex queue`
+  and becomes that client's next turn. Otherwise the runner runs
+  `codex exec resume --json -c sandbox_mode="<sandbox>" <id> "<message>"`
+  headless, which also drains anything already in the thread's Codex queue. The
+  output goes to `$AXON_ACTIVITY_HOME/runner/resume-<key8>.log`.
+
+`dontAsk` lets an unattended turn use only the tools your Claude permission
+rules already allow, and denies the rest without prompting. Nothing waits on an
+approval nobody can give from the phone. A refusal (`session_open`,
+`session_not_found`, `project_path_missing`, `liveness_unknown`,
+`launch_failed: <tail>`, ...) shows on the session's message panel. The message
+stays queued and is retried after the next message or 10 minutes.
+
 ## Credentials
 
 Reuses the #14 host credential at `~/.config/axon/host-credential`
@@ -67,6 +107,12 @@ instead of a pipe, so an orphaned child can never block on a closed reader.
 axon-runner            # foreground loop (long-poll 55s)
 axon-runner --once     # claim at most one job and exit
 ```
+
+macOS: fill in `deploy/org.axon.runner.plist` (`{runner}` is the installed
+`axon-runner`, `{path}` a PATH that finds `claude` and `codex`, `{log}` a log
+file), copy it to `~/Library/LaunchAgents/`, and
+`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.axon.runner.plist`.
+`uv tool install ./runner` installs `axon-runner` to `~/.local/bin`.
 
 User service: copy `deploy/axon-runner.service` (after `pipx install ./runner`
 or equivalent) and `systemctl --user enable --now axon-runner.service` —

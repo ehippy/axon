@@ -486,10 +486,25 @@ function chatToggle(row) {
     if (state.compose) document.querySelector('.card-composer textarea, .card-composer input')?.focus();});
   return toggle;
 }
+// The host's runner resumes ended sessions (#18) when it has polled recently for this agent.
+function hostResumes(row) {
+  const runner=state.hosts?.find(host=>host.machine===row.machine)?.runner;
+  return !!runner && Date.now()/1000-runner.seen_at<180 && (runner.resume_agents||[]).includes(row.agent);
+}
+const RESUME_REASONS = {session_open:'it is still open on its host but not listening, so answer it there',
+  session_not_found:'the host no longer has this session', project_path_missing:'its folder is gone from the host',
+  liveness_unknown:'the host could not tell whether it is still open', not_allowed:'the host does not resume this agent'};
+function resumeRefusal(reason) {
+  const code=String(reason||'').split(':')[0];
+  return RESUME_REASONS[code] || (code==='launch_failed' ? 'the agent failed to start ('+String(reason).slice(15)+')' : code.replace(/_/g,' '));
+}
 function inputNote(row, enabled=true) {
   return !enabled ? 'Session input is disabled on this server.'
     : listeningLeft(row) ? 'Idle and listening: a message wakes it immediately.'
     : row.effective_state==='working' ? 'Working: the message arrives at its next tool call.'
+    : row.resume_hold ? 'Not resumed: '+resumeRefusal(row.resume_hold.reason)+'. Sending again retries.'
+    : hostResumes(row) && row.wake ? 'Sending resumes it on '+hostName(row)+'.'
+    : hostResumes(row) ? hostName(row)+' can resume it: allow wake in the session details first.'
     // Codex hooks cannot start a turn, so an idle Codex thread reads input when it next runs.
     : row.agent==='codex' && ACTIVE.includes(row.effective_state) ? 'Idle: Codex reads this when its next turn starts.'
     : ACTIVE.includes(row.effective_state) ? 'Not listening: the message waits until the session next runs.'
@@ -746,7 +761,8 @@ function renderDetail(row) {
   if (INPUT_AGENTS.includes(row.agent)) {
     const label=node('label','wake-setting'), choice=node('input');choice.type='checkbox';choice.checked=!!row.wake;
     label.append(choice,document.createTextNode(' Allow dashboard messages to wake this session'));
-    const help=node('p','project-meta','Requires host wake support. Messages stay queued until a delivery path accepts them.');
+    const help=node('p','project-meta',hostResumes(row) ? hostName(row)+' resumes this session for a message even after it has ended.'
+      : 'Requires host wake support. Messages stay queued until a delivery path accepts them.');
     choice.addEventListener('change',async()=>{
       const enabled=choice.checked;
       if(!storedToken()){choice.checked=!enabled;help.textContent='Add the input token in the message panel to change wake permission.';return;}

@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "axon-runner"
 version = "0.1.0"
 description = "Host job runner that pulls dashboard start jobs for one machine"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]
