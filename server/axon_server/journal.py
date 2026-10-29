@@ -27,6 +27,10 @@ from axon_protocol import STATES, FIELDS, TERMINAL, capabilities, known_data, va
 from axon_protocol.resources import parse_inference_metrics, validate_resource
 from axon_server.projects import ProjectStore
 
+# How long an auto-approved permission prompt stays invisible before the board admits
+# the session may actually be stuck (#26: auto-approvals resolved in 20-40s, human gates wait indefinitely).
+APPROVAL_BEAT = 60
+
 IDENTITY = re.compile(r'[a-zA-Z0-9_.-]{1,128}')
 INFERENCE_LABEL = re.compile(r'[a-zA-Z0-9_.-]{1,80}')
 MESSAGE_LIMIT = 4000
@@ -196,6 +200,12 @@ class Journal(ProjectStore):
             if 'liveness' in patch:
                 # Stamp the arrival so a later event (a resume) clears the exit reading.
                 current['liveness_at'] = v['at']
+            # A raised permission prompt is pending until any newer event proves it resolved
+            # (auto-approver clears, denial, or the next tool). Other events clear the flag.
+            if v['kind'] == 'waiting' and patch.get('activity') == 'needs approval':
+                current['approval_pending'] = True
+            else:
+                current.pop('approval_pending', None)
             state = {'start': 'working', 'waiting': 'waiting', 'blocked': 'blocked',
                      'finished': 'finished', 'stopped': 'stopped', 'interrupted': 'interrupted'}.get(v['kind'])
             # Late lifecycle/tool hooks cannot erase an explicitly recorded result.
@@ -238,6 +248,15 @@ class Journal(ProjectStore):
                 item['effective_state'] = 'exited'
             else:
                 item['effective_state'] = item['state'] if item['fresh'] or item['state'] in TERMINAL else 'lost_contact'
+            # A prompt raised by an auto-approving agent resolves itself within seconds; only
+            # paint Waiting once the beat lapses. Say what is actually being waited on.
+            if item.get('approval_pending') and item['effective_state'] == 'waiting':
+                gate = item.get('approval_gate', 'human')
+                if gate == 'auto' and time.time() - item['updated_at'] <= APPROVAL_BEAT:
+                    item['effective_state'] = 'working'
+                    item['blocked_on'] = 'automation'
+                else:
+                    item['blocked_on'] = 'human' if gate == 'human' else 'automation'
             if filters.get('project') and filters['project'] not in (item.get('project'),item.get('project_key'),item.get('project_id')):
                 continue
             if any(item.get(k if k != 'state' else 'effective_state') != v for k, v in filters.items() if k in ('source', 'session', 'agent', 'machine', 'state')):

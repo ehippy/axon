@@ -13,8 +13,11 @@ TERMINAL = {'finished', 'stopped', 'interrupted'}
 MACHINE_KINDS = {'laptop', 'desktop', 'server'}
 # Data keys this version understands; FIELDS are the free-text ones among them.
 DATA_FIELDS = set(FIELDS) | {'state', 'evidence', 'lease_seconds', 'machine_kind', 'listening_until', 'user_turn', 'tokens',
-                             'liveness', 'liveness_at'}
+                             'liveness', 'liveness_at', 'approval_gate'}
 LIVENESS = {'alive', 'exited'}
+# Who resolves a raised permission prompt: 'human' means a person must answer before the
+# session continues; 'auto' means the agent's own approver does and nobody is needed.
+APPROVAL_GATES = {'human', 'auto'}
 # A newer reporter may send fields this version does not know yet. They are accepted within a
 # small budget and ignored, so hosts can update before the server without losing events.
 EXTRA_KEY = re.compile(r'[a-z][a-z0-9_]{0,39}')
@@ -76,6 +79,8 @@ def validate(v):
         raise ValueError('invalid state')
     if 'liveness' in patch and patch['liveness'] not in LIVENESS:
         raise ValueError('invalid liveness')
+    if 'approval_gate' in patch and patch['approval_gate'] not in APPROVAL_GATES:
+        raise ValueError('invalid approval_gate')
     evidence = patch.get('evidence', [])
     if not isinstance(evidence, list) or len(evidence) > 12 or any(not isinstance(x, str) or not x.strip() or len(x) > 500 for x in evidence):
         raise ValueError('invalid evidence')
