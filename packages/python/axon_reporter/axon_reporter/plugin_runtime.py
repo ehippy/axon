@@ -317,6 +317,72 @@ def spawn_queue_listener(agent, session):
         pass
 
 
+def claude_agent_status(session):
+    """True/False from `claude agents --json` for this native session id; None if unknowable."""
+    import shutil
+    binary = report.setting('AXON_CLAUDE_BIN') or shutil.which('claude')
+    if not binary:
+        return None
+    try:
+        done = subprocess.run([binary, 'agents', '--json'], capture_output=True, text=True, timeout=10,
+                              stdin=subprocess.DEVNULL)
+        if done.returncode != 0:
+            return None
+        agents = json.loads(done.stdout)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    entries = agents.get('agents') if isinstance(agents, dict) else agents
+    if not isinstance(entries, list):
+        return None
+    return any(isinstance(e, dict) and e.get('sessionId') == session for e in entries)
+
+
+def liveness_listen(agent):
+    """Detached watcher for a claude session Stop fired on: keep the lease fresh while
+    `claude agents --json` still lists it, and report the exit once it stops listing it."""
+    try:
+        data = json.load(sys.stdin)
+        session = data.get('session_id') if isinstance(data, dict) else None
+        seconds = min(LISTEN_CAP, max(0, int(report.setting('AXON_LISTEN_SECONDS', '10800'))))
+        interval = min(600, max(30, int(report.setting('AXON_LIVENESS_POLL', '60'))))
+        if not session or agent != 'claude' or not seconds:
+            return 0
+        # An older server would strip the unknown field, leaving bare heartbeats that
+        # renew the lease forever: only watch hosts whose journal understands liveness.
+        if 'liveness' not in (report.server_fields() or set()):
+            return 0
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            status = claude_agent_status(str(session))
+            if status is False:
+                report.report(agent, str(session), 'heartbeat', {'liveness': 'exited', 'lease_seconds': 3600})
+                return 0
+            if status is True:
+                report.report(agent, str(session), 'heartbeat', {'liveness': 'alive', 'lease_seconds': 3600})
+            # None: the listing failed (claude absent or busy); keep waiting, never guess.
+            time.sleep(min(interval, max(1, deadline - time.time())))
+        return 0
+    except Exception:
+        return 0
+
+
+def spawn_liveness_watcher(agent, session):
+    """Detach one liveness watcher per claude session from the Stop hook."""
+    try:
+        here = Path(__file__).resolve()
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join(
+            str(p) for p in (here.parents[1], here.parents[2] / 'axon_protocol') if p.is_dir()))
+        child = subprocess.Popen([sys.executable, '-m', 'axon_reporter.plugin_runtime',
+                                  'liveness', agent], stdin=subprocess.PIPE,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True, env=env)
+        if child.stdin is not None:
+            child.stdin.write(json.dumps({'session_id': session}).encode())
+            child.stdin.close()
+    except OSError:
+        pass
+
+
 def run_hook(agent):
     try:
         data = json.load(sys.stdin)
@@ -357,6 +423,11 @@ def run_hook(agent):
                 if wake_enabled(agent):
                     spawn_queue_listener(agent, session)
                     report.report(agent, str(session), 'heartbeat', {'queue_watching': True})
+            # Claude has no durable queue, but `claude agents --json` is a real liveness
+            # registry: watch the idle session there so the board says alive/exited
+            # instead of guessing lost contact when the terminal goes away.
+            if agent == 'claude' and event == 'Stop' and wake_enabled(agent):
+                spawn_liveness_watcher(agent, session)
         if notes:
             print(json.dumps({'hookSpecificOutput':{'hookEventName':event,'additionalContext':'\n\n'.join(notes)}}))
     except Exception:
@@ -366,4 +437,6 @@ def run_hook(agent):
 if __name__ == '__main__':
     if sys.argv[1:2] == ['queue-listen'] and len(sys.argv) == 3:
         sys.exit(queue_listen(sys.argv[2]))
+    if sys.argv[1:2] == ['liveness'] and len(sys.argv) == 3:
+        sys.exit(liveness_listen(sys.argv[2]))
     sys.exit(2)

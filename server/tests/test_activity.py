@@ -75,6 +75,29 @@ class JournalTests(unittest.TestCase):
         self.journal.ingest(self.event('blocked', blocker='Need credentials'))
         self.assertEqual(self.journal.sessions({'state': 'blocked'})[0]['blocker'], 'Need credentials')
 
+    def test_host_liveness_report_wins_over_lost_contact_guess(self):
+        now = time.time()
+        # A watcher keeps an idle-but-live session fresh; the board never guesses.
+        self.journal.ingest(self.event('waiting', liveness='alive', lease_seconds=3600, at=now - 100))
+        self.assertEqual(self.journal.sessions()[0]['effective_state'], 'waiting')
+        # The proven exit keeps the lease, so the card stays honest until it lapses...
+        self.journal.ingest(self.event('heartbeat', liveness='exited', lease_seconds=3600, at=now - 90))
+        self.assertEqual(self.journal.sessions()[0]['effective_state'], 'waiting')
+        # ...and reads as exited once stale, not as a guessed lost contact.
+        with patch('axon_server.journal.time.time', return_value=now + 3600):
+            row = self.journal.sessions()[0]
+            self.assertEqual(row['effective_state'], 'exited')
+            self.assertTrue(row['exited'])
+            # A newer event (the session came back) clears the exit reading.
+            self.journal.ingest(self.event('start', goal='Resumed work', at=now + 3601))
+            row = self.journal.sessions()[0]
+            self.assertFalse(row['exited'])
+            self.assertEqual(row['effective_state'], 'working')
+            # An exit reading older than a day stops vouching for anything.
+            self.journal.ingest(self.event('heartbeat', liveness='exited', lease_seconds=60, at=now + 3602))
+            with patch('axon_server.journal.time.time', return_value=now + 3602 + 25 * 3600):
+                self.assertEqual(self.journal.sessions()[0]['effective_state'], 'lost_contact')
+
     def test_semantics_survive_generic_hook_activity(self):
         self.journal.ingest(self.event('start', project='glass', goal='Improve help', step='Catalog abilities'))
         self.journal.ingest(self.event('heartbeat', activity='reading'))
@@ -84,7 +107,8 @@ class JournalTests(unittest.TestCase):
 
     def test_validation_and_pagination(self):
         for bad in [self.event('oops'), self.event(goal='x'*401), self.event(state='banana'),
-                    self.event(at=time.time()+1000), self.event(lease_seconds=-1), self.event(evidence='commit')]:
+                    self.event(liveness='zombie'), self.event(at=time.time()+1000),
+                    self.event(lease_seconds=-1), self.event(evidence='commit')]:
             with self.assertRaises(ValueError):
                 self.journal.ingest(bad)
         for _ in range(3):
