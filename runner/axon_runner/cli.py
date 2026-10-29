@@ -4,7 +4,9 @@ The host pulls, so nothing on it listens for connections. This increment ships
 the queue loop, host-local allowlist, and job-state reporting. Claude starts via
 the verified `claude --bg -n <name> -w <name> "<prompt>"` (CLI 2.1.312); Codex
 via `codex exec --json -s <sandbox> -C <path>` (CLI 0.162.1), reporting started
-once the JSONL stream yields `thread.started`. Agents without an executor yet
+once the JSONL stream yields `thread.started`. Pi starts via `pi -p
+--session-id <id>` (CLI 1.4.0) inside a runner-managed git worktree when the job
+asks for one. Agents without an executor
 are refused with `no_executor` so no request is ever dropped silently."""
 import argparse
 import json
@@ -20,6 +22,9 @@ from pathlib import Path
 from . import config
 
 START_TIMEOUT = 90
+# How long a fire-and-forget launcher watches for an immediate crash before it
+# calls the launch good (Pi turns can legitimately finish inside this window).
+LAUNCH_GRACE = 5
 
 
 class StartError(Exception):
@@ -65,6 +70,13 @@ def start_claude(job, path, settings, executable=None):
     return 'launched as %s' % name
 
 
+def log_dir():
+    """Host-local per-job log directory (0700; never a pipe an orphan could block on)."""
+    dir_path = Path(os.environ.get('AXON_ACTIVITY_HOME', Path.home() / '.local' / 'state' / 'axon')) / 'runner'
+    dir_path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return dir_path
+
+
 def thread_id_from(log_text):
     """First `thread.started` thread id in a codex --json stream; None if absent."""
     for line in log_text.splitlines():
@@ -89,13 +101,11 @@ def start_codex(job, path, settings, executable=None):
     if job['worktree']:
         command.append('--worktree')
     command.append(job['prompt'])
-    log_dir = Path(os.environ.get('AXON_ACTIVITY_HOME', Path.home() / '.local' / 'state' / 'axon')) / 'runner'
-    log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    log_path = log_dir / ('job-%s.log' % job['id'][:8])
+    log_path = log_dir() / ('job-%s.log' % job['id'][:8])
     try:
-        with log_path.open('a', encoding='utf-8', errors='replace') as log:
+        with log_path.open('a', encoding='utf-8', errors='replace') as log_file:
             proc = subprocess.Popen(command, cwd=str(path), stdin=subprocess.DEVNULL,
-                                    stdout=log, stderr=subprocess.STDOUT)
+                                    stdout=log_file, stderr=subprocess.STDOUT)
     except OSError as error:
         raise StartError('launch_failed: %s' % type(error).__name__) from None
     deadline = time.time() + START_TIMEOUT
@@ -116,7 +126,59 @@ def start_codex(job, path, settings, executable=None):
     raise StartError('launch_timeout')
 
 
-STARTERS = {'claude': start_claude, 'codex': start_codex}
+def prepare_worktree(job, path, settings):
+    """Runner-managed git worktree for agents with no native flag (Pi). Lives
+    under settings['worktree_root'] (default: the host's axon state dir), on a
+    per-job branch, so the main checkout is never the working tree."""
+    root = Path(settings.get('worktree_root')
+                or Path(os.environ.get('AXON_ACTIVITY_HOME', Path.home() / '.local' / 'state' / 'axon'))
+                / 'worktrees')
+    wt_path = root / ('%s-%s' % (Path(path).name, job['id'][:8]))
+    if wt_path.is_dir():
+        return wt_path
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        completed = subprocess.run(['git', 'worktree', 'add', str(wt_path), '-b',
+                                    'axon-' + job['id'][:8]],
+                                   cwd=str(path), capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        raise StartError('worktree_setup_failed') from None
+    if completed.returncode:
+        tail = (completed.stderr or completed.stdout or '').strip().replace('\n', ' ')[-180:]
+        raise StartError('worktree_setup_failed: ' + (tail or 'exit %d' % completed.returncode))
+    return wt_path
+
+
+def start_pi(job, path, settings, executable=None):
+    """Non-interactive Pi run (CLI 1.4.0: `-p` prints and exits, `--session-id`
+    creates the session when missing). The session id is the runner's job, so
+    the Pi plugin's hooks report it on the board under a stable key. Pi has no
+    worktree flag, so a worktree job runs inside a runner-managed git worktree.
+    Output goes to the host-local per-job log; a fast nonzero exit before the
+    grace window is a launch failure, a fast zero exit is a completed turn."""
+    session = 'axon-' + job['id'][:8]
+    if job['worktree']:
+        path = prepare_worktree(job, path, settings)
+    command = [executable or 'pi', '-p', '--session-id', session, job['prompt']]
+    log_path = log_dir() / ('job-%s.log' % job['id'][:8])
+    try:
+        with log_path.open('a', encoding='utf-8', errors='replace') as log_file:
+            proc = subprocess.Popen(command, cwd=str(path), stdin=subprocess.DEVNULL,
+                                    stdout=log_file, stderr=subprocess.STDOUT)
+    except OSError as error:
+        raise StartError('launch_failed: %s' % type(error).__name__) from None
+    deadline = time.time() + LAUNCH_GRACE
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            if proc.returncode:
+                tail = log_path.read_text(errors='replace').strip().replace('\n', ' ')[-180:]
+                raise StartError('launch_failed: ' + (tail or 'exit %d' % proc.returncode))
+            break
+        time.sleep(0.05)
+    return 'session ' + session
+
+
+STARTERS = {'claude': start_claude, 'codex': start_codex, 'pi': start_pi}
 
 
 def decide(job, policy):

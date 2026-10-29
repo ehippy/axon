@@ -15,12 +15,15 @@ SANDBOXES = ('read-only', 'workspace-write')
 
 
 class Policy:
-    def __init__(self, server=None, allow=(), executable=None):
+    def __init__(self, server=None, allow=(), executable=None, worktree_root=None):
         self.server = server
         self.allow = list(allow)
         # Tests and pilots point the agent name at a stub binary; production
         # leaves this unset and uses the agent's own CLI on PATH.
         self.executable = dict(executable or {})
+        # Root for runner-managed git worktrees (agents without native worktree
+        # support, e.g. Pi). Host-local, like every other path.
+        self.worktree_root = worktree_root
 
     def resolve(self, agent, project):
         """Return (path, settings, refusal) for a job; settings carries the
@@ -35,7 +38,8 @@ class Policy:
             path = Path(entry['path']).expanduser()
             if not path.is_dir():
                 return None, None, 'project_path_missing'
-            settings = {'permission_mode': entry['permission_mode'], 'sandbox': entry['sandbox']}
+            settings = {'permission_mode': entry['permission_mode'], 'sandbox': entry['sandbox'],
+                        'worktree_root': self.worktree_root}
             return path, settings, None
         return None, None, 'not_allowed'
 
@@ -54,4 +58,6 @@ def load(path=None):
                           'agents': [str(a) for a in entry.get('agents', [])],
                           'permission_mode': str(entry.get('permission_mode', 'dontAsk')),
                           'sandbox': str(entry.get('sandbox', 'workspace-write'))})
-    return Policy(server=raw.get('server'), allow=allow, executable=raw.get('executable', {}))
+    return Policy(server=raw.get('server'), allow=allow, executable=raw.get('executable', {}),
+                  worktree_root=(str(Path(raw['worktree_root']).expanduser())
+                                 if raw.get('worktree_root') else None))

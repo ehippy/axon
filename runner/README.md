@@ -19,6 +19,10 @@ path = "~/Projects/axon"          # host-local; paths never leave this machine
 agents = ["claude"]               # empty list = any agent with an executor
 permission_mode = "dontAsk"       # Claude only; default shown
 sandbox = "workspace-write"       # Codex only; read-only or workspace-write
+
+worktree_root = "~/.local/state/axon/worktrees"  # optional; where runner-managed
+                                                 # git worktrees live (Pi jobs);
+                                                 # default shown
 ```
 
 `[executable]` maps an agent name to a specific binary (tests and pilots);
@@ -36,17 +40,21 @@ machine with this credential.
 `queued → claimed → started | refused`, and `started → finished | failed` once
 an executor reports back. Refusal reasons are reported verbatim:
 `not_allowed`, `project_path_missing`, `no_executor`, `launch_failed: <tail>`,
-`launch_timeout`.
+`worktree_setup_failed: <tail>`, `launch_timeout`.
 
 Implemented executors: **claude** (`claude --bg -n <name> -w <name>
 --permission-mode <mode> "<prompt>"` in the project directory, checked against
-CLI 2.1.312; Claude creates its own worktree) and **codex** (`codex exec
+CLI 2.1.312; Claude creates its own worktree), **codex** (`codex exec
 --json -s <sandbox> -C <path> [--worktree] "<prompt>"`, checked against CLI
 0.162.1; the job reports started once the JSONL stream yields `thread.started`,
-and the session's own hooks put it on the board). Bypass flags are never
+and the session's own hooks put it on the board) and **pi** (`pi -p
+--session-id axon-<job> "<prompt>"`, checked against CLI 1.4.0; the session id
+is derived from the job so the Pi plugin reports it under a stable key, and
+because Pi has no native worktree flag a worktree job runs inside a
+runner-managed `git worktree` under `worktree_root`). Bypass flags are never
 passed, and a `sandbox` config value outside read-only/workspace-write is
-refused with `bad_sandbox`. Pi, OpenCode and Hermes land as follow-up
-increments and are refused with `no_executor` until then.
+refused with `bad_sandbox`. OpenCode and Hermes land as follow-up increments
+and are refused with `no_executor` until then.
 
 The Codex child keeps running after the runner reports started; its `--json`
 output is appended to a host-local log under

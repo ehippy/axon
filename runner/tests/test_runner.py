@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -43,12 +44,13 @@ class RunnerTests(unittest.TestCase):
         script.chmod(script.stat().st_mode | stat.S_IEXEC)
         return str(script)
 
-    def config_for(self,allow,executable=None):
+    def config_for(self,allow,executable=None,extra=''):
         path=self.root/'runner.toml'
         entries=''.join('[[allow]]\nproject="%s"\npath="%s"\nagents=[%s]\n'
                         % (e[0], e[1], ','.join('"%s"' % a for a in e[2])) for e in allow)
         executables=''.join('%s="%s"\n' % item for item in (executable or {}).items())
-        path.write_text('server="%s"\n%s%s' % (self.base, entries, ('[executable]\n'+executables) if executable else ''))
+        path.write_text('server="%s"\n%s%s%s' % (self.base, extra, entries,
+                          ('[executable]\n'+executables) if executable else ''))
         return config.load(path)
 
     def enqueue(self,**overrides):
@@ -79,7 +81,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_allowed_project_without_executor_refuses_not_drops(self):
         policy=self.config_for([('sample',str(self.project),[])])
-        job=self.enqueue(agent='pi')
+        job=self.enqueue(agent='opencode')
         self.poll(policy)
         self.assertEqual(self.outcome(job['id'])['status'],'refused')
         self.assertEqual(self.outcome(job['id'])['detail'],'no_executor')
@@ -182,6 +184,68 @@ class RunnerTests(unittest.TestCase):
     def test_idle_claim_returns_none(self):
         result,_=self.poll(self.config_for([]))
         self.assertIsNone(result)
+
+    def git_init(self,path):
+        for cmd in (['git','init','-q','-b','main'],['git','commit','-q','--allow-empty','-m','seed']):
+            subprocess.run(cmd,cwd=path,check=True,capture_output=True)
+
+    def test_allowed_pi_starts_with_verified_flags_and_reports_session(self):
+        stub=self.stub('fake-pi')
+        trace=Path(stub).with_name('fake-pi-argv.json')
+        policy=self.config_for([('sample',str(self.project),['pi'])],executable={'pi':stub})
+        job=self.enqueue(agent='pi',worktree=False)
+        self.poll(policy)
+        argv=trace.read_text().strip().split('\n')
+        self.assertEqual((self.outcome(job['id'])['id'],self.outcome(job['id'])['status']),
+                         (job['id'],'started'))
+        self.assertEqual(argv[:3],['-p','--session-id','axon-'+job['id'][:8]])
+        self.assertEqual(argv[3],'Do the thing')
+        self.assertEqual(self.outcome(job['id'])['detail'],'session axon-'+job['id'][:8])
+
+    def test_pi_worktree_job_runs_in_runner_managed_worktree(self):
+        self.git_init(self.project)
+        trace=self.root/'pi-pwd'
+        script=self.root/'fake-pi'
+        script.write_text('#!/bin/sh\npwd > %s\nexit 0\n' % trace)
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+        wt_root=self.root/'wt'
+        policy=self.config_for([('sample',str(self.project),['pi'])],executable={'pi':str(script)},
+                                extra='worktree_root="%s"\n' % wt_root)
+        job=self.enqueue(agent='pi',worktree=True)
+        self.poll(policy)
+        outcome=self.outcome(job['id'])
+        self.assertEqual(outcome['status'],'started')
+        wt=wt_root/('project-'+job['id'][:8])
+        self.assertTrue(wt.is_dir())
+        # the stub records its cwd: the launch happened in the per-job worktree,
+        # not the main checkout
+        pwd=Path(trace).read_text().strip()
+        self.assertIn('project-'+job['id'][:8],pwd)
+        self.assertNotEqual(Path(pwd),self.project.resolve())
+        listed=subprocess.run(['git','worktree','list'],cwd=self.project,capture_output=True,text=True).stdout
+        self.assertIn('axon-'+job['id'][:8],listed)
+
+    def test_pi_worktree_failure_on_non_git_project_refuses(self):
+        stub=self.stub('fake-pi')
+        policy=self.config_for([('sample',str(self.project),['pi'])],executable={'pi':stub},
+                                extra='worktree_root="%s"\n' % (self.root/'wt2'))
+        job=self.enqueue(agent='pi',worktree=True)
+        self.poll(policy)
+        outcome=self.outcome(job['id'])
+        self.assertEqual(outcome['status'],'refused')
+        self.assertIn('worktree_setup_failed',outcome['detail'])
+
+    def test_pi_immediate_crash_reports_launch_failed(self):
+        script=self.root/'bad-pi'
+        script.write_text('#!/bin/sh\necho "error: no provider credentials" >&2\nexit 1\n')
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+        policy=self.config_for([('sample',str(self.project),['pi'])],executable={'pi':str(script)})
+        job=self.enqueue(agent='pi',worktree=False)
+        self.poll(policy)
+        outcome=self.outcome(job['id'])
+        self.assertEqual(outcome['status'],'refused')
+        self.assertIn('launch_failed',outcome['detail'])
+        self.assertIn('no provider credentials',outcome['detail'])
 
 
 if __name__=='__main__':
