@@ -139,7 +139,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual(error.exception.code,501);error.exception.close()
 
     def test_session_input_requires_token_and_is_claimed_once(self):
-        self.event(kind='start',agent='claude')
+        self.event(kind='start',agent='claude',machine='host-a')
         with self.assertRaises(HTTPError) as error:self.post('/sessions/example/one/messages',{'text':'hi'},'x'*20)
         self.assertEqual(error.exception.code,403);error.exception.close()
         self.stop()
@@ -156,8 +156,9 @@ class WebTests(unittest.TestCase):
         self.assertEqual((status,message['text'],message['delivered_at']),(201,'Ship it',None))
         listing=self.get('/sessions/example/one/messages')
         self.assertTrue(listing['input']);self.assertEqual(len(listing['messages']),1)
-        self.assertEqual([m['text'] for m in self.post('/sessions/example/one/inbox/claim')[1]['messages']],['Ship it'])
-        self.assertEqual(self.post('/sessions/example/one/inbox/claim')[1]['messages'],[])
+        credential=self.journal.mint_host_credential('host-a')['credential']
+        self.assertEqual([m['text'] for m in self.post('/sessions/example/one/inbox/claim',token=credential)[1]['messages']],['Ship it'])
+        self.assertEqual(self.post('/sessions/example/one/inbox/claim',token=credential)[1]['messages'],[])
         self.assertIsNotNone(self.get('/sessions/example/one/messages')['messages'][0]['delivered_at'])
 
     def test_board_sessions_carry_queued_input_counts(self):
@@ -196,6 +197,10 @@ class WebTests(unittest.TestCase):
 
     def test_legacy_claim_migration_logs_and_still_rejects_invalid_credentials(self):
         self.event(kind='start',machine='host-a')
+        self.stop()
+        self.server=ThreadingHTTPServer(('127.0.0.1',0),handler(self.journal,allow_legacy_claims=True))
+        self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start()
+        self.base=f'http://127.0.0.1:{self.server.server_port}'
         path='/sessions/example/one/inbox/claim'
         with self.assertLogs(level='WARNING') as logs:self.post(path)
         self.assertIn('Legacy unauthenticated',logs.output[0])

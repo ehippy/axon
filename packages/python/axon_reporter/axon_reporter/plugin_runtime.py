@@ -3,12 +3,14 @@ from contextlib import closing
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import sqlite3
 import subprocess
 import sys
 import time
 import urllib.request
+from urllib.parse import urlencode
 import uuid
 
 from . import report
@@ -100,15 +102,33 @@ def server_url():
     return report.setting('AXON_SERVER') or 'http://%s:8510' % report.setting('AXON_BROKER', 'localhost')
 
 
-def claim(agent, session, wait=0, timeout=None):
+def wake_enabled(agent):
+    return agent in re.split(r'[,\s]+',report.setting('AXON_WAKE','').strip())
+
+
+def claim(agent, session, wait=0, timeout=None, wake_path=None):
     """Take this session's pending dashboard messages from the journal server."""
     source, key, _ = report.identity(agent, str(session))
     credential = read_credential()
-    request = urllib.request.Request(f'{server_url().rstrip("/")}/sessions/{source}/{key}/inbox/claim?wait={wait:g}',
+    action='inbox/wake/claim' if wake_path else 'inbox/claim'
+    query=urlencode({'wait':f'{wait:g}',**({'path':wake_path} if wake_path else {})})
+    request = urllib.request.Request(f'{server_url().rstrip("/")}/sessions/{source}/{key}/{action}?{query}',
                                      data=b'', method='POST',
                                      headers={'Authorization': 'Bearer '+credential} if credential else {})
     with urllib.request.urlopen(request, timeout=timeout or wait + 5) as response:
         return json.load(response).get('messages', [])
+
+
+def acknowledge_wake(agent, session, messages, accepted=True):
+    credential=read_credential()
+    if not credential:
+        raise ValueError('Host credential required')
+    source,key,_=report.identity(agent,str(session))
+    payload={'ids':[m['id'] for m in messages],'claim_token':messages[0]['claim_token'],'accepted':accepted}
+    request=urllib.request.Request(f'{server_url().rstrip("/")}/sessions/{source}/{key}/inbox/wake/ack',
+        data=json.dumps(payload).encode(),headers={'Authorization':'Bearer '+credential,'Content-Type':'application/json'})
+    with urllib.request.urlopen(request,timeout=5) as response:
+        return json.load(response)
 
 
 def delivery(messages):
@@ -167,7 +187,9 @@ def listen(agent):
         data = json.load(sys.stdin)
         session = data.get('session_id') if isinstance(data, dict) else None
         seconds = min(LISTEN_CAP, max(0, int(report.setting('AXON_LISTEN_SECONDS', '10800'))))
-        if not session or agent not in LISTEN_AGENTS or not seconds:
+        if session and agent in LISTEN_AGENTS and not wake_enabled(agent):
+            cancel_listener(agent,session)
+        if not session or agent not in LISTEN_AGENTS or not seconds or not wake_enabled(agent):
             return 0
         poll = min(50, max(1, int(report.setting('AXON_LISTEN_POLL', '50'))))
         token = arm_listener(agent, session)
@@ -180,13 +202,23 @@ def listen(agent):
                 except Exception:
                     pass
             try:
-                messages = claim(agent, session, wait=min(poll, max(1, deadline - time.time())))
+                messages = claim(agent, session, wait=min(poll, max(1, deadline - time.time())),wake_path='claude-listener')
             except (OSError, ValueError):
                 time.sleep(15)
                 continue
             if messages:
+                from .native_inbox import accepted_ids
+                known=accepted_ids(agent,session,[m['id'] for m in messages])
+                already=[m for m in messages if m['id'] in known]
+                if already:
+                    acknowledge_wake(agent,session,already)
+                messages=[m for m in messages if m['id'] not in known]
+                if not messages:continue
                 cancel_listener(agent, session)
+                accepted_ids(agent,session,[m['id'] for m in messages],remember=True)
                 print(delivery(messages), file=sys.stderr)
+                try:acknowledge_wake(agent,session,messages)
+                except (OSError,ValueError):pass
                 return 2
         return 0
     except Exception:

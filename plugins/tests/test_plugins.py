@@ -325,6 +325,7 @@ class InboxTests(unittest.TestCase):
     def setUp(self):
         PluginTests.setUp(self);self.addCleanup(self.tmp.cleanup)
         self.env['AXON_LISTEN_POLL']='1'
+        self.env['AXON_WAKE']='claude'
         self.journal=Journal(self.root/'journal.db')
         self.server=ThreadingHTTPServer(('127.0.0.1',0),handler(self.journal,token='t'*20,allow_legacy_claims=False))
         threading.Thread(target=self.server.serve_forever,daemon=True).start()
@@ -338,6 +339,7 @@ class InboxTests(unittest.TestCase):
         with patch.dict(os.environ,{k:v for k,v in self.env.items() if k.startswith('AXON_')}):
             source,key,_=report.identity('claude',session)
         self.journal.ingest(dict(version=1,source=source,session=key,id='s-'+session,at=time.time(),kind='start',data={'agent':'claude','machine':'workstation'}))
+        self.journal.set_wake(source,key,True)
         return source,key
     def send(self,source,key,text,token='t'*20):
         request=Request(f'http://127.0.0.1:{self.server.server_port}/sessions/{source}/{key}/messages',method='POST',

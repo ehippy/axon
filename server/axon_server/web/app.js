@@ -334,7 +334,7 @@ function agentClass(row) { return ['codex','claude','hermes','pi','opencode'].in
 function agentName(row) { return ({codex:'Codex',claude:'Claude',hermes:'Hermes',pi:'Pi',opencode:'OpenCode'})[row.agent] || row.agent || 'Agent'; }
 function hostName(row) { return row.machine || 'Host not reported'; }
 const HOST_KINDS = ['laptop', 'desktop', 'server'];
-const INPUT_AGENTS = ['claude','codex','hermes'];
+const INPUT_AGENTS = ['claude','codex','hermes','pi','opencode'];
 const TOKEN_KEY = 'axon-input-token';
 // Input tokens are URL-safe ([A-Za-z0-9_-]); anything else — spaces, newlines, curly quotes and
 // zero-width characters smuggled in by mobile keyboards or paste apps — is dropped at both ends,
@@ -342,6 +342,7 @@ const TOKEN_KEY = 'axon-input-token';
 function storedToken() { try { return (localStorage.getItem(TOKEN_KEY) || '').replace(/[^A-Za-z0-9_-]/g,''); } catch { return ''; } }
 function storeToken(value) { const clean=(value||'').replace(/[^A-Za-z0-9_-]/g,''); try { clean ? localStorage.setItem(TOKEN_KEY,clean) : localStorage.removeItem(TOKEN_KEY); } catch {} }
 function listeningLeft(row) {
+  if (!row.wake) return 0;
   const left=Number(row.listening_until||0)-Date.now()/1000;
   return row.effective_state==='waiting' && left>0 ? left : 0;
 }
@@ -430,6 +431,7 @@ function card(row, grouped=false) {
   const detail=label==='blocked' ? row.blocker || row.step : label==='finished' ? row.outcome : row.step || row.activity;
   bottom.append(status(label));
   if (listeningLeft(row)) bottom.append(node('span','listening-label','Listening · '+duration(listeningLeft(row))));
+  if (row.last_wake) {const wake=node('span','listening-label','Dashboard wake · '+relative(row.last_wake.at));wake.title=row.last_wake.activity;bottom.append(wake);}
   bottom.append(node('span','session-id','#'+row.session.slice(0,8)));
   if (!grouped) button.append(top);
   button.classList.toggle('grouped-card',grouped);
@@ -737,6 +739,23 @@ function renderDetail(row) {
     if (value) facts.append(node('dt','',label),node('dd','',value));
   }
   content.append(facts);
+  if (INPUT_AGENTS.includes(row.agent)) {
+    const label=node('label','wake-setting'), choice=node('input');choice.type='checkbox';choice.checked=!!row.wake;
+    label.append(choice,document.createTextNode(' Allow dashboard messages to wake this session'));
+    const help=node('p','project-meta','Requires host wake support. Messages stay queued until a delivery path accepts them.');
+    choice.addEventListener('change',async()=>{
+      const enabled=choice.checked;
+      if(!storedToken()){choice.checked=!enabled;help.textContent='Add the input token in the message panel to change wake permission.';return;}
+      choice.disabled=true;
+      try {
+        const response=await fetch(sessionPath(row)+'/wake',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+storedToken()},body:JSON.stringify({wake:enabled}),signal:AbortSignal.timeout(8000)});
+        if(!response.ok)throw Error('Could not change wake permission ('+response.status+').');
+        await loadDetail(false);
+      } catch(error){choice.checked=!enabled;help.textContent=error.message;}
+      finally{choice.disabled=false;}
+    });
+    content.append(label,help);
+  }
   if (row.parent && row.parent.includes('/')) {
     const index=row.parent.indexOf('/'), parent=node('button','text-button','Open parent session ↗');
     parent.addEventListener('click',()=>openSession({source:row.parent.slice(0,index),session:row.parent.slice(index+1)}));content.append(parent);

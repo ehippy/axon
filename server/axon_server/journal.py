@@ -12,6 +12,7 @@ import os
 import select
 import secrets
 import signal
+import socket
 import sqlite3
 import subprocess
 import threading
@@ -33,6 +34,9 @@ CLAIM_WAIT_LIMIT = 55
 STREAM_PING = 15
 UPDATE_UNIT = 'axon-update.service'
 UPDATE_DEBOUNCE = 30
+WAKE_PATHS = {'pi-native':'pi', 'hermes-native':'hermes', 'opencode-native':'opencode',
+              'codex-queue':'codex', 'claude-resume':'claude', 'claude-listener':'claude'}
+WAKE_LEASE = 90
 
 
 WEB_ASSETS = {'/': ('index.html', 'text/html; charset=utf-8'),
@@ -83,6 +87,8 @@ class Journal(ProjectStore):
                 id TEXT PRIMARY KEY, source TEXT, session TEXT, at REAL, text TEXT,
                 delivered_at REAL);
               CREATE INDEX IF NOT EXISTS message_session ON messages(source, session, at);
+              CREATE TABLE IF NOT EXISTS message_claims (
+                message_id TEXT PRIMARY KEY, token TEXT, until_at REAL, path TEXT);
               CREATE TABLE IF NOT EXISTS host_credentials (
                 digest TEXT PRIMARY KEY, machine TEXT NOT NULL, created_at REAL NOT NULL,
                 revoked_at REAL);
@@ -124,6 +130,7 @@ class Journal(ProjectStore):
             events = db.execute('DELETE FROM events WHERE at < ?', (cutoff,)).rowcount
             sessions = db.execute('DELETE FROM sessions WHERE at < ?', (cutoff,)).rowcount
             db.execute('DELETE FROM messages WHERE at < ?', (cutoff,))
+            db.execute('DELETE FROM message_claims WHERE NOT EXISTS (SELECT 1 FROM messages WHERE messages.id=message_claims.message_id)')
             db.execute('DELETE FROM session_archives WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.source=session_archives.source AND s.session=session_archives.session)')
         if events or sessions:
             self.changed()
@@ -205,12 +212,16 @@ class Journal(ProjectStore):
         with self.connect() as db:
             rows = db.execute('SELECT s.payload, a.archived_at FROM sessions s LEFT JOIN session_archives a ON s.source=a.source AND s.session=a.session ORDER BY s.at DESC').fetchall()
             wake = {(r['source'], r['session']): bool(r['enabled']) for r in db.execute('SELECT * FROM session_wake')}
+            last_wakes = {(r['source'],r['session']):{'at':r['at'],'activity':json.loads(r['payload']).get('data',{}).get('activity','Dashboard delivery')}
+                for r in db.execute("SELECT * FROM events WHERE id LIKE 'wake-%' ORDER BY at")}
         result = []
         overrides = self.project_overrides()
         for row in rows:
             item = json.loads(row[0])
             item = self.apply_project_override(item, overrides)
             item['wake'] = wake.get((item['source'], item['session']), False)
+            if (last_wake:=last_wakes.get((item['source'],item['session']))):
+                item['last_wake']=last_wake
             if row['archived_at'] is not None:
                 item['archived_at'] = row['archived_at']
             item['fresh'] = time.time() - item['updated_at'] <= item['lease_seconds']
@@ -350,7 +361,7 @@ class Journal(ProjectStore):
         with self.connect() as db:
             if not db.execute('SELECT 1 FROM sessions WHERE source=? AND session=?', (source, session)).fetchone():
                 raise LookupError('unknown session')
-            db.execute('INSERT INTO messages VALUES(:id,:source,:session,:at,:text,:delivered_at)', message)
+            db.execute('INSERT INTO messages(id,source,session,at,text,delivered_at) VALUES(:id,:source,:session,:at,:text,:delivered_at)', message)
         with self.inbox:
             self.inbox.notify_all()
         self.changed()
@@ -364,7 +375,7 @@ class Journal(ProjectStore):
 
     def messages(self, source, session):
         with self.connect() as db:
-            rows = db.execute('SELECT * FROM messages WHERE source=? AND session=? ORDER BY at', (source, session)).fetchall()
+            rows = db.execute('SELECT id,source,session,at,text,delivered_at FROM messages WHERE source=? AND session=? ORDER BY at', (source, session)).fetchall()
         return [dict(r) for r in rows]
 
     def mint_host_credential(self, machine):
@@ -426,24 +437,43 @@ class Journal(ProjectStore):
                 raise LookupError('unknown session')
             db.execute('INSERT OR REPLACE INTO session_wake VALUES(?,?,?)', (source, session, enabled))
         self.changed()
+        with self.inbox:
+            self.inbox.notify_all()
         return {'wake': enabled}
 
-    def claim(self, source, session, wait=0, credential=None):
+    def claim(self, source, session, wait=0, credential=None, wake_path=None, cancelled=None):
         """Atomically hand pending messages to the session's hook, waiting up to `wait` seconds."""
         if not (IDENTITY.fullmatch(source) and IDENTITY.fullmatch(session)):
             raise ValueError('invalid session identity')
         deadline = time.time() + min(CLAIM_WAIT_LIMIT, max(0, wait))
+        if wake_path is not None and (wake_path not in WAKE_PATHS or not credential):
+            raise PermissionError('authenticated wake path required')
         while True:
+            if cancelled and cancelled():
+                return []
             with self.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 if credential is not None:
                     self.claim_machine(db, credential, source, session)
-                rows = [dict(r) for r in db.execute('SELECT * FROM messages WHERE source=? AND session=? AND delivered_at IS NULL ORDER BY at',
-                                                    (source, session)).fetchall()]
+                if wake_path:
+                    consent = db.execute('SELECT enabled FROM session_wake WHERE source=? AND session=?',(source,session)).fetchone()
+                    owner = db.execute('SELECT payload FROM sessions WHERE source=? AND session=?',(source,session)).fetchone()
+                    archived = db.execute('SELECT 1 FROM session_archives WHERE source=? AND session=?',(source,session)).fetchone()
+                    if archived or not consent or not consent[0] or json.loads(owner[0]).get('agent') != WAKE_PATHS[wake_path]:
+                        return []
                 now = time.time()
+                rows = [dict(r) for r in db.execute('SELECT m.* FROM messages m LEFT JOIN message_claims c ON c.message_id=m.id WHERE source=? AND session=? AND delivered_at IS NULL AND (c.until_at IS NULL OR c.until_at<=?) ORDER BY at LIMIT 100',
+                                                    (source, session, now)).fetchall()]
+                lease = uuid.uuid4().hex
                 for row in rows:
-                    row['delivered_at'] = now
-                    db.execute('UPDATE messages SET delivered_at=? WHERE id=?', (now, row['id']))
+                    if wake_path:
+                        row['claim_token'] = lease
+                        db.execute('INSERT OR REPLACE INTO message_claims VALUES(?,?,?,?)',
+                                   (row['id'],lease,now+WAKE_LEASE,wake_path))
+                    else:
+                        row['delivered_at'] = now
+                        db.execute('UPDATE messages SET delivered_at=? WHERE id=?', (now, row['id']))
+                        db.execute('DELETE FROM message_claims WHERE message_id=?',(row['id'],))
             if rows:
                 self.changed()  # queued counts on the board drop
             remaining = deadline - time.time()
@@ -452,6 +482,42 @@ class Journal(ProjectStore):
             with self.inbox:
                 # Recheck ownership and revocation even if a notification raced this wait.
                 self.inbox.wait(min(remaining, 1))
+
+    def acknowledge_wake(self, source, session, credential, payload):
+        if not isinstance(payload,dict) or set(payload)!={'ids','claim_token','accepted'}:
+            raise ValueError('invalid acknowledgment')
+        ids, lease, accepted = payload['ids'], payload['claim_token'], payload['accepted']
+        if not isinstance(ids,list) or not 1<=len(ids)<=100 or any(not isinstance(i,str) or not IDENTITY.fullmatch(i) for i in ids):
+            raise ValueError('invalid message IDs')
+        if not isinstance(lease,str) or not re.fullmatch('[a-f0-9]{32}',lease) or type(accepted) is not bool:
+            raise ValueError('invalid acknowledgment')
+        events=[]
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            self.claim_machine(db,credential,source,session)
+            for message_id in set(ids):
+                row=db.execute('SELECT m.*,c.token AS claim_token,c.until_at AS claim_until,c.path AS claim_path FROM messages m JOIN message_claims c ON c.message_id=m.id WHERE source=? AND session=? AND id=? AND c.token=?',
+                               (source,session,message_id,lease)).fetchone()
+                if not row:
+                    raise ValueError('unknown claim')
+                if row['delivered_at'] is not None:
+                    continue  # A retried acknowledgment is idempotent.
+                if not row['claim_until'] or row['claim_until']<time.time():
+                    raise ValueError('expired claim')
+                if accepted:
+                    db.execute('UPDATE messages SET delivered_at=? WHERE id=?',(time.time(),message_id))
+                    events.append(dict(version=1,source=source,session=session,id='wake-'+hashlib.sha256((message_id+lease).encode()).hexdigest()[:32],
+                        at=time.time(),kind='heartbeat',data={'activity':'Dashboard input token via '+row['claim_path']}))
+                else:
+                    db.execute('DELETE FROM message_claims WHERE message_id=?',(message_id,))
+            # Insert audit events in the same transaction as delivery so a restart cannot lose them.
+            for event in events:
+                db.execute('INSERT OR IGNORE INTO events(source,session,id,at,received,kind,payload) VALUES(?,?,?,?,?,?,?)',
+                    (source,session,event['id'],event['at'],event['at'],event['kind'],json.dumps(event)))
+        self.changed()
+        with self.inbox:
+            self.inbox.notify_all()
+        return {'acknowledged':len(ids)}
 
 
 def update_status(root):
@@ -482,7 +548,7 @@ def request_update(root):
     return update_status(root)
 
 
-def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_url=None, inference=(), allow_legacy_claims=True):
+def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_url=None, inference=(), allow_legacy_claims=False):
     revision = server_revision()
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -502,7 +568,7 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
                     self.end_headers(); self.wfile.write(body); return
                 if url.path == '/health':
                     data = {'ok': True, 'retention_days': journal.retention_days, 'protocol': capabilities(),
-                            'host_claims': {'enrollment': True, 'required': not allow_legacy_claims}}
+                            'host_claims': {'enrollment': True, 'required': not allow_legacy_claims, 'wake_leases':True}}
                 elif url.path == '/resources':
                     data = {'resources': journal.resources()}
                 elif url.path == '/resources/tokens':
@@ -617,7 +683,7 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
                 self.send_header('Content-Length', str(len(body)))
                 self.end_headers(); self.wfile.write(body); return
             parts = session_path(url.path)
-            if not parts or parts[2] not in ('messages', 'inbox/claim', 'archive', 'wake'):
+            if not parts or parts[2] not in ('messages', 'inbox/claim', 'inbox/wake/claim', 'inbox/wake/ack', 'archive', 'wake'):
                 self.send_error(501); return
             try:
                 if parts[2] in ('messages', 'archive', 'wake'):
@@ -636,11 +702,24 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
                     auth = self.headers.get('Authorization', '')
                     credential = auth[7:] if auth.startswith('Bearer ') else None
                     if not credential:
-                        if not allow_legacy_claims:
+                        if not allow_legacy_claims or parts[2]!='inbox/claim':
                             self.send_error(401, 'Host credential required'); return
                         logging.warning('Legacy unauthenticated inbox claim')
-                    wait = float(parse_qs(url.query).get('wait', ['0'])[-1])
-                    data, status = {'messages': journal.claim(parts[0], parts[1], wait, credential=credential)}, 200
+                    if parts[2].startswith('inbox/wake/') and allow_legacy_claims:
+                        self.send_error(403, 'Unattended wake requires claim enforcement'); return
+                    if parts[2]=='inbox/wake/ack':
+                        length=int(self.headers.get('Content-Length',0))
+                        if not 0<length<=16384:raise ValueError('invalid body')
+                        data,status=journal.acknowledge_wake(parts[0],parts[1],credential,json.loads(self.rfile.read(length))),200
+                    else:
+                        params=parse_qs(url.query)
+                        wait = float(params.get('wait', ['0'])[-1])
+                        if parts[2]=='inbox/claim' and wait>0:
+                            raise ValueError('Idle delivery requires a leased wake claim')
+                        wake_path=params.get('path',[''])[-1] if parts[2]=='inbox/wake/claim' else None
+                        data, status = {'messages': journal.claim(parts[0], parts[1], wait, credential=credential,
+                            wake_path=wake_path,cancelled=self.disconnected)}, 200
+                if self.disconnected():return
                 body = json.dumps(data).encode()
                 self.send_response(status)
                 self.send_header('Content-Type', 'application/json')
@@ -652,6 +731,14 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
                 self.send_error(404, 'Unknown session')
             except (ValueError, TypeError, AttributeError):
                 self.send_error(400, 'Invalid request')
+
+        def disconnected(self):
+            if stop and stop.is_set():return True
+            try:
+                readable,_,_=select.select([self.connection],[],[],0)
+                return bool(readable and self.connection.recv(1,socket.MSG_PEEK)==b'')
+            except OSError:
+                return True
 
         def stream(self):
             """Server-sent change signals; the page refetches through the normal API."""
@@ -925,7 +1012,9 @@ def main():
     p.add_argument('--no-mqtt', action='store_true')
     p.add_argument('--no-web', action='store_true', help='Disable the browser UI')
     p.add_argument('--require-host-credentials', action='store_true',
-                   help='Reject legacy unauthenticated inbox claims after hosts have enrolled')
+                   help='Require host credentials (now the default)')
+    p.add_argument('--allow-legacy-claims', action='store_true',
+                   help='Temporary migration exception for in-turn claims; never allows unattended wake')
     p.add_argument('--input-token-file', default=os.environ.get('AXON_INPUT_TOKEN_FILE'),
                    help='File holding the bearer token that allows sending input to sessions; input is disabled without it')
     p.add_argument('--inference', action='append', default=[], metavar='LABEL=URL',
@@ -967,7 +1056,7 @@ def main():
         poller.start(); threads.append(poller)
         logging.info('Polling inference servers%s: %s', ' through Prometheus' if args.prometheus else '', ', '.join(sorted(inference)))
     server = ThreadingHTTPServer((args.listen, args.port), handler(journal, web=not args.no_web, token=token, stop=stop, updater=args.updater,
-        prometheus_url=args.prometheus, inference=inference, allow_legacy_claims=not args.require_host_credentials))
+        prometheus_url=args.prometheus, inference=inference, allow_legacy_claims=args.allow_legacy_claims and not args.require_host_credentials))
     def shutdown(*_):
         stop.set()
         journal.changed()  # release open streams
