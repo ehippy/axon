@@ -202,6 +202,23 @@ class WebTests(unittest.TestCase):
         with self.assertRaises(HTTPError) as error:self.post(path,token='invalid')
         self.assertEqual(error.exception.code,401);error.exception.close()
 
+    def test_host_sync_status_is_authenticated_bounded_and_visible(self):
+        host=self.journal.mint_host_credential('host-a')
+        payload={'synced_revision':'a'*40,'ok':True,'error':None}
+        for token in (None,'invalid'):
+            with self.assertRaises(HTTPError) as error:self.post('/hosts/sync',payload,token)
+            self.assertEqual(error.exception.code,401);error.exception.close()
+        self.post('/hosts/sync',payload,host['credential'])
+        row=self.get('/hosts')['hosts'][0]
+        self.assertEqual((row['machine'],row['synced_revision'],row['ok']),('host-a','a'*40,1))
+        self.assertFalse(self.journal.hosts('a'*40)[0]['behind'])
+        self.assertTrue(self.journal.hosts('b'*40)[0]['behind'])
+        for invalid in ({**payload,'error':'/private/path/token'}, {**payload,'machine':'other'}, {**payload,'synced_revision':'not-a-revision'}):
+            with self.assertRaises(HTTPError) as error:self.post('/hosts/sync',invalid,host['credential'])
+            self.assertEqual(error.exception.code,400);error.exception.close()
+        self.post('/hosts/sync',{**payload,'ok':False,'error':'sync_failed'},host['credential'])
+        self.assertEqual(self.get('/hosts')['hosts'][0]['error'],'sync_failed')
+
     def test_revocation_during_long_poll_preserves_pending_input(self):
         self.event(kind='start',machine='host-a')
         host=self.journal.mint_host_credential('host-a')

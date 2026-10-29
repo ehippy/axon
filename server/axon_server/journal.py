@@ -87,6 +87,9 @@ class Journal:
               CREATE TABLE IF NOT EXISTS session_wake (
                 source TEXT, session TEXT, enabled INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(source, session));
+              CREATE TABLE IF NOT EXISTS host_sync (
+                machine TEXT PRIMARY KEY, at REAL, synced_revision TEXT,
+                ok INTEGER, error TEXT);
             ''')
 
 
@@ -365,12 +368,40 @@ class Journal:
             self.inbox.notify_all()
 
     def claim_machine(self, db, credential, source, session):
+        machine = self.host_machine(credential, db)
+        row = db.execute('SELECT payload FROM sessions WHERE source=? AND session=?', (source, session)).fetchone()
+        if not row or json.loads(row['payload']).get('machine') != machine:
+            raise PermissionError('invalid host credential or session ownership')
+        return machine
+
+    def host_machine(self, credential, db):
         digest = hashlib.sha256(credential.encode()).hexdigest()
         host = db.execute('SELECT machine FROM host_credentials WHERE digest=? AND revoked_at IS NULL', (digest,)).fetchone()
-        row = db.execute('SELECT payload FROM sessions WHERE source=? AND session=?', (source, session)).fetchone()
-        if not host or not row or json.loads(row['payload']).get('machine') != host['machine']:
-            raise PermissionError('invalid host credential or session ownership')
+        if not host:
+            raise PermissionError('invalid host credential')
         return host['machine']
+
+    def record_sync(self, credential, payload):
+        if not isinstance(payload, dict) or set(payload) != {'synced_revision', 'ok', 'error'}:
+            raise ValueError('invalid sync status')
+        revision, ok, error = payload['synced_revision'], payload['ok'], payload['error']
+        if not isinstance(revision, str) or not re.fullmatch(r'[a-f0-9]{40,64}|unknown', revision):
+            raise ValueError('invalid revision')
+        if type(ok) is not bool or error not in (None, 'server_unavailable', 'sync_failed') or (ok and error is not None):
+            raise ValueError('invalid sync result')
+        with self.connect() as db:
+            machine = self.host_machine(credential, db)
+            db.execute('INSERT OR REPLACE INTO host_sync VALUES(?,?,?,?,?)', (machine,time.time(),revision,ok,error))
+        self.changed()
+        return {'recorded': True}
+
+    def hosts(self, revision=None):
+        with self.connect() as db:
+            sync = {r['machine']: dict(r) for r in db.execute('SELECT * FROM host_sync')}
+        machines = {s.get('machine') for s in self.sessions() if s.get('machine')} | set(sync)
+        return [{'machine': machine, **sync.get(machine, {}),
+                 'behind': bool(revision and sync.get(machine, {}).get('synced_revision') != revision)}
+                for machine in sorted(machines)]
 
     def set_wake(self, source, session, enabled):
         if type(enabled) is not bool:
@@ -476,6 +507,8 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
                     activity = journal.activity_times()
                     data = {'sessions': [{**s, 'activity_at': activity.get((s['source'], s['session']), s['updated_at']), 'queued_messages': queued.get((s['source'], s['session']), 0)}
                                          for s in journal.sessions(filters)]}
+                elif url.path == '/hosts':
+                    data = {'hosts': journal.hosts(update_status(updater).get('commit') if updater else None)}
                 elif (parts := session_path(url.path)) and parts[2] == 'messages':
                     data = {'messages': journal.messages(parts[0], parts[1]), 'input': bool(token)}
                 elif url.path == '/events':
@@ -501,6 +534,22 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
             return True
         def do_POST(self):
             url = urlsplit(self.path)
+            if url.path == '/hosts/sync':
+                auth = self.headers.get('Authorization', '')
+                try:
+                    length = int(self.headers.get('Content-Length', 0))
+                    if not 0 < length <= 2048: raise ValueError('invalid body')
+                    credential = auth[7:] if auth.startswith('Bearer ') else ''
+                    data = journal.record_sync(credential, json.loads(self.rfile.read(length)))
+                except PermissionError:
+                    self.send_error(401, 'Invalid host credential'); return
+                except (ValueError, TypeError):
+                    self.send_error(400, 'Invalid sync status'); return
+                body = json.dumps(data).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers(); self.wfile.write(body); return
             if url.path in ('/hosts/credentials', '/hosts/credentials/revoke'):
                 if not self.authorized('Host enrollment is disabled'): return
                 try:

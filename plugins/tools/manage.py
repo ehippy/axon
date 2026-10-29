@@ -207,7 +207,7 @@ def install(agent, home, apply=False, enable=True, hermes_command='hermes'):
         target.symlink_to(package,target_is_directory=True)
         if enable:
             # Hermes owns its configuration format and preserves other enabled plugins.
-            subprocess.run([hermes_command,'plugins','enable','axon-activity'],check=True)
+            subprocess.run([hermes_command,'plugins','enable','axon-activity'],check=True,stdout=sys.stderr)
     elif agent=='pi':
         # Pi auto-discovers extension directories; the package.json manifest
         # points at index.ts. No configuration file is rewritten.
@@ -385,6 +385,21 @@ def run_sync(home, root):
     return report
 
 
+def publish_sync_status(result):
+    """Publish bounded public facts; keep local paths and command errors in the local log."""
+    from axon_reporter.credentials import read_credential
+    credential = read_credential()
+    if not credential:
+        return
+    payload = {'synced_revision': result.get('synced_revision', result['revision']), 'ok': result['ok'],
+               'error': None if result['ok'] else result.get('reason', 'sync_failed')}
+    url = setting('AXON_SERVER') or 'http://%s:8510' % setting('AXON_BROKER', 'localhost')
+    request = urllib.request.Request(url.rstrip('/')+'/hosts/sync',data=json.dumps(payload).encode(),
+        headers={'Authorization': 'Bearer '+credential, 'Content-Type': 'application/json'})
+    with urllib.request.urlopen(request, timeout=3) as response:
+        response.read()
+
+
 def update(home=Path.home(), apply=False, root=ROOT, server=server_commit, sync_fn=run_sync):
     """Fast-forward the managed clone, hold it at the server's commit, then sync.
 
@@ -396,16 +411,17 @@ def update(home=Path.home(), apply=False, root=ROOT, server=server_commit, sync_
     revision = git(root, 'rev-parse', 'HEAD', check=False).stdout.strip() or 'unknown'
     if not apply:
         return {'root': str(root), 'revision': revision, 'server_commit': deployed, 'apply': False}
-    held, error, report = False, None, {}
+    held, error, report, reason = False, None, {}, None
     try:
         if git(root, 'status', '--porcelain', '--untracked-files=no').stdout.strip():
             raise RuntimeError(f'{root} has local changes; keep a dedicated clone for the timer')
+        if deployed is None:
+            reason = 'server_unavailable'
+            raise RuntimeError('server commit unknown; keeping the current hooks')
         pulled = git(root, 'pull', '-q', '--ff-only', check=False)
         if pulled.returncode:
             raise RuntimeError('git pull failed: '+pulled.stderr.strip())
-        if deployed is None:
-            print('Axon server commit unknown; syncing the pulled revision', file=sys.stderr)
-        elif git(root, 'merge-base', '--is-ancestor', 'HEAD', deployed, check=False).returncode:
+        if git(root, 'merge-base', '--is-ancestor', 'HEAD', deployed, check=False).returncode:
             if git(root, 'cat-file', '-e', deployed+'^{commit}', check=False).returncode:
                 # Cannot prove the pull is not ahead of the server: undo it.
                 git(root, 'reset', '-q', '--hard', revision)
@@ -418,7 +434,17 @@ def update(home=Path.home(), apply=False, root=ROOT, server=server_commit, sync_
         error = str(failure)
     status = {'revision': revision, 'at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
               'ok': error is None, 'error': error}
+    stamp = state_dir(home)/'hooks-synced'
+    try:
+        synced_revision = stamp.read_text().split()[0]
+    except (OSError, IndexError):
+        synced_revision = revision if error is None else 'unknown'
+    status['synced_revision'] = synced_revision
     write_json(state_dir(home)/'sync-status.json', status)
+    try:
+        publish_sync_status({**status, 'reason': reason or 'sync_failed'})
+    except (OSError, ValueError):
+        pass  # The next timer retries; local status is always available.
     return {**status, 'server_commit': deployed, 'held_at_server': held, 'sync': report}
 
 

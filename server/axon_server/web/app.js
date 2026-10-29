@@ -549,6 +549,11 @@ function hostGroups(rows) {
     const title=node('h2','host-title'), icon=hostIcon(hostKind(sessions));
     if (icon) title.append(icon);
     title.append(document.createTextNode(host));
+    const sync=state.hosts?.find(row=>row.machine===host);
+    if (sync && (sync.ok===0 || sync.behind)) {
+      const badge=node('span','host-sync-warning',sync.ok===0 ? 'Sync failed' : 'Hooks behind');
+      badge.title=sync.error || 'Waiting for this host to sync the deployed revision';title.append(badge);
+    }
     heading.append(title,node('span','host-count',sessions.filter(row=>ACTIVE.includes(row.effective_state)).length+' live · '+sessions.filter(row=>!ACTIVE.includes(row.effective_state)).length+' recent'));section.append(heading);
     const columns=node('div','agent-columns'), agents=new Map();
     for (const row of sessions) {const name=agentName(row);if(!agents.has(name)) agents.set(name,[]);agents.get(name).push(row);}
@@ -616,9 +621,10 @@ async function refresh() {
   const request=++state.request;
   state.refreshing=true;
   try {
-    const [sessions, events, resources] = await Promise.all([api('/sessions'),state.view==='timeline' ? api('/events',timelineParams()) : Promise.resolve(null),api('/resources').catch(()=>null)]);
+    const [sessions, events, resources, hosts] = await Promise.all([api('/sessions'),state.view==='timeline' ? api('/events',timelineParams()) : Promise.resolve(null),api('/resources').catch(()=>null),api('/hosts').catch(()=>null)]);
     if (request!==state.request) return;
     state.sessions=sessions.sessions;
+    if(hosts) state.hosts=hosts.hosts;
     if(resources) state.resources=resources.resources;
     renderResources(state.resources);
     if (!state.historyAt) loadHistory();

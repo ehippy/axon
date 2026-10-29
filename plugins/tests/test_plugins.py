@@ -528,12 +528,24 @@ class SyncTests(unittest.TestCase):
         second=run(); self.assertEqual(second.returncode,0,second.stderr)
         self.assertTrue(json.loads(second.stdout)['skipped'])
 
+    def test_sync_status_never_publishes_local_error_details(self):
+        from axon_reporter import credentials
+        with patch.dict(os.environ,self.env), patch.object(credentials,'read_credential',return_value='c'*43), \
+             patch.object(manage.urllib.request,'urlopen') as opened:
+            manage.publish_sync_status({'revision':'a'*40,'synced_revision':'b'*40,'ok':False,
+                'reason':'sync_failed','error':'private checkout /home/private and command details'})
+        request=opened.call_args.args[0]
+        self.assertEqual(json.loads(request.data),{'synced_revision':'b'*40,'ok':False,'error':'sync_failed'})
+        self.assertEqual(request.headers['Authorization'],'Bearer '+'c'*43)
+
 
 class TimerTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(); self.root=Path(self.tmp.name)
         self.home=self.root/'home'
-        self.env=patch.dict(os.environ,{'AXON_ACTIVITY_HOME':str(self.root/'state'),'PATH':'/opt/agents/bin:/usr/bin'})
+        self.env=patch.dict(os.environ,{'AXON_ACTIVITY_HOME':str(self.root/'state'),'PATH':'/opt/agents/bin:/usr/bin',
+            'AXON_CONFIG_FILE':str(self.root/'missing-env'),'AXON_HOST_CREDENTIAL_FILE':str(self.root/'missing-credential'),
+            'AXON_SERVER':'http://127.0.0.1:9'})
         self.env.start()
     def tearDown(self):
         self.env.stop(); self.tmp.cleanup()
@@ -593,11 +605,13 @@ class TimerTests(unittest.TestCase):
         # Once the server deploys the second commit, the host follows.
         report=manage.update(self.home,True,clone,server=lambda: second,sync_fn=sync)
         self.assertEqual((report['revision'],report['held_at_server']),(second,False))
-        # A server ahead of the clone or out of reach does not hold anything back.
+        # An unreachable server cannot prove that a newer checkout is safe to apply.
         third=self.commit(origin,'c')
         report=manage.update(self.home,True,clone,server=lambda: None,sync_fn=sync)
-        self.assertEqual((report['revision'],report['ok']),(third,True))
-        self.assertEqual(synced,[first,second,third])
+        self.assertEqual((report['revision'],report['ok']),(second,False))
+        self.assertIn('keeping the current hooks',report['error'])
+        self.assertEqual(self.git(clone,'rev-parse','HEAD'),second)
+        self.assertEqual(synced,[first,second])
     def test_update_refuses_unknown_server_commit_and_dirty_clone(self):
         _,clone,first,second=self.clones()
         sync=lambda home,root: self.fail('must not sync')

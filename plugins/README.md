@@ -64,7 +64,7 @@ Each run is `manage.py update --apply`: refuse if the clone has local changes,
 (`GET <AXON_SERVER or http://AXON_BROKER:8510>/update`) — when the pulled HEAD
 is not in that commit's history, the clone is reset to the server's commit, so
 hooks that add protocol fields wait for the server deploy. An unreachable server
-is logged and the pulled revision is used; a server commit missing from the clone
+is logged and the current hooks are kept; a server commit missing from the clone
 undoes the pull and fails the run. Then `sync --apply` runs from the updated code.
 The result lands in `~/.local/state/axon/sync-status.json`
 (`revision`, `at`, `ok`, `error`); `manage.py status` prints it.
