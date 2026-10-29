@@ -39,6 +39,23 @@ class WakeInboxTests(unittest.TestCase):
         with self.assertRaises(PermissionError):self.j.claim('test','s',wake_path='pi-native')
         self.assertEqual(len(self.claim()),1)
 
+    def test_consent_off_holds_the_wait_and_delivery_resumes_on_flip(self):
+        # Issue #30: an instant empty answer makes armed listeners re-claim in a
+        # tight loop while consent is off (the normal resting state).
+        self.j.send_message('test','s','Queued while consent off')
+        started=time.time()
+        self.assertEqual(self.j.claim('test','s',credential=self.credential,wake_path='pi-native',wait=1),[])
+        self.assertGreaterEqual(time.time()-started,0.9)
+        result={}
+        def waiter():result['messages']=self.j.claim('test','s',credential=self.credential,wake_path='pi-native',wait=3)
+        thread=threading.Thread(target=waiter);thread.start()
+        time.sleep(.2)
+        self.j.set_wake('test','s',True)
+        flipped=time.time()
+        thread.join(2)
+        self.assertEqual([m['text'] for m in result.get('messages',[])],['Queued while consent off'])
+        self.assertLess(time.time()-flipped,1)
+
     def test_leases_acknowledgment_audit_and_duplicate_ack(self):
         self.j.set_wake('test','s',True);self.j.send_message('test','s','PRIVATE TEXT')
         batch=self.claim();self.assertEqual(self.claim(),[])
