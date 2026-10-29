@@ -262,14 +262,18 @@ export default {
         for await (const event of ctx.event.subscribe()) {
           if (!alive) return;
           try {
-            const properties = event?.properties ?? event;
+            const properties = event?.properties ?? event?.data ?? event;
             const sessionID =
               properties?.sessionID ?? properties?.info?.sessionID ?? properties?.info?.id;
             if (!tracker.track(sessionID)) continue;
-            if (event?.type === "session.idle") {
+            const type = event?.type;
+            // v2 generations signal turn end as session.execution.succeeded/
+            // failed; older buses emit session.idle. All map to the same
+            // settle point: the session is reachable by native injection now.
+            if (type === "session.idle" || type === "session.execution.succeeded") {
               wake.turnIdle(sessionID);
               send({ ...tracker.base(sessionID), hook_event_name: "Stop" }, false);
-            } else if (event?.type === "session.error") {
+            } else if (type === "session.error" || type === "session.execution.failed") {
               wake.turnIdle(sessionID);
               send({ ...tracker.base(sessionID), hook_event_name: "Interrupt" }, false);
             }
@@ -300,9 +304,9 @@ export default {
           const sessionID =
             event?.properties?.sessionID ?? event?.properties?.info?.sessionID ?? event?.properties?.info?.id;
           if (!tracker.track(sessionID)) return;
-          if (event?.type === "session.idle") {
+          if (event?.type === "session.idle" || event?.type === "session.execution.succeeded") {
             await send({ ...tracker.base(sessionID), hook_event_name: "Stop" }, false);
-          } else if (event?.type === "session.error") {
+          } else if (event?.type === "session.error" || event?.type === "session.execution.failed") {
             await send({ ...tracker.base(sessionID), hook_event_name: "Interrupt" }, false);
           }
         } catch {
