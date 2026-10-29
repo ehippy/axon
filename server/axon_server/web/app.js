@@ -241,7 +241,7 @@ function hostName(row) { return row.machine || 'Host not reported'; }
 const HOST_KINDS = ['laptop', 'desktop', 'server'];
 const INPUT_AGENTS = ['claude','hermes'];
 const TOKEN_KEY = 'axon-input-token';
-function storedToken() { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } }
+function storedToken() { try { return (localStorage.getItem(TOKEN_KEY) || '').replace(/\s+/g,''); } catch { return ''; } }
 function storeToken(value) { try { value ? localStorage.setItem(TOKEN_KEY,value) : localStorage.removeItem(TOKEN_KEY); } catch {} }
 function listeningLeft(row) {
   const left=Number(row.listening_until||0)-Date.now()/1000;
