@@ -380,6 +380,19 @@ function options(id, values, label) {
   select.replaceChildren(new Option(label,''),...unique.map(value=>new Option(id==='agent'?agentName({agent:value}):value,value)));
   select.value=current;
 }
+function projectOptions() {
+  const select=$('project'), current=select.value;
+  const projects=new Map();
+  for(const row of state.sessions) if(row.project) projects.set(row.project_key || row.project_id || 'legacy:'+row.project,row.project);
+  for(const row of state.projects||[]) projects.set(row.id,row.name);
+  const signature=JSON.stringify([...projects].sort());
+  if(select.dataset.signature===signature)return;
+  select.dataset.signature=signature;
+  const names=[...projects.values()];
+  select.replaceChildren(new Option('All projects',''),...[...projects].map(([id,name])=>new Option(name+(names.filter(n=>n===name).length>1?' · '+id.slice(0,8):''),id)));
+  if(current && !projects.has(current)) select.append(new Option(current,current));
+  select.value=current;
+}
 function query(extra={}) {
   const params = new URLSearchParams(extra);
   for (const name of ['project','agent']) if ($(name).value) params.set(name, $(name).value);
@@ -412,7 +425,7 @@ function card(row, grouped=false) {
   top.append(identity);
   const activity=row.activity_at ?? row.updated_at;
   const time=node('time','card-time',relative(activity)); time.dataset.at=activity; time.title='Last activity: '+new Date(activity*1000).toLocaleString()+' · Last report: '+new Date(row.updated_at*1000).toLocaleString();
-  const project=node('div','project-line');project.append(node('span','project-name',row.project || 'Unassigned project'),time);
+  const project=node('div','project-line');project.append(node('span','project-name',row.project || row.topic || 'No project'),time);
   const label=statusName(row.effective_state), bottom=node('div','card-bottom');
   const detail=label==='blocked' ? row.blocker || row.step : label==='finished' ? row.outcome : row.step || row.activity;
   bottom.append(status(label));
@@ -533,12 +546,56 @@ function eventRow(event, compact=false) {
 }
 function filteredSessions() {
   let rows=state.sessions.filter(row=>!$('host').value || row.machine===$('host').value)
-    .filter(row=>!$('project').value || row.project===$('project').value)
+    .filter(row=>!row.project_hidden)
+    .filter(row=>!$('project').value || [row.project,row.project_key,row.project_id].includes($('project').value))
     .filter(row=>!$('agent').value || row.agent===$('agent').value);
   const search=$('search').value.trim().toLowerCase();
   if (search) rows=rows.filter(row=>JSON.stringify(row).toLowerCase().includes(search));
   if ($('period').value!=='all') rows=rows.filter(row=>row.updated_at>=Date.now()/1000-Number($('period').value));
   return rows;
+}
+function projectView(container) {
+  const selected=$('project').value;
+  const groups=(state.projects||[]).filter(p=>!selected || p.id===selected || p.name===selected);
+  $('result-count').textContent=groups.length+' projects';$('load-more').hidden=true;
+  for(const project of groups) {
+    const section=node('section','project-summary');
+    const heading=node('h2','',project.name+(project.hidden?' · Hidden':''));section.append(heading);
+    const totals=project.tokens || {}, number=n=>Number(n||0).toLocaleString();
+    section.append(node('p','project-meta',project.sessions.length+' sessions · Last activity '+(project.last_activity?date(project.last_activity)+' '+clock(project.last_activity):'unknown')));
+    section.append(node('p','project-meta','Tokens in period: '+number(totals.input)+' input · '+number(totals.cached)+' cached · '+number(totals.output)+' output'));
+    for(const host of project.hosts) section.append(node('p','project-meta',host.machine+' · '+(host.checkouts.map(c=>[c.worktree || 'Main checkout',c.branch].filter(Boolean).join(' / ')).join(', ') || 'Legacy reports')+' · '+(host.allowed_agents.length?'Starts: '+host.allowed_agents.map(a=>agentName({agent:a})).join(', '):'Session starts disabled')));
+    if(!selected) {
+      const open=node('button','filter-pill','Open project');open.addEventListener('click',()=>{$('project').value=project.id;filtersChanged();});section.append(open);
+    } else {
+      const form=node('form','project-editor');
+      const name=node('input');name.value=project.name;name.maxLength=120;name.setAttribute('aria-label','Project name');
+      const hidden=node('input');hidden.type='checkbox';hidden.checked=project.hidden;
+      const hiddenLabel=node('label','');hiddenLabel.append(hidden,document.createTextNode(' Hide from board'));
+      const merge=node('select');merge.setAttribute('aria-label','Merge into project');merge.append(new Option('Keep separate',''),...(state.projects||[]).filter(p=>p.id!==project.id).map(p=>new Option('Merge into '+p.name,p.id)));
+      const token=node('input');token.type='password';token.autocomplete='off';token.placeholder='Input token';token.setAttribute('aria-label','Project input token');token.hidden=!!storedToken();
+      const save=node('button','filter-pill','Save project');save.type='submit';
+      const status=node('p','project-meta');status.setAttribute('role','status');
+      form.append(name,hiddenLabel,merge,token,save,status);
+      form.addEventListener('submit',async event=>{
+        event.preventDefault();if(token.value){storeToken(token.value);token.value='';}
+        if(!storedToken()){token.hidden=false;status.textContent='Enter the input token to save changes.';return;}
+        const patch={name:name.value.trim(),hidden:hidden.checked};if(merge.value)patch.merge_into=merge.value;
+        save.disabled=true;form.dataset.saving='true';
+        try {
+          const response=await fetch('/projects/'+encodeURIComponent(project.id),{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+storedToken()},body:JSON.stringify(patch),signal:AbortSignal.timeout(8000)});
+          if(!response.ok){if(response.status===401){storeToken('');token.hidden=false;}throw Error('Could not save project ('+response.status+').');}
+          if(patch.merge_into)$('project').value=patch.merge_into;
+          await refresh();
+        } catch(error){status.textContent=error.message;}
+        finally{save.disabled=false;delete form.dataset.saving;}
+      });
+      section.append(form);
+      const sessions=node('div','quiet-grid');project.sessions.forEach(row=>sessions.append(card(row)));section.append(sessions);
+    }
+    container.append(section);
+  }
+  if(!groups.length)container.append(empty('No projects reported','Projects appear when an agent reports from a git checkout.'));
 }
 function hostGroups(rows) {
   const fragment=document.createDocumentFragment();
@@ -569,20 +626,21 @@ function hostGroups(rows) {
 function render() {
   const counts=Object.fromEntries(ACTIVE.map(value=>[value,filteredSessions().filter(s=>!s.archived_at && s.effective_state===value).length]));
   for (const value of ACTIVE) $('count-'+value).textContent=counts[value];
-  $('live-badge').textContent=state.sessions.filter(row=>!row.archived_at && ACTIVE.includes(row.effective_state)).length;
+  $('live-badge').textContent=state.sessions.filter(row=>!row.archived_at && !row.project_hidden && ACTIVE.includes(row.effective_state)).length;
   document.querySelectorAll('[data-view]').forEach(button=>{button.classList.toggle('selected',button.dataset.view===state.view);button.setAttribute('aria-current',button.dataset.view===state.view ? 'page' : 'false');});
   document.querySelectorAll('[data-state]').forEach(button=>{button.classList.toggle('active',button.dataset.state===state.filter);button.setAttribute('aria-pressed',String(button.dataset.state===state.filter));button.setAttribute('aria-label',LABEL[button.dataset.state]+': '+counts[button.dataset.state]);button.title=LABEL[button.dataset.state];});
   $('resume-live').hidden=!(state.view==='timeline' && state.events.length>PAGE);
   $('clear-state').hidden=!state.filter || state.view!=='now';
   $('heartbeat-control').hidden=state.view!=='timeline';
   $('nav-search').classList.toggle('has-query',!!$('search').value.trim());
-  $('page-title').textContent=state.view==='now' ? 'Live board' : 'Timeline';
-  $('page-subtitle').textContent=state.view==='now' ? 'Hosts → agents → work.' : 'Reported work, across hosts, agents and projects.';
+  $('page-title').textContent=state.view==='now' ? 'Live board' : state.view==='projects' ? 'Projects' : 'Timeline';
+    $('page-subtitle').textContent=state.view==='now' ? 'Hosts → agents → work.' : state.view==='projects' ? 'Repositories, worktrees and activity across hosts.' : 'Reported work, across hosts, agents and projects.';
   $('result-count').hidden=state.view==='now';
   document.querySelector('.section-heading').hidden=state.view==='now' && !state.filter;
   const container=$('activity');container.classList.toggle('board',state.view==='now');
   const focused=document.activeElement?.dataset?.sessionKey;
   if (state.view==='now' && document.activeElement?.closest?.('.card-composer')) return; // never wipe a draft mid-typing
+  if (document.activeElement?.closest?.('.project-editor:not([data-saving])')) return;
   container.replaceChildren();
   if (state.view==='now') {
     const archived=filteredSessions().filter(row=>row.archived_at);
@@ -599,6 +657,8 @@ function render() {
       const grid=node('div','quiet-grid');archived.forEach(row=>grid.append(card(row)));section.append(grid);container.append(section);
     }
     $('load-more').hidden=true;
+  } else if(state.view==='projects') {
+    projectView(container);
   } else {
     $('result-count').textContent=state.events.length+' events';
     let day='';
@@ -621,14 +681,16 @@ async function refresh() {
   const request=++state.request;
   state.refreshing=true;
   try {
-    const [sessions, events, resources, hosts] = await Promise.all([api('/sessions'),state.view==='timeline' ? api('/events',timelineParams()) : Promise.resolve(null),api('/resources').catch(()=>null),api('/hosts').catch(()=>null)]);
+    const since=$('period').value==='all'?0:Math.floor(Date.now()/1000-Number($('period').value));
+    const [sessions, events, resources, hosts, projects] = await Promise.all([api('/sessions'),state.view==='timeline' ? api('/events',timelineParams()) : Promise.resolve(null),api('/resources').catch(()=>null),api('/hosts').catch(()=>null),api('/projects',new URLSearchParams({since:String(since)})).catch(()=>null)]);
     if (request!==state.request) return;
     state.sessions=sessions.sessions;
     if(hosts) state.hosts=hosts.hosts;
+    if(projects) state.projects=projects.projects;
     if(resources) state.resources=resources.resources;
     renderResources(state.resources);
     if (!state.historyAt) loadHistory();
-    options('host',state.sessions.map(s=>s.machine),'All hosts'); options('project',[...state.sessions].sort((a,b)=>b.updated_at-a.updated_at).map(s=>s.project),'All projects'); options('agent',state.sessions.map(s=>s.agent),'All agents');
+    options('host',state.sessions.map(s=>s.machine),'All hosts'); projectOptions(); options('agent',state.sessions.map(s=>s.agent),'All agents');
     if (events) { state.events=events.events;state.before=events.next_before;state.more=events.events.length===PAGE; }
     state.synced=Date.now(); $('error').hidden=true; $('sync-dot').classList.remove('offline'); $('sync-status').textContent=state.live ? 'Live' : 'Polling · just synced';
     render(); route();
@@ -765,7 +827,7 @@ function readRoute() {
   // One-tap setup: any #...&token=... link stores the token and vanishes from the URL (fragments
   // never reach the server, so it leaves no trail) — no typing required on phones.
   if (params.get('token')) { storeToken(params.get('token')); history.replaceState(null,'',location.pathname); }
-  state.view=params.get('view')==='timeline'?'timeline':'now';state.filter=ACTIVE.includes(params.get('state'))?params.get('state'):'';
+  state.view=['timeline','projects'].includes(params.get('view'))?params.get('view'):'now';state.filter=ACTIVE.includes(params.get('state'))?params.get('state'):'';
   $('search').value=params.get('search')||'';
   const horizon=params.get('period')||'3600';
   $('period').value=[...$('period').options].some(option=>option.value===horizon)?horizon:'3600';

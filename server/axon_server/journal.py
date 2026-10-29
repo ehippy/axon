@@ -19,11 +19,12 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit, unquote
 from urllib.request import urlopen
 
 from axon_protocol import STATES, FIELDS, TERMINAL, capabilities, known_data, validate
 from axon_protocol.resources import parse_inference_metrics, validate_resource
+from axon_server.projects import ProjectStore
 
 IDENTITY = re.compile(r'[a-zA-Z0-9_.-]{1,128}')
 INFERENCE_LABEL = re.compile(r'[a-zA-Z0-9_.-]{1,80}')
@@ -45,13 +46,14 @@ WEB_ASSETS = {'/': ('index.html', 'text/html; charset=utf-8'),
 def server_revision():
     """Fingerprint code and shipped UI, independent of data and deployment paths."""
     digest = hashlib.sha256(Path(__file__).read_bytes())
+    digest.update(Path(__file__).with_name('projects.py').read_bytes())
     for name in sorted({asset[0] for asset in WEB_ASSETS.values()}):
         digest.update(name.encode())
         digest.update(files('axon_server').joinpath('web', *name.split('/')).read_bytes())
     return digest.hexdigest()
 
 
-class Journal:
+class Journal(ProjectStore):
     def __init__(self, path, retention_days=30):
         if type(retention_days) is not int or retention_days < 0:
             raise ValueError('retention_days must be a nonnegative integer')
@@ -110,6 +112,7 @@ class Journal:
                 ''')
             db.execute('CREATE INDEX IF NOT EXISTS event_age ON events(at)')
             db.execute('CREATE INDEX IF NOT EXISTS session_age ON sessions(at)')
+        self.init_projects()
         self.prune()
 
     def prune(self, now=None):
@@ -194,6 +197,7 @@ class Journal:
             current.setdefault('lease_seconds', 900)
             current['updated_at'] = v['at']
             db.execute('INSERT OR REPLACE INTO sessions VALUES(?,?,?,?)', (v['source'], v['session'], v['at'], json.dumps(current)))
+            self.project_seen(db,current,v['at'])
         return True
 
     def sessions(self, filters=None):
@@ -202,14 +206,18 @@ class Journal:
             rows = db.execute('SELECT s.payload, a.archived_at FROM sessions s LEFT JOIN session_archives a ON s.source=a.source AND s.session=a.session ORDER BY s.at DESC').fetchall()
             wake = {(r['source'], r['session']): bool(r['enabled']) for r in db.execute('SELECT * FROM session_wake')}
         result = []
+        overrides = self.project_overrides()
         for row in rows:
             item = json.loads(row[0])
+            item = self.apply_project_override(item, overrides)
             item['wake'] = wake.get((item['source'], item['session']), False)
             if row['archived_at'] is not None:
                 item['archived_at'] = row['archived_at']
             item['fresh'] = time.time() - item['updated_at'] <= item['lease_seconds']
             item['effective_state'] = item['state'] if item['fresh'] or item['state'] in TERMINAL else 'lost_contact'
-            if any(item.get(k if k != 'state' else 'effective_state') != v for k, v in filters.items() if k in ('source', 'session', 'project', 'agent', 'machine', 'state')):
+            if filters.get('project') and filters['project'] not in (item.get('project'),item.get('project_key'),item.get('project_id')):
+                continue
+            if any(item.get(k if k != 'state' else 'effective_state') != v for k, v in filters.items() if k in ('source', 'session', 'agent', 'machine', 'state')):
                 continue
             if filters.get('q', '').lower() not in json.dumps(item).lower():
                 continue
@@ -233,7 +241,7 @@ class Journal:
                 rows.append({'provider':provider,'account':'primary','observed_at':None,'windows':[]})
         return rows
 
-    def token_usage(self, since):
+    def token_usage(self, since, session_keys=None):
         """Tokens each agent sent and received since a time, from per-session running totals.
         A session already under way before the period with no earlier count is measured from its
         first count inside the period, so turning reporting on never dumps a whole session into it."""
@@ -242,6 +250,8 @@ class Journal:
                 WHERE at>=? AND payload LIKE '%"tokens"%'""", (since,)).fetchall()
             rows = []
             for source, session in counted:
+                if session_keys is not None and (source,session) not in session_keys:
+                    continue
                 agent = db.execute("SELECT json_extract(payload,'$.agent') FROM sessions WHERE source=? AND session=?", (source, session)).fetchone()
                 began = db.execute('SELECT MIN(at) FROM events WHERE source=? AND session=?', (source, session)).fetchone()[0]
                 for at, tokens in db.execute("""SELECT at, json_extract(payload,'$.data.tokens') FROM events
@@ -303,7 +313,12 @@ class Journal:
         for key, op in [('since', '>='), ('until', '<')]:
             if filters.get(key):
                 clauses.append('at' + op + '?'); args.append(float(filters[key]))
-        for field in ('project', 'agent', 'machine'):
+        if filters.get('project'):
+            matches = self.sessions({'project':filters['project']})
+            clauses.append('(source,session) IN (VALUES '+','.join('(?,?)' for _ in matches)+')' if matches else '0')
+            for item in matches:
+                args.extend((item['source'],item['session']))
+        for field in ('agent', 'machine'):
             if filters.get(field):
                 clauses.append("EXISTS (SELECT 1 FROM sessions s WHERE s.source=events.source AND s.session=events.session AND json_extract(s.payload, '$." + field + "')=?)")
                 args.append(filters[field])
@@ -509,6 +524,13 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
                                          for s in journal.sessions(filters)]}
                 elif url.path == '/hosts':
                     data = {'hosts': journal.hosts(update_status(updater).get('commit') if updater else None)}
+                elif url.path == '/projects':
+                    data = {'projects': journal.projects(float(filters['since']) if 'since' in filters else None)}
+                elif url.path.startswith('/projects/'):
+                    key = unquote(url.path[len('/projects/'):])
+                    data = next((p for p in journal.projects(float(filters['since']) if 'since' in filters else None) if p['id']==key), None)
+                    if data is None:
+                        self.send_error(404); return
                 elif (parts := session_path(url.path)) and parts[2] == 'messages':
                     data = {'messages': journal.messages(parts[0], parts[1]), 'input': bool(token)}
                 elif url.path == '/events':
@@ -534,6 +556,21 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
             return True
         def do_POST(self):
             url = urlsplit(self.path)
+            if url.path.startswith('/projects/'):
+                if not self.authorized('Project overrides are disabled'): return
+                try:
+                    length = int(self.headers.get('Content-Length', 0))
+                    if not 0 < length <= 2048: raise ValueError('invalid body')
+                    data = journal.update_project(unquote(url.path[len('/projects/'):]),json.loads(self.rfile.read(length)))
+                except LookupError:
+                    self.send_error(404, 'Unknown project'); return
+                except (ValueError, TypeError):
+                    self.send_error(400, 'Invalid override'); return
+                body = json.dumps(data).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers(); self.wfile.write(body); return
             if url.path == '/hosts/sync':
                 auth = self.headers.get('Authorization', '')
                 try:

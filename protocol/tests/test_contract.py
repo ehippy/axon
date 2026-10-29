@@ -30,6 +30,8 @@ class ContractTests(unittest.TestCase):
                 validate(self.fixture('invalid-finished'))
             expected = self.fixture('view')['sessions'][0]
             expected['wake'] = False
+            expected['project_key'] = 'legacy:'+expected['project']
+            expected['project_hidden'] = False
             self.assertEqual(journal.sessions(), [expected])
 
     def test_reporter_identity_is_stable_private_and_explicitly_overridable(self):
