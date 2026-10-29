@@ -247,6 +247,33 @@ def queue_delivery(agent, session, messages):
     return True
 
 
+def codex_thread_loaded(thread):
+    """True/False when Codex's writer lock says whether a client has this thread
+    loaded (the loading process holds an flock on it); None if unknowable."""
+    import fcntl
+    home = Path(report.setting('CODEX_HOME') or Path.home() / '.codex')
+    locks = home / 'thread-writer-locks'
+    if not locks.is_dir():
+        return None
+    try:
+        fd = os.open(locks / f'{thread}.lock', os.O_RDONLY)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    except OSError:
+        return None
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
 def queue_listen(agent):
     """Detached idle watcher: wake claims for this session go to the agent's queue."""
     try:
@@ -262,10 +289,15 @@ def queue_listen(agent):
         token = arm_listener(agent, session)
         deadline, renewed = time.time() + seconds, 0
         while time.time() < deadline and armed(agent, session, token):
+            # Once no client has the thread loaded, input queued here would sit in
+            # Codex's queue unseen: step aside so the host runner can resume it (#18).
+            if codex_thread_loaded(str(session)) is False:
+                stand_down(agent, session, token)
+                return 0
             if time.time() - renewed >= 1800:
                 renewed = time.time()
                 try:
-                    report.report(agent, str(session), 'heartbeat', {'queue_watching_until': round(deadline), 'lease_seconds': 3600})
+                    report.report(agent, str(session), 'heartbeat', {'listening_until': round(deadline), 'lease_seconds': 3600})
                 except Exception:
                     pass
             try:
@@ -275,6 +307,13 @@ def queue_listen(agent):
                 continue
             if not messages:
                 continue
+            if codex_thread_loaded(str(session)) is False:
+                try:
+                    acknowledge_wake(agent, session, messages, False)
+                except (OSError, ValueError):
+                    pass
+                stand_down(agent, session, token)
+                return 0
             from .native_inbox import accepted_ids
             known = accepted_ids(agent, session, [m['id'] for m in messages])
             already = [m for m in messages if m['id'] in known]
@@ -297,6 +336,16 @@ def queue_listen(agent):
         return 0
     except Exception:
         return 0
+
+
+def stand_down(agent, session, token):
+    """Withdraw this watcher and tell the board nothing is listening any more."""
+    if armed(agent, session, token):
+        cancel_listener(agent, session)
+    try:
+        report.report(agent, str(session), 'heartbeat', {'listening_until': 0})
+    except Exception:
+        pass
 
 
 def spawn_queue_listener(agent, session):

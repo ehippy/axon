@@ -14,12 +14,13 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from . import config
+from . import config, resume
 
 START_TIMEOUT = 90
 # How long a fire-and-forget launcher watches for an immediate crash before it
@@ -54,6 +55,8 @@ def post(url, payload=None, credential=None, timeout=15):
 def start_claude(job, path, settings, executable=None):
     """Background start inside the project; Claude creates the worktree itself
     with -w, and the session reports itself through its own hooks."""
+    if settings['permission_mode'] not in config.PERMISSION_MODES:
+        raise StartError('bad_permission_mode')
     name = 'axon-' + job['id'][:8]
     command = [executable or 'claude', '--bg', '-n', name,
                '--permission-mode', settings['permission_mode']]
@@ -219,6 +222,18 @@ def run_once(server, machine, credential, policy, wait, log=print):
     return job
 
 
+def resume_loop(server, machine, credential, policy):
+    """Long-poll for input to sessions that ended, beside the start-job loop."""
+    while True:
+        try:
+            outcome = resume.run_once(server, machine, credential, policy, 55, post, log_dir=log_dir())
+        except Exception as error:  # one bad claim must not end resuming for the host
+            print('resume error: %s' % type(error).__name__, file=sys.stderr)
+            outcome = 'unavailable'
+        if outcome == 'unavailable':
+            time.sleep(15)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='axon-runner', description=__doc__)
     parser.add_argument('--server', help='Journal server URL (default: config file, '
@@ -235,7 +250,13 @@ def main(argv=None):
         print('No host credential; enroll this host first (see plugins README).', file=sys.stderr)
         return 1
     if args.once:
-        return 0 if isinstance(run_once(server, args.machine, credential, policy, 0), dict) else 1
+        claimed = run_once(server, args.machine, credential, policy, 0)
+        if policy.resume and policy.resume['agents']:
+            claimed = resume.run_once(server, args.machine, credential, policy, 0, post, log_dir=log_dir()) or claimed
+        return 0 if isinstance(claimed, dict) else 1
+    if policy.resume and policy.resume['agents']:
+        threading.Thread(target=resume_loop, args=(server, args.machine, credential, policy),
+                         daemon=True, name='resume').start()
     while True:
         if run_once(server, args.machine, credential, policy, 55) == 'unavailable':
             time.sleep(15)

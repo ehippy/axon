@@ -16,10 +16,13 @@ reporter's host settings. When a turn ends cleanly, the Stop hook detaches one
 idle watcher per thread; it long-polls the authenticated inbox on the
 `codex-queue` wake path and hands whatever arrives to
 `codex queue --thread <id> --message …`. Whichever client holds the thread
-runs it as a turn in front of the user; with no client loaded the item stays
-in Codex's durable queue and lands as the thread's next input when someone
-opens it. The watcher stops when you type into the thread (local input wins),
-when the session ends, or after `AXON_LISTEN_SECONDS` (default 3 hours).
+runs it as a turn in front of the user. The watcher only works while a client
+has the thread loaded: Codex holds an flock on
+`~/.codex/thread-writer-locks/<id>.lock` while it does. Once nothing holds the
+lock, the watcher stops and hands back any message it claimed, so the host
+runner can resume the thread (see [runner/README.md](../../runner/README.md#resuming-ended-sessions-18)).
+It also stops when you type into the thread (local input wins), or after
+`AXON_LISTEN_SECONDS` (default 3 hours).
 Also enable **Allow dashboard messages to wake this session** in the
 session's dashboard detail. Both switches default off; the real thread UUID
 never leaves this host — the server only sees the hashed session key. A

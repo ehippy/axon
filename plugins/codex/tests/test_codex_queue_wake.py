@@ -1,3 +1,4 @@
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -34,11 +35,15 @@ class CodexQueueWakeTests(unittest.TestCase):
         credential.write_text(self.j.mint_host_credential('host-a')['credential']); credential.chmod(0o600)
         self.shim = self.root / 'codex'; self.shim.write_text(SHIM); self.shim.chmod(0o755)
         self.log = self.root / 'codex-args'
+        # Codex holds an flock on the thread's writer lock while a client has it loaded.
+        locks = self.root / 'codex-home' / 'thread-writer-locks'; locks.mkdir(parents=True)
+        self.lock = open(locks / 'thread-uuid-1.lock', 'w'); fcntl.flock(self.lock, fcntl.LOCK_EX)
         self.env = {**os.environ, 'AXON_CONFIG_FILE': str(self.root / 'absent'),
             'AXON_HOST_CREDENTIAL_FILE': str(credential), 'AXON_ACTIVITY_HOME': str(self.root / 'state'),
             'AXON_MACHINE': 'host-a', 'AXON_SOURCE': 'codex-test', 'AXON_WAKE': 'codex',
             'AXON_BROKER': '127.0.0.1:20999',
             'AXON_CODEX_BIN': str(self.shim), 'FAKE_CODEX_LOG': str(self.log),
+            'CODEX_HOME': str(self.root / 'codex-home'),
             'AXON_SERVER': f'http://127.0.0.1:{self.server.server_port}'}
         with patch.dict(os.environ, self.env):
             self.source, self.key, _ = report.identity('codex', 'thread-uuid-1')
@@ -52,6 +57,7 @@ class CodexQueueWakeTests(unittest.TestCase):
         for child in self.children:
             if child.poll() is None: child.terminate()
             child.wait(timeout=5)
+        self.lock.close()
         self.server.shutdown(); self.server.server_close(); self.thread.join(); self.tmp.cleanup()
 
     def watcher(self):
@@ -113,6 +119,27 @@ class CodexQueueWakeTests(unittest.TestCase):
         child.stdin.write(json.dumps({'session_id': 'thread-uuid-1'})); child.stdin.close()
         time.sleep(2.5)
         self.assertIsNone(self.j.messages(self.source, self.key)[0]['delivered_at'])
+
+    def test_unloaded_thread_hands_input_back_for_the_host_runner(self):
+        # Issue #18: Codex's queue only drains when a client loads the thread, so a
+        # watcher outliving the client would bury phone input. It steps aside instead.
+        self.lock.close()
+        self.j.send_message(self.source, self.key, 'Resume me')
+        child = self.watcher()
+        self.assertEqual(child.wait(timeout=6), 0)
+        self.assertFalse(self.log.exists())
+        self.assertIsNone(self.j.messages(self.source, self.key)[0]['delivered_at'])
+        self.assertEqual(self.j.claim(self.source, self.key, credential=self.j.mint_host_credential('host-a')['credential'],
+                                      wake_path='codex-queue')[0]['text'], 'Resume me')
+
+    def test_codex_thread_loaded_reads_the_writer_lock(self):
+        with patch.dict(os.environ, self.env):
+            self.assertIs(plugin_runtime.codex_thread_loaded('thread-uuid-1'), True)
+            self.assertIs(plugin_runtime.codex_thread_loaded('other-thread'), False)
+            self.lock.close()
+            self.assertIs(plugin_runtime.codex_thread_loaded('thread-uuid-1'), False)
+        with patch.dict(os.environ, {**self.env, 'CODEX_HOME': str(self.root / 'absent')}):
+            self.assertIsNone(plugin_runtime.codex_thread_loaded('thread-uuid-1'))
 
     def test_watch_requires_host_opt_in(self):
         with patch.dict(os.environ, {**self.env, 'AXON_WAKE': ''}):

@@ -39,8 +39,19 @@ STREAM_PING = 15
 UPDATE_UNIT = 'axon-update.service'
 UPDATE_DEBOUNCE = 30
 WAKE_PATHS = {'pi-native':'pi', 'hermes-native':'hermes', 'opencode-native':'opencode',
-              'codex-queue':'codex', 'claude-resume':'claude', 'claude-listener':'claude'}
+              'codex-queue':'codex', 'claude-resume':'claude', 'claude-listener':'claude',
+              'codex-resume':'codex'}
 WAKE_LEASE = 90
+# Host runners resume sessions nothing on the host is running (#18): input for a
+# session with wake consent whose process is gone is handed to that host's runner.
+RESUME_PATHS = {'claude': 'claude-resume', 'codex': 'codex-resume'}
+# An armed in-session listener takes input within a second; the runner only sees
+# input older than this, so a live session always wins the race.
+RESUME_GRACE = 10
+# A refused resume (session still open, CLI failed) stays visible and is not
+# retried until the next message or this long, so a runner never spins on it.
+RESUME_HOLD = 600
+RESUME_REASON = re.compile(r'[a-z_]{1,40}(: [ -~]{1,160})?')
 
 # Start-job queue for host runners (#19). Projects travel as bare names only:
 # folder paths stay host-local and never cross the wire.
@@ -118,6 +129,11 @@ class Journal(ProjectStore):
                 worktree INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'queued',
                 detail TEXT, claimed_at REAL, ended_at REAL);
               CREATE INDEX IF NOT EXISTS host_job_queue ON host_jobs(machine, status, at);
+              CREATE TABLE IF NOT EXISTS resume_holds (
+                source TEXT, session TEXT, until_at REAL NOT NULL, reason TEXT NOT NULL,
+                PRIMARY KEY(source, session));
+              CREATE TABLE IF NOT EXISTS host_runners (
+                machine TEXT PRIMARY KEY, seen_at REAL NOT NULL, resume_agents TEXT NOT NULL);
             ''')
 
 
@@ -242,6 +258,8 @@ class Journal(ProjectStore):
         with self.connect() as db:
             rows = db.execute('SELECT s.payload, a.archived_at FROM sessions s LEFT JOIN session_archives a ON s.source=a.source AND s.session=a.session ORDER BY s.at DESC').fetchall()
             wake = {(r['source'], r['session']): bool(r['enabled']) for r in db.execute('SELECT * FROM session_wake')}
+            holds = {(r['source'], r['session']): {'until': r['until_at'], 'reason': r['reason']}
+                     for r in db.execute('SELECT * FROM resume_holds WHERE until_at>?', (time.time(),))}
             last_wakes = {(r['source'],r['session']):{'at':r['at'],'activity':json.loads(r['payload']).get('data',{}).get('activity','Dashboard delivery')}
                 for r in db.execute("SELECT * FROM events WHERE id LIKE 'wake-%' ORDER BY at")}
         result = []
@@ -252,6 +270,8 @@ class Journal(ProjectStore):
             item['wake'] = wake.get((item['source'], item['session']), False)
             if (last_wake:=last_wakes.get((item['source'],item['session']))):
                 item['last_wake']=last_wake
+            if (hold := holds.get((item['source'], item['session']))):
+                item['resume_hold'] = hold
             if row['archived_at'] is not None:
                 item['archived_at'] = row['archived_at']
             item['fresh'] = time.time() - item['updated_at'] <= item['lease_seconds']
@@ -410,6 +430,8 @@ class Journal(ProjectStore):
             if not db.execute('SELECT 1 FROM sessions WHERE source=? AND session=?', (source, session)).fetchone():
                 raise LookupError('unknown session')
             db.execute('INSERT INTO messages(id,source,session,at,text,delivered_at) VALUES(:id,:source,:session,:at,:text,:delivered_at)', message)
+            # A new message is the user asking again: a refused resume gets another try.
+            db.execute('DELETE FROM resume_holds WHERE source=? AND session=?', (source, session))
         with self.inbox:
             self.inbox.notify_all()
         self.changed()
@@ -472,8 +494,11 @@ class Journal(ProjectStore):
     def hosts(self, revision=None):
         with self.connect() as db:
             sync = {r['machine']: dict(r) for r in db.execute('SELECT * FROM host_sync')}
-        machines = {s.get('machine') for s in self.sessions() if s.get('machine')} | set(sync)
+            runners = {r['machine']: {'seen_at': r['seen_at'], 'resume_agents': json.loads(r['resume_agents'])}
+                       for r in db.execute('SELECT * FROM host_runners')}
+        machines = {s.get('machine') for s in self.sessions() if s.get('machine')} | set(sync) | set(runners)
         return [{'machine': machine, **sync.get(machine, {}),
+                 **({'runner': runners[machine]} if machine in runners else {}),
                  'behind': bool(revision and sync.get(machine, {}).get('synced_revision') != revision)}
                 for machine in sorted(machines)]
 
@@ -559,6 +584,59 @@ class Journal(ProjectStore):
                               'ORDER BY at DESC LIMIT ?', ((machine,) if machine else ()) + (JOB_LIST_LIMIT,)).fetchall()
         return [{**dict(r), 'worktree': bool(r['worktree'])} for r in rows]
 
+    def claim_resume(self, machine, credential, agents, wait=0):
+        """Hand a host runner the pending input of one dormant session on that host.
+
+        Dormant means wake consent is on, the session is not archived, and nothing
+        in it can take the input: no armed listener or queue watcher, and not mid-turn.
+        The runner still checks the agent's own liveness before resuming."""
+        if not isinstance(machine, str) or not MACHINE.fullmatch(machine):
+            raise ValueError('invalid machine')
+        agents = sorted({a for a in agents if a in RESUME_PATHS})
+        deadline = time.time() + min(CLAIM_WAIT_LIMIT, max(0, wait))
+        while True:
+            with self.connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                now = time.time()
+                if self.host_machine(credential, db) != machine:
+                    raise PermissionError('invalid host credential or machine')
+                db.execute('INSERT OR REPLACE INTO host_runners VALUES(?,?,?)', (machine, now, json.dumps(agents)))
+                found = None
+                candidates = db.execute(
+                    'SELECT m.source, m.session, s.payload FROM messages m'
+                    ' JOIN sessions s ON s.source=m.source AND s.session=m.session'
+                    ' JOIN session_wake w ON w.source=m.source AND w.session=m.session AND w.enabled'
+                    ' LEFT JOIN message_claims c ON c.message_id=m.id'
+                    ' LEFT JOIN session_archives a ON a.source=m.source AND a.session=m.session'
+                    ' LEFT JOIN resume_holds h ON h.source=m.source AND h.session=m.session AND h.until_at>?'
+                    ' WHERE m.delivered_at IS NULL AND (c.until_at IS NULL OR c.until_at<=?) AND m.at<=?'
+                    ' AND a.session IS NULL AND h.session IS NULL'
+                    ' GROUP BY m.source, m.session ORDER BY MIN(m.at)', (now, now, now - RESUME_GRACE)).fetchall()
+                for row in candidates:
+                    payload = json.loads(row['payload'])
+                    if payload.get('machine') == machine and payload.get('agent') in agents and dormant(payload, now):
+                        found = (row['source'], row['session'], payload['agent'])
+                        break
+                if found:
+                    source, session, agent = found
+                    lease = uuid.uuid4().hex
+                    rows = [dict(r) for r in db.execute(
+                        'SELECT m.* FROM messages m LEFT JOIN message_claims c ON c.message_id=m.id'
+                        ' WHERE source=? AND session=? AND delivered_at IS NULL AND (c.until_at IS NULL OR c.until_at<=?)'
+                        ' ORDER BY at LIMIT 100', (source, session, now)).fetchall()]
+                    for row in rows:
+                        row['claim_token'] = lease
+                        db.execute('INSERT OR REPLACE INTO message_claims VALUES(?,?,?,?)',
+                                   (row['id'], lease, now + WAKE_LEASE, RESUME_PATHS[agent]))
+            if found:
+                self.changed()
+                return {'source': source, 'session': session, 'agent': agent, 'messages': rows}
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None
+            with self.inbox:
+                self.inbox.wait(min(remaining, 1))
+
     def set_wake(self, source, session, enabled):
         if type(enabled) is not bool:
             raise ValueError('wake must be a boolean')
@@ -566,6 +644,7 @@ class Journal(ProjectStore):
             if not db.execute('SELECT 1 FROM sessions WHERE source=? AND session=?', (source, session)).fetchone():
                 raise LookupError('unknown session')
             db.execute('INSERT OR REPLACE INTO session_wake VALUES(?,?,?)', (source, session, enabled))
+            db.execute('DELETE FROM resume_holds WHERE source=? AND session=?', (source, session))
         self.changed()
         with self.inbox:
             self.inbox.notify_all()
@@ -620,9 +699,11 @@ class Journal(ProjectStore):
                 self.inbox.wait(min(remaining, 1))
 
     def acknowledge_wake(self, source, session, credential, payload):
-        if not isinstance(payload,dict) or set(payload)!={'ids','claim_token','accepted'}:
+        if not isinstance(payload,dict) or not {'ids','claim_token','accepted'} <= set(payload) <= {'ids','claim_token','accepted','error'}:
             raise ValueError('invalid acknowledgment')
-        ids, lease, accepted = payload['ids'], payload['claim_token'], payload['accepted']
+        ids, lease, accepted, error = payload['ids'], payload['claim_token'], payload['accepted'], payload.get('error')
+        if error is not None and (accepted is not False or not isinstance(error,str) or not RESUME_REASON.fullmatch(error)):
+            raise ValueError('invalid refusal reason')
         if not isinstance(ids,list) or not 1<=len(ids)<=100 or any(not isinstance(i,str) or not IDENTITY.fullmatch(i) for i in ids):
             raise ValueError('invalid message IDs')
         if not isinstance(lease,str) or not re.fullmatch('[a-f0-9]{32}',lease) or type(accepted) is not bool:
@@ -646,6 +727,10 @@ class Journal(ProjectStore):
                         at=time.time(),kind='heartbeat',data={'activity':'Dashboard input token via '+row['claim_path']}))
                 else:
                     db.execute('DELETE FROM message_claims WHERE message_id=?',(message_id,))
+                    if error and row['claim_path'] in RESUME_PATHS.values():
+                        # Say why on the board, and keep the runner from re-claiming at once.
+                        db.execute('INSERT OR REPLACE INTO resume_holds VALUES(?,?,?,?)',
+                                   (source, session, time.time() + RESUME_HOLD, error))
             # Insert audit events in the same transaction as delivery so a restart cannot lose them.
             for event in events:
                 db.execute('INSERT OR IGNORE INTO events(source,session,id,at,received,kind,payload) VALUES(?,?,?,?,?,?,?)',
@@ -654,6 +739,20 @@ class Journal(ProjectStore):
         with self.inbox:
             self.inbox.notify_all()
         return {'acknowledged':len(ids)}
+
+
+def dormant(payload, now):
+    """True when nothing in the session can take input itself (#18).
+
+    A proven exit (SessionEnd, or the liveness watcher) wins over a listener
+    deadline: the listener died with the process but its deadline stays reported."""
+    if payload.get('state') == 'stopped' or (
+            payload.get('liveness') == 'exited' and payload.get('updated_at', 0) <= payload.get('liveness_at', 0)):
+        return True
+    if (payload.get('listening_until') or 0) > now:
+        return False
+    fresh = now - payload.get('updated_at', 0) <= payload.get('lease_seconds', 900)
+    return not (fresh and payload.get('state') == 'working')
 
 
 def update_status(root):
@@ -705,7 +804,7 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
                 if url.path == '/health':
                     data = {'ok': True, 'retention_days': journal.retention_days, 'protocol': capabilities(),
                             'host_claims': {'enrollment': True, 'required': not allow_legacy_claims, 'wake_leases':True},
-                            'host_jobs': True}
+                            'host_jobs': True, 'host_resume': sorted(RESUME_PATHS)}
                 elif url.path == '/resources':
                     data = {'resources': journal.resources()}
                 elif url.path == '/resources/tokens':
@@ -806,6 +905,26 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
                     body = json.dumps(data).encode()
                 except (ValueError, KeyError, TypeError):
                     self.send_error(400, 'Invalid enrollment'); return
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers(); self.wfile.write(body); return
+            if (resume_route := host_resume_path(url.path)):
+                auth = self.headers.get('Authorization', '')
+                credential = auth[7:] if auth.startswith('Bearer ') else ''
+                if not credential:
+                    self.send_error(401, 'Host credential required'); return
+                try:
+                    params = parse_qs(url.query)
+                    agents = [a for a in params.get('agents', [''])[-1].split(',') if a]
+                    data = {'resume': journal.claim_resume(resume_route[2], credential, agents,
+                                                           float(params.get('wait', ['0'])[-1]))}
+                except PermissionError:
+                    self.send_error(401, 'Invalid host credential'); return
+                except (ValueError, TypeError):
+                    self.send_error(400, 'Invalid resume claim'); return
+                if self.disconnected(): return
+                body = json.dumps(data).encode()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Content-Length', str(len(body)))
@@ -958,6 +1077,14 @@ def host_job_path(path):
     """Split /hosts/<machine>/jobs[...job routes] into parts, or None (#19)."""
     parts = [unquote(p) for p in path.rstrip('/').split('/')]
     if len(parts) in (4, 5, 6) and parts[1] == 'hosts' and parts[3] == 'jobs' and MACHINE.fullmatch(parts[2]):
+        return parts
+    return None
+
+
+def host_resume_path(path):
+    """Split /hosts/<machine>/resume/claim into parts, or None (#18)."""
+    parts = [unquote(p) for p in path.rstrip('/').split('/')]
+    if len(parts) == 5 and parts[1] == 'hosts' and parts[3:] == ['resume', 'claim'] and MACHINE.fullmatch(parts[2]):
         return parts
     return None
 
