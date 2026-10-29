@@ -207,7 +207,9 @@ def install(agent, home, apply=False, enable=True, hermes_command='hermes'):
         target.symlink_to(package,target_is_directory=True)
         if enable:
             # Hermes owns its configuration format and preserves other enabled plugins.
-            subprocess.run([hermes_command,'plugins','enable','axon-activity'],check=True,stdout=sys.stderr)
+            search_path = os.environ.get('PATH', '') + os.pathsep + os.pathsep.join(str(home/d) for d in EXTRA_BIN_DIRS)
+            executable = shutil.which(hermes_command, path=search_path) or hermes_command
+            subprocess.run([executable,'plugins','enable','axon-activity'],check=True,stdout=sys.stderr)
     elif agent=='pi':
         # Pi auto-discovers extension directories; the package.json manifest
         # points at index.ts. No configuration file is rewritten.

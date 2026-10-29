@@ -538,6 +538,13 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(json.loads(request.data),{'synced_revision':'b'*40,'ok':False,'error':'sync_failed'})
         self.assertEqual(request.headers['Authorization'],'Bearer '+'c'*43)
 
+    def test_hermes_install_uses_the_same_extra_bin_search_as_detection(self):
+        binary=self.home/'.local/bin/hermes';binary.parent.mkdir(parents=True)
+        binary.write_text('#!/bin/sh\n');binary.chmod(0o755)
+        with patch.dict(os.environ,self.env), patch.object(manage.subprocess,'run') as run:
+            manage.install('hermes',self.home,apply=True)
+        self.assertEqual(run.call_args.args[0],[str(binary.resolve()),'plugins','enable','axon-activity'])
+
 
 class TimerTests(unittest.TestCase):
     def setUp(self):
