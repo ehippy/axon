@@ -87,7 +87,10 @@ def main(agent):
             acknowledge_wake(agent,session,pending,accepted)
             if not accepted:time.sleep(2)
         except HTTPError as error:
-            if error.code in (401,403,404,501):return  # Fail closed; sync/consent must be repaired.
+            # The first lifecycle event can still be crossing MQTT when the HTTP
+            # poll starts. Retry authorization without injecting anything until
+            # that event establishes ownership (or a revoked credential is repaired).
+            if error.code in (403,404,501):return
             time.sleep(2)
         except (OSError,ValueError,sqlite3.Error):
             time.sleep(2)

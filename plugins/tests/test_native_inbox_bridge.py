@@ -82,6 +82,15 @@ class NativeInboxBridgeTests(unittest.TestCase):
         self.assertEqual(child.stdout.read(),'')
         self.assertIsNone(self.j.messages(self.source,self.key)[0]['delivered_at'])
 
+    def test_initial_poll_waits_for_the_lifecycle_event_to_establish_ownership(self):
+        self.j.send_message(self.source,self.key,'After lifecycle arrives')
+        with self.j.connect() as db:db.execute('DELETE FROM sessions')
+        child=self.start()
+        time.sleep(.2)
+        self.j.ingest(dict(version=1,source=self.source,session=self.key,id='late-start',at=time.time(),kind='start',data={'agent':'pi','machine':'host-a'}))
+        self.assertTrue(select.select([child.stdout],[],[],5)[0])
+        self.assertEqual(json.loads(child.stdout.readline())['messages'][0]['text'],'After lifecycle arrives')
+
     def test_an_agent_api_failure_releases_its_lease(self):
         self.j.send_message(self.source,self.key,'Retry safely')
         child=self.start()
