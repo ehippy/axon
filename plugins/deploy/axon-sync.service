@@ -1,0 +1,10 @@
+[Unit]
+Description=Pull the Axon checkout and resync agent hooks
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Agent binaries are found on the PATH the timer was installed from.
+Environment=PATH={path}
+ExecStart={python} {manage} update --apply
