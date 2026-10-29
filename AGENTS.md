@@ -2,6 +2,11 @@
 
 Run `python3 tools/test.py` and `python3 tools/check_privacy.py` before pushing.
 
+CI has two paths: `Components` runs on every change except those touching only
+`handset/**`, and `Handset` runs on `handset/**` and `protocol/**` (or
+`gh workflow run handset.yml`). Rust builds therefore never delay a server deploy, but
+a commit mixing server and handset changes waits for both.
+
 The server host follows `main` on its own (see [docs/install-server.md](docs/install-server.md#automatic-updates)):
 a server change goes live once CI passes. After pushing one, ask for the deploy rather
 than waiting for the five-minute timer, from the host named by `AXON_BROKER` in your
