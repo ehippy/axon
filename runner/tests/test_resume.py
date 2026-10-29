@@ -114,10 +114,11 @@ class ResumeTests(unittest.TestCase):
 
     def test_launch_failure_is_shown_and_input_kept(self):
         source, key = self.dormant('claude', CLAUDE_ID)
-        fake = self.fake('claude', 'echo "workspace not trusted \xe2\x9c\x97" >&2; exit 3')
+        fake = self.fake('claude', 'echo "Workspace not trusted. Run claude in /home/me/secret once \xe2\x9c\x97" >&2; exit 3')
         self.poll(self.policy(executable={'claude': fake}))
         self.assertEqual(self.journal.queued(), {(source, key): 1})
-        self.assertTrue(self.board(source, key)['resume_hold']['reason'].startswith('launch_failed: workspace not trusted'))
+        self.assertEqual(self.board(source, key)['resume_hold']['reason'],
+                         'launch_failed: Workspace not trusted. Run claude in <path> once')
 
     def test_bypass_permissions_is_refused(self):
         source, key = self.dormant('claude', CLAUDE_ID)

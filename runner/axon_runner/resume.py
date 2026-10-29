@@ -116,7 +116,9 @@ def codex_loaded(thread):
 
 def tail_of(text, code):
     # The journal only takes printable ASCII reasons; anything else would bounce the ack.
-    text = re.sub(r'[^ -~]+', ' ', text or '').strip()[-150:]
+    # Folder paths stay on the host, so they never ride along in a reason.
+    text = re.sub(r'[^ -~]+', ' ', text or '')
+    text = re.sub(r'(~|\.{0,2})/[^\s`\'"]*', '<path>', text).strip()[-150:]
     return text or 'exit %d' % code
 
 
