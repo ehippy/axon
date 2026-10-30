@@ -79,6 +79,21 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(self.outcome(other['id'])['detail'],'not_allowed')
         self.assertEqual(self.outcome(wrong_agent['id'])['detail'],'not_allowed')
 
+    def test_machine_label_follows_the_reporter_settings_before_the_host_name(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            env=Path(tmp)/'env'
+            with mock.patch.dict(os.environ,{'AXON_CONFIG_FILE':str(env)}), \
+                 mock.patch.object(cli.socket,'gethostname',return_value='laptop.example.net'):
+                os.environ.pop('AXON_MACHINE',None)
+                self.assertEqual(cli.machine_name(),'laptop')
+                env.write_text('AXON_BROKER=broker\nexport AXON_MACHINE=studio\n')
+                self.assertEqual(cli.machine_name(),'studio')
+                env.write_text('AXON_MACHINE=auto\n')
+                self.assertEqual(cli.machine_name(),'laptop')
+                os.environ['AXON_MACHINE']='pinned'
+                self.assertEqual(cli.machine_name(),'pinned')
+
     def test_each_claim_offers_existing_projects_and_agents_with_executors(self):
         policy=self.config_for([('sample',str(self.project),[]),('sample',str(self.project),['opencode','claude']),
                                 ('gone',str(self.root/'missing'),['claude']),('other',str(self.project),['opencode'])])

@@ -71,9 +71,11 @@ stays queued and is retried after the next message or 10 minutes.
 ## Credentials
 
 Reuses the #14 host credential at `~/.config/axon/host-credential`
-(override with `AXON_HOST_CREDENTIAL_FILE`). The machine name defaults to the
-hostname or `AXON_MACHINE`; claims only ever return jobs addressed to that
-machine with this credential.
+(override with `AXON_HOST_CREDENTIAL_FILE`). The machine name is the one the reporter
+uses: `AXON_MACHINE` from the environment or `~/.config/axon/env`, else the short
+hostname (also for `auto`). A macOS hostname can change on its own, so pin the
+label there. Claims only ever return jobs addressed to that machine with this
+credential.
 
 ## Starting sessions from the dashboard
 

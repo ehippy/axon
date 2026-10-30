@@ -11,6 +11,8 @@ are refused with `no_executor` so no request is ever dropped silently."""
 import argparse
 import json
 import os
+import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -30,6 +32,28 @@ LAUNCH_GRACE = 5
 
 class StartError(Exception):
     pass
+
+
+def machine_name():
+    """The label this host reports under: AXON_MACHINE from the environment or the
+    reporter's settings file (~/.config/axon/env), else the short host name. A
+    macOS host name can drift (after a network change), so a pinned label must win."""
+    label = os.environ.get('AXON_MACHINE')
+    if label is None:
+        path = Path(os.environ.get('AXON_CONFIG_FILE') or Path.home() / '.config' / 'axon' / 'env')
+        try:
+            for line in path.read_text().splitlines():
+                words = shlex.split(line, comments=True)
+                if words[:1] == ['export']:
+                    words = words[1:]
+                if len(words) == 1 and words[0].startswith('AXON_MACHINE='):
+                    label = words[0].split('=', 1)[1]
+        except (OSError, ValueError):
+            pass
+    if label and label.strip().lower() != 'auto':
+        return label
+    name = re.sub(r'[^a-zA-Z0-9_.-]', '-', socket.gethostname().split('.')[0])[:80].strip('-._')
+    return name or socket.gethostname()
 
 
 def read_credential():
@@ -240,10 +264,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog='axon-runner', description=__doc__)
     parser.add_argument('--server', help='Journal server URL (default: config file, '
                         'then AXON_SERVER, then http://$AXON_BROKER:8510)')
-    parser.add_argument('--machine', default=os.environ.get('AXON_MACHINE') or socket.gethostname())
+    parser.add_argument('--machine', help='Host label (default: AXON_MACHINE from the '
+                        'environment or ~/.config/axon/env, then the short host name)')
     parser.add_argument('--config', help='runner.toml path (default ~/.config/axon/runner.toml)')
     parser.add_argument('--once', action='store_true', help='claim at most one job and exit')
     args = parser.parse_args(argv)
+    args.machine = args.machine or machine_name()
     policy = config.load(args.config)
     server = (args.server or policy.server or os.environ.get('AXON_SERVER')
               or 'http://%s:8510' % os.environ.get('AXON_BROKER', 'localhost'))
