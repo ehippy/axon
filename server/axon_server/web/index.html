@@ -40,11 +40,9 @@
 <dialog id="session-dialog" aria-labelledby="detail-title">
  <div class="detail-top"><span class="eyebrow">SESSION / DETAIL</span><button id="close-detail" class="icon-button" aria-label="Close session details">×</button></div>
  <div id="detail-content"><h2 id="detail-title">Loading session…</h2></div>
- <section id="session-input" class="session-input" aria-label="Talk to this session" hidden>
-  <h3>TALK TO THIS SESSION</h3>
-  <ol id="message-thread" class="message-thread"></ol>
+ <section id="session-input" class="session-input" aria-label="Message this session" hidden>
   <p id="input-note" class="input-note"></p>
-  <form id="message-form" class="message-form"><textarea id="message-text" rows="3" maxlength="4000" placeholder="Message this session…" aria-label="Message"></textarea><div class="message-actions"><span id="message-status" role="status"></span><button id="message-send" class="send-button" type="submit">Send</button></div></form>
+  <form id="message-form" class="message-form"><textarea id="message-text" rows="1" maxlength="4000" placeholder="Message this session…" aria-label="Message"></textarea><button id="message-send" class="send-button" type="submit">Send</button><span id="message-status" role="status"></span></form>
   <form id="token-form" class="token-form" hidden><input id="token-input" type="password" autocomplete="off" placeholder="Paste the server's input token" aria-label="Input token"><button class="send-button" type="submit">Save token</button></form>
  </section>
 </dialog>

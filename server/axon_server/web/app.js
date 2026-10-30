@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const PAGE = 50;
 const ACTIVE = ['working', 'waiting', 'blocked'];
 const LABEL = {working:'Working', waiting:'Waiting', blocked:'Blocked', finished:'Finished', stopped:'Stopped', interrupted:'Interrupted', lost_contact:'Lost contact', exited:'Exited'};
-const state = {compose:null, drafts:{}, starting:null, startDraft:{}, startJobs:{}, view:'now', filter:'', sessions:[], events:[], before:null, more:false, selected:null, detailEvents:[], detailBefore:null, detailMore:false, synced:null, live:false, request:0, detailRequest:0};
+const state = {compose:null, drafts:{}, starting:null, startDraft:{}, startJobs:{}, view:'now', filter:'', sessions:[], events:[], before:null, more:false, selected:null, detailEvents:[], detailMessages:[], detailScroll:'', detailBefore:null, detailMore:false, synced:null, live:false, request:0, detailRequest:0};
 let timer;
 function workTitle(row) { return row.goal || row.title || row.step || row.outcome || row.topic || 'Work session'; }
 const loadedVersion=document.documentElement.dataset.axonVersion;
@@ -579,22 +579,23 @@ async function postMessage(row, text) {
     return {ok:true,message:woke ? 'Queued · wake allowed, waiting for the agent to accept it.' : 'Queued · waiting for the agent to accept it.'};
   } catch (error) { return {ok:false,message:'Not sent: '+error.message}; }
 }
-function eventRow(event, compact=false) {
+const EVENT_STATE={start:'working', progress:'working', heartbeat:'working', waiting:'waiting', blocked:'blocked', finished:'finished', stopped:'stopped', interrupted:'interrupted'};
+function eventText(event) {
+  const d=event.data;
+  return d.outcome || d.blocker || d.step || d.goal || d.activity || (event.kind==='heartbeat' ? 'Session lease renewed' : 'Session state updated');
+}
+function eventRow(event) {
   const session=state.sessions.find(row=>key(row)===key(event));
   const identity={...session,agent:event.data.agent || session?.agent};
   const item=node('article','event '+agentClass(identity)), time=node('time','event-time',clock(event.at)), track=node('div','event-track');
-  const mapped={start:'working', progress:'working', heartbeat:'working', waiting:'waiting', blocked:'blocked', finished:'finished', stopped:'stopped', interrupted:'interrupted'};
-  time.title=new Date(event.at*1000).toLocaleString(); track.append(node('i','status-dot '+(mapped[event.kind] || '')));
+  time.title=new Date(event.at*1000).toLocaleString(); track.append(node('i','status-dot '+(EVENT_STATE[event.kind] || '')));
   const content=node('div','event-content'), heading=node('div','event-heading');
-  if (!compact) {
-    const actor=node('span','event-actor');actor.append(node('span','agent-label',agentName(identity)),node('span','on-label',' on '),node('span','event-host',hostName(session || event.data)));
-    heading.append(actor,node('span','project-name',event.data.project || session?.project || 'Session'));
-  }
+  const actor=node('span','event-actor');actor.append(node('span','agent-label',agentName(identity)),node('span','on-label',' on '),node('span','event-host',hostName(session || event.data)));
+  heading.append(actor,node('span','project-name',event.data.project || session?.project || 'Session'));
   heading.append(node('span','event-kind',event.kind.replaceAll('_',' ')));
-  const d=event.data, detail=d.outcome || d.blocker || d.step || d.goal || d.activity || (event.kind==='heartbeat' ? 'Session lease renewed' : 'Session state updated');
-  const button=node('button','event-detail',detail); button.type='button'; button.addEventListener('click',()=>openSession(event));
+  const button=node('button','event-detail',eventText(event)); button.type='button'; button.addEventListener('click',()=>openSession(event));
   content.append(heading,button);
-  if (!compact) content.append(node('div','event-meta','#'+event.session.slice(0,8)));
+  content.append(node('div','event-meta','#'+event.session.slice(0,8)));
   item.append(time,track,content); return item;
 }
 function filteredSessions() {
@@ -871,8 +872,39 @@ function evidence(values) {
 function detailSection(title,text) {
   const section=node('section','detail-section');section.append(node('h3','',title),node('p','',text));return section;
 }
+function chatEvent(event, row, first) {
+  const identity={agent:event.data.agent || row.agent}, item=node('article','chat-item '+agentClass(identity));
+  if (first) item.append(node('span','chat-sender',agentName(identity)));
+  const bubble=node('div','chat-bubble tone-'+(EVENT_STATE[event.kind] || 'other'));bubble.append(node('p','chat-text',eventText(event)));
+  if (event.data.evidence?.length) bubble.append(evidence(event.data.evidence));
+  const time=node('time','',clock(event.at));time.title=new Date(event.at*1000).toLocaleString();
+  const meta=node('span','chat-meta',['progress','heartbeat'].includes(event.kind) ? '' : event.kind.replaceAll('_',' ')+' · ');meta.append(time);
+  item.append(bubble,meta);return item;
+}
+function chatMessage(message, first) {
+  const item=node('article','chat-item mine'+(message.delivered_at?' delivered':''));
+  if (first) item.append(node('span','chat-sender','You'));
+  const bubble=node('div','chat-bubble');bubble.append(node('p','chat-text',message.text));
+  item.append(bubble,node('span','chat-meta',clock(message.at)+' · '+(message.delivered_at ? 'Accepted by agent '+clock(message.delivered_at) : 'Queued')));
+  return item;
+}
+function chatLog(row) {
+  const log=node('section','chat-log');log.setAttribute('aria-label','Session conversation');
+  if (state.detailMore) {const button=node('button','load-more','Load earlier activity');button.addEventListener('click',()=>loadDetail(true));log.append(button);}
+  // Until history is fully paged in, older messages would sit in an empty stretch of the log.
+  const oldest=state.detailMore && state.detailEvents.length ? state.detailEvents.at(-1).at : -Infinity;
+  const items=[...state.detailEvents.map(event=>({at:event.at,event})),...state.detailMessages.filter(message=>message.at>=oldest).map(message=>({at:message.at,message}))].sort((a,b)=>a.at-b.at);
+  if (!items.length) log.append(node('p','chat-empty','No retained activity for this session yet.'));
+  let day='', sender='';
+  for (const item of items) {
+    if (date(item.at)!==day) {day=date(item.at);sender='';log.append(node('div','chat-day',day));}
+    const who=item.message ? 'you' : 'agent';
+    log.append(item.message ? chatMessage(item.message,sender!==who) : chatEvent(item.event,row,sender!==who));sender=who;
+  }
+  return log;
+}
 function renderDetail(row) {
-  const content=$('detail-content');content.replaceChildren();
+  const content=$('detail-content'), top=content.scrollTop, fromBottom=content.scrollHeight-top-content.clientHeight;content.replaceChildren();
   const title=node('h2','',workTitle(row));title.id='detail-title';content.append(title);
   const statusBox=node('div','detail-status');statusBox.append(status(row.effective_state || 'lost_contact'));
   if (listeningLeft(row)) statusBox.append(node('span','listening-label','Listening for input · '+duration(listeningLeft(row))+' left'));
@@ -904,22 +936,24 @@ function renderDetail(row) {
     const index=row.parent.indexOf('/'), parent=node('button','text-button','Open parent session ↗');
     parent.addEventListener('click',()=>openSession({source:row.parent.slice(0,index),session:row.parent.slice(index+1)}));content.append(parent);
   }
-  for (const [label,value] of [['Latest step',row.step],['Blocker',row.blocker],['Outcome',row.outcome],['Previous outcome (superseded)',row.previous_outcome]]) if (value) content.append(detailSection(label,value));
+  for (const [label,value] of [['Blocker',row.blocker],['Outcome',row.outcome],['Previous outcome (superseded)',row.previous_outcome]]) if (value) content.append(detailSection(label,value));
   if (row.evidence?.length) { const section=node('section','detail-section');section.append(node('h3','','EVIDENCE'),evidence(row.evidence));content.append(section); }
-  const section=node('section','detail-section detail-events');section.append(node('h3','','SESSION ACTIVITY'));
   const rawLabel=node('label','check-label'),raw=node('input');raw.type='checkbox';raw.checked=$('raw-events').checked;
-  rawLabel.append(raw,document.createTextNode('Include lifecycle details'));section.append(rawLabel);
+  rawLabel.append(raw,document.createTextNode('Include lifecycle details'));content.append(rawLabel);
   raw.addEventListener('change',()=>{$('raw-events').checked=raw.checked;state.detailEvents=[];state.detailRendered=null;loadDetail(false);});
-  if (!state.detailEvents.length) section.append(node('p','','No retained events for this session.'));
-  state.detailEvents.forEach(event=>section.append(eventRow(event,true)));content.append(section);
-  if (state.detailMore) {const button=node('button','load-more','Load earlier session events ↓');button.addEventListener('click',()=>loadDetail(true));content.append(button);}
+  content.append(chatLog(row));
+  // Follow the conversation from the bottom, but leave a reader who scrolled up where they are.
+  if (state.detailScroll==='older') content.scrollTop=content.scrollHeight-content.clientHeight-fromBottom;
+  else if (state.detailScroll==='bottom' || fromBottom<80) content.scrollTop=content.scrollHeight;
+  else content.scrollTop=top;
 }
+function growComposer() { const text=$('message-text');text.style.height='auto';if (text.scrollHeight) text.style.height=text.scrollHeight+2+'px'; }
 async function openSession(row) {
-  state.selected={source:row.source,session:row.session};state.detailEvents=[];state.detailBefore=null;state.detailMore=false;state.detailRendered='';
-  state.thread='';$('message-thread').replaceChildren();$('message-text').value=restoredDraft && key(restoredDraft)===key(row) ? restoredDraft.text : '';restoredDraft=null;$('message-status').textContent='';$('session-input').hidden=true;
+  state.selected={source:row.source,session:row.session};state.detailEvents=[];state.detailBefore=null;state.detailMore=false;state.detailRendered='';state.detailMessages=[];
+  $('message-text').value=restoredDraft && key(restoredDraft)===key(row) ? restoredDraft.text : '';restoredDraft=null;$('message-status').textContent='';$('session-input').hidden=true;
   $('detail-content').replaceChildren(node('h2','','Loading session…'));
   if (!$('session-dialog').open) $('session-dialog').showModal();
-  route();await loadDetail(false);
+  growComposer();route();await loadDetail(false);
 }
 async function loadDetail(older) {
   const selected=state.selected;if (!selected) return;
@@ -933,11 +967,13 @@ async function loadDetail(older) {
     if (request!==state.detailRequest || !state.selected || key(selected)!==key(state.selected)) return;
     if (!older && state.detailEvents.length>100) return; // keep an explicitly paged history stable
     state.detailEvents=older ? state.detailEvents.concat(events.events) : events.events;
-    state.detailBefore=events.next_before;state.detailMore=events.events.length===100;
+    state.detailBefore=events.next_before;state.detailMore=events.events.length===100;state.detailMessages=inbox?.messages || [];
+    if (older) state.detailScroll='older';
     const row=sessions.sessions[0] || {...selected,goal:'Session not in current projection',effective_state:'lost_contact'};
-    const snapshot=JSON.stringify({row,events:state.detailEvents,raw:$('raw-events').checked});
+    const snapshot=JSON.stringify({row,events:state.detailEvents,messages:state.detailMessages,raw:$('raw-events').checked});
+    renderInput(row,inbox);growComposer(); // first, so the composer's height is settled before the log scrolls
     if (snapshot!==state.detailRendered) { state.detailRendered=snapshot;renderDetail(row); }
-    renderInput(row,inbox);
+    state.detailScroll='';
   } catch (error) {
     if (request!==state.detailRequest) return;
     $('detail-content').replaceChildren(node('h2','','Could not load this session'),node('p','detail-error',error.message));
@@ -948,15 +984,6 @@ function renderInput(row, inbox) {
   const box=$('session-input');
   box.hidden=!INPUT_AGENTS.includes(row.agent) || !inbox;
   if (box.hidden) return;
-  const signature=JSON.stringify(inbox.messages);
-  if (signature!==state.thread) {
-    state.thread=signature;
-    $('message-thread').replaceChildren(...inbox.messages.map(message=>{
-      const item=node('li','message'+(message.delivered_at?' delivered':''));
-      item.append(node('p','message-text',message.text),node('span','message-meta',clock(message.at)+' · '+(message.delivered_at ? 'Accepted by agent '+clock(message.delivered_at) : 'Queued')));
-      return item;
-    }));
-  }
   $('input-note').textContent=inputNote(row,inbox.input);
   const token=!!storedToken();
   $('message-form').hidden=!inbox.input || !token;$('token-form').hidden=!inbox.input || token;
@@ -968,10 +995,11 @@ async function sendMessage(event) {
   $('message-send').disabled=true;$('message-status').textContent='Sending…';
   const row=state.sessions.find(item=>key(item)===key(selected)) || selected, result=await postMessage(row,text);
   $('message-status').textContent=result.message;$('message-send').disabled=false;
-  if (result.ok) $('message-text').value='';
-  await loadDetail(false);
+  if (result.ok) {$('message-text').value='';growComposer();}
+  state.detailScroll='bottom';await loadDetail(false);
 }
 $('message-form').addEventListener('submit',sendMessage);
+$('message-text').addEventListener('input',growComposer);
 $('message-text').addEventListener('keydown',event=>{if(event.key==='Enter' && !event.shiftKey && !event.isComposing) sendMessage(event);});
 $('token-form').addEventListener('submit',event=>{event.preventDefault();const value=$('token-input').value.trim();if(!value) return;storeToken(value);$('token-input').value='';$('message-status').textContent='';loadDetail(false);});
 function filtersChanged() { state.events=[];state.before=null;route();refresh(); }
