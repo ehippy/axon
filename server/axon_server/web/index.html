@@ -13,10 +13,11 @@
  <label class="nav-filter"><select id="host" aria-label="Host"><option value="">All hosts</option></select></label>
  <label class="nav-filter"><select id="agent" aria-label="Agent"><option value="">All agents</option></select></label>
  <label class="nav-filter"><select id="project" aria-label="Project"><option value="">All projects</option></select></label>
- <label class="nav-filter horizon-filter"><select id="period" aria-label="Time horizon"><option value="900">15m</option><option value="1800">30m</option><option value="3600" selected>1h</option><option value="21600">6h</option><option value="86400">24h</option><option value="604800">7d</option><option value="2592000">30d</option><option value="all">Any time</option></select></label>
+ <label class="nav-filter horizon-filter"><select id="period" aria-label="Time horizon"><option value="900">15m</option><option value="1800">30m</option><option value="3600">1h</option><option value="21600">6h</option><option value="86400" selected>24h</option><option value="604800">7d</option><option value="2592000">30d</option><option value="all">Any time</option></select></label>
  <details id="nav-search" class="nav-search"><summary aria-label="Search activity" title="Search activity">⌕</summary><label class="search-field"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search activity…" aria-label="Search activity"></label></details>
 </form>
  <section class="metrics" aria-label="Current activity">
+  <button class="metric" data-state="attention"><i class="status-dot waiting"></i><span>Needs you</span><strong id="count-attention">—</strong></button>
   <button class="metric" data-state="working"><i class="status-dot working"></i><span>Working</span><strong id="count-working">—</strong></button>
   <button class="metric" data-state="waiting"><i class="status-dot waiting"></i><span>Waiting</span><strong id="count-waiting">—</strong></button>
   <button class="metric" data-state="blocked"><i class="status-dot blocked"></i><span>Blocked</span><strong id="count-blocked">—</strong></button>
@@ -30,6 +31,7 @@
 </header>
 <div id="error" class="error-banner" role="alert" hidden></div>
 
+<div class="board-options"><label><input type="checkbox" id="host-layout"> Group by host</label><label><input type="checkbox" id="show-reviewed"> Show reviewed requests</label><label><input type="checkbox" id="raw-events"> Include lifecycle details</label></div>
 <section id="resources" class="resources" aria-label="Inference resources"></section>
 <div class="section-heading"><div><span id="result-count" class="muted"></span></div><div class="section-controls"><button id="resume-live" class="text-button" type="button" hidden>Back to live</button><button id="clear-state" class="text-button" hidden>Clear state filter ×</button><label id="heartbeat-control" class="check-label" hidden><input id="heartbeats" type="checkbox">Include heartbeats</label></div></div>
 <div id="archive-notice" class="archive-notice" role="status" hidden><span id="archive-notice-text"></span><button id="archive-undo" class="text-button" type="button">Undo</button></div>

@@ -2,15 +2,74 @@
 const $ = id => document.getElementById(id);
 const PAGE = 50;
 const ACTIVE = ['working', 'waiting', 'blocked'];
-const LABEL = {working:'Working', waiting:'Waiting', blocked:'Blocked', finished:'Finished', stopped:'Stopped', interrupted:'Interrupted', lost_contact:'Lost contact', exited:'Exited'};
+const LABEL = {attention:'Needs you', working:'Working', waiting:'Waiting', blocked:'Blocked', finished:'Finished', stopped:'Stopped', interrupted:'Interrupted', lost_contact:'Lost contact', exited:'Exited'};
 const state = {compose:null, drafts:{}, starting:null, startDraft:{}, startJobs:{}, view:'now', filter:'', sessions:[], events:[], before:null, more:false, selected:null, detailEvents:[], detailBefore:null, detailMore:false, synced:null, live:false, request:0, detailRequest:0};
 let timer;
+let lastVisit=0, reviewed={}, visitStarted=Date.now()/1000;
+try { const saved=JSON.parse(localStorage.getItem('axon:reviewed')||'{}'); if(saved && typeof saved==='object') reviewed=saved; } catch {}
+try { lastVisit=Number(localStorage.getItem('axon:last-visit')||0); localStorage.setItem('axon:last-visit',String(visitStarted)); } catch {}
+function workTitle(row) { return row.goal || row.title || row.step || row.outcome || row.topic || 'Untitled session'; }
+function requestFor(row) {
+  if(row.attention) return row.attention;
+  if(row.approval_pending && row.blocked_on==='human' && row.approval_gate==='human')
+    return {text:'Needs your approval in the agent client',at:row.updated_at,kind:'approval'};
+  if(row.queued_messages) return {text:row.queued_messages+' message(s) awaiting delivery',at:row.updated_at,kind:'delivery'};
+  return null;
+}
+function attention(row) {
+  const request=requestFor(row);
+  return request && ($('show-reviewed').checked || reviewed[key(row)]!==request.at) ? request : null;
+}
+function meaningful(event) {
+  const d=event.data;
+  return ['start','finished','blocked'].includes(event.kind) && !!(d.goal||d.outcome||d.blocker||d.step)
+    || ['waiting','progress'].includes(event.kind) && !!d.step;
+}
+function historyGroup(row) {
+  const topic=row.topic||'';
+  return /(?:memory|memories|recent-work|recent-gaming|gaming-memory|homarr-sync)/i.test(topic) && /(?:refresh|snapshot|ledger|sync)/i.test(row.goal||topic) ? 'Routine runs · '+topic
+    : /(?:probe|smoke|pilot|(?:^|-)test(?:$|-))/i.test(topic+' '+(row.goal||'')) ? 'Tests and probes' : 'Earlier activity';
+}
+function deliveryLabel(row) {
+  if(row.resume_hold) return 'Delivery uncertain';
+  if(listeningLeft(row)) return 'Can receive now';
+  if(row.effective_state==='working') return 'Receives at next tool call';
+  if(hostResumes(row) && row.wake) return 'Can resume for a message';
+  return 'Waits for next activity';
+}
+function attentionBoard(rows) {
+  const result=document.createDocumentFragment();
+  const needed=rows.filter(row=>attention(row));
+  const working=rows.filter(row=>!attention(row) && ACTIVE.includes(row.effective_state));
+  const recent=rows.filter(row=>!attention(row) && !ACTIVE.includes(row.effective_state));
+  function section(title,items,collapsed=false) {
+    if(!items.length)return;
+    const box=node(collapsed?'details':'section','work-section');
+    const heading=node(collapsed?'summary':'h2','work-section-title',title+' · '+items.length);box.append(heading);
+    const grid=node('div','work-grid');items.sort(title==='Needs you' ? (a,b)=>attention(b).at-attention(a).at || key(a).localeCompare(key(b)) : sessionOrder).forEach(row=>grid.append(card(row)));box.append(grid);result.append(box);
+  }
+  section('Needs you',needed);
+  if(!needed.length)result.append(node('p','attention-empty','No reported requests need your attention.'));
+  section('Working now',working);
+  const changed=recent.filter(row=>(row.work_at||row.activity_at||row.updated_at)>lastVisit && historyGroup(row)==='Earlier activity').sort(sessionOrder).slice(0,8);
+  section(lastVisit?'Since your last visit':'Recent changes',changed);
+  const remaining=recent.filter(row=>!changed.includes(row));
+  for(const group of [...new Set(remaining.map(historyGroup))]) section(group,remaining.filter(row=>historyGroup(row)===group),true);
+  if(!rows.length)result.append(empty('Nothing needs attention','No work matches these filters.'));
+  return result;
+}
 const loadedVersion=document.documentElement.dataset.axonVersion;
 const RELOAD_STATE='axon:reload-state';
 let restoredDraft=null;
 try {
   const saved=JSON.parse(sessionStorage.getItem(RELOAD_STATE)||'null');
-  if (saved) {state.drafts=saved.drafts||{};state.compose=saved.compose||null;restoredDraft=saved.detail||null;}
+  if (saved) {
+    if(saved.visitStarted) {
+      lastVisit=saved.lastVisit;visitStarted=saved.visitStarted;
+      try {localStorage.setItem('axon:last-visit',String(visitStarted));} catch {}
+    }
+    state.drafts=saved.drafts||{};state.compose=saved.compose||null;restoredDraft=saved.detail||null;
+  }
   sessionStorage.removeItem(RELOAD_STATE);
 } catch {}
 function observeVersion(response) {
@@ -19,7 +78,7 @@ function observeVersion(response) {
   // Let an in-flight send settle before capturing its draft or navigating away.
   if (document.querySelector('.message-form button:disabled, .card-composer .send-button:disabled')) return;
   const detail=state.selected ? {...state.selected,text:$('message-text').value} : null;
-  const saved={drafts:state.drafts,compose:state.compose,detail};
+  const saved={drafts:state.drafts,compose:state.compose,detail,lastVisit,visitStarted};
   try {sessionStorage.setItem(RELOAD_STATE,JSON.stringify(saved));}
   catch {if(detail?.text || Object.values(state.drafts).some(Boolean)) return;}
   state.reloading=true;route();location.reload();
@@ -137,7 +196,7 @@ function renderResources(values=[]) {
     seg.append(node('b','strip-name',agentName({agent:item.provider})+(item.account==='primary'?'':' · '+item.account)));
     for(const window of item.windows){
       seg.append(miniBar(agentName({agent:item.provider}),window));
-      seg.append(node('b','strip-pct',window.remaining===null?'?':Math.floor(window.remaining)+'%'));
+
     }
     if(item.unavailable)seg.append(node('b','out-label','out · '+item.unavailable));
     strip.append(seg);
@@ -290,7 +349,8 @@ function miniBar(label,window) {
   bar.setAttribute('title',detail);bar.setAttribute('role','progressbar');bar.setAttribute('aria-label',detail);
   bar.setAttribute('aria-valuemin','0');bar.setAttribute('aria-valuemax','100');
   if(window.remaining!==null)bar.setAttribute('aria-valuenow',String(window.remaining));else bar.setAttribute('aria-valuetext','Unknown');
-  return bar;
+  const wrapper=node('span','mini-window');wrapper.append(node('span','mini-caption',window.label+' '+(window.remaining===null?'?':Math.floor(window.remaining)+'%')),bar);
+  return wrapper;
 }
 function miniSpark(history) {
   // The strip's inference mark: same glance language as the quota bars, but over time.
@@ -407,6 +467,9 @@ function route() {
   for (const id of ['host','project','agent','period','search']) if ($(id).value) params.set(id, $(id).value);
   if (state.filter) params.set('state', state.filter);
   if ($('heartbeats').checked) params.set('heartbeats','1');
+  if ($('host-layout').checked) params.set('layout','hosts');
+  if ($('raw-events').checked) params.set('details','1');
+  if ($('show-reviewed').checked) params.set('reviewed','1');
   if (state.selected) { params.set('source',state.selected.source); params.set('session',state.selected.session); }
   history.replaceState(null,'','#'+params.toString());
 }
@@ -428,24 +491,37 @@ function card(row, grouped=false) {
   const time=node('time','card-time',relative(activity)); time.dataset.at=activity; time.title='Last activity: '+new Date(activity*1000).toLocaleString()+' · Last report: '+new Date(row.updated_at*1000).toLocaleString();
   const project=node('div','project-line');project.append(node('span','project-name',row.project || row.topic || 'No project'),time);
   const label=statusName(row.effective_state), bottom=node('div','card-bottom');
-  const detail=label==='blocked' ? row.blocker || row.step : label==='finished' ? row.outcome
+  const detail=attention(row)?.text || (label==='blocked' ? row.blocker || row.step : label==='finished' ? row.outcome
     : row.approval_pending && row.blocked_on==='automation' ? row.step || 'Auto-approving'
     : label==='waiting' && row.blocked_on==='human' && row.activity==='needs approval' ? 'Needs your approval'
-    : row.step || row.activity;
-  bottom.append(status(label));
+    : row.step || row.activity);
+  bottom.append(status(attention(row) && row.work_state ? row.work_state : label));
+  if(attention(row) && row.work_state!==label) bottom.append(node('span','delivery-label','Agent '+LABEL[label].toLowerCase()));
+  if(attention(row)) bottom.append(node('span','attention-label','Needs you · '+relative(attention(row).at)));
+  if(INPUT_AGENTS.includes(row.agent)) bottom.append(node('span','delivery-label',deliveryLabel(row)));
   if (listeningLeft(row)) bottom.append(node('span','listening-label','Listening · '+duration(listeningLeft(row))));
   if (row.last_wake) {const wake=node('span','listening-label','Dashboard wake · '+relative(row.last_wake.at));wake.title=row.last_wake.activity;bottom.append(wake);}
   bottom.append(node('span','session-id','#'+row.session.slice(0,8)));
   if (!grouped) button.append(top);
   button.classList.toggle('grouped-card',grouped);
-  button.setAttribute('aria-label',agentName(row)+' on '+hostName(row)+': '+(row.project || 'Unassigned project')+' — '+(row.goal || row.outcome || 'Work session')+' — '+LABEL[label]+' — '+row.session.slice(0,8));
-  button.append(project,node('h3','work-title',row.goal || row.outcome || 'Work session'),node('p','card-step',detail || 'No further update reported.'),bottom);
+  button.setAttribute('aria-label',agentName(row)+' on '+hostName(row)+': '+(row.project || 'Unassigned project')+' — '+(workTitle(row))+' — '+(attention(row)?'Needs you; agent '+LABEL[label]:LABEL[label])+' — '+row.session.slice(0,8));
+  button.append(project,node('h3','work-title',workTitle(row)),node('p','card-step',detail || 'No further update reported.'),bottom);
   button.addEventListener('click',()=>openSession(row));
   const shell=node('div','card-shell'+(state.compose===key(row)?' composing':''));shell.dataset.composeKey=key(row);
   const frame=node('div','card-frame'), tools=node('div','card-tools');
   const archive=node('button','archive-button',row.archived_at?'Restore':'Archive');archive.type='button';
   archive.setAttribute('aria-label',(row.archived_at?'Restore':'Archive')+' session '+(row.project||row.session.slice(0,8)));
   archive.addEventListener('click',()=>archiveSession(row,!row.archived_at));tools.append(archive);
+  if(attention(row)) {
+    const isReviewed=reviewed[key(row)]===requestFor(row).at;
+    const review=node('button','text-button',isReviewed?'Mark unreviewed':'Mark reviewed');review.type='button';
+    review.title='Hide this request from Needs you in this browser; a new request appears again.';
+    review.addEventListener('click',()=>{
+      if(isReviewed) delete reviewed[key(row)]; else reviewed[key(row)]=requestFor(row).at;
+      try {localStorage.setItem('axon:reviewed',JSON.stringify(reviewed));} catch {}
+      render();
+    });tools.append(review);
+  }
   if (INPUT_AGENTS.includes(row.agent)) tools.append(chatToggle(row));
   frame.append(button,tools);shell.append(frame);
   if (state.compose===key(row)) shell.append(composer(row));
@@ -544,7 +620,7 @@ async function postMessage(row, text) {
     if (response.status===401) { storeToken('');return {ok:false,retoken:true,message:'Token rejected. Paste it again.'}; }
     if (response.status===403) return {ok:false,message:'Session input is disabled on this server.'};
     if (!response.ok) return {ok:false,message:'Not sent: the journal returned '+response.status+'.'};
-    return {ok:true,message:listeningLeft(row) ? 'Sent · waking it now.' : 'Sent · queued for its next hook.'};
+    return {ok:true,message:'Queued · waiting for the agent to accept it.'};
   } catch (error) { return {ok:false,message:'Not sent: '+error.message}; }
 }
 function eventRow(event, compact=false) {
@@ -572,7 +648,7 @@ function filteredSessions() {
     .filter(row=>!$('agent').value || row.agent===$('agent').value);
   const search=$('search').value.trim().toLowerCase();
   if (search) rows=rows.filter(row=>JSON.stringify(row).toLowerCase().includes(search));
-  if ($('period').value!=='all') rows=rows.filter(row=>row.updated_at>=Date.now()/1000-Number($('period').value));
+  if ($('period').value!=='all') rows=rows.filter(row=>attention(row) || row.updated_at>=Date.now()/1000-Number($('period').value));
   return rows;
 }
 function projectView(container) {
@@ -733,7 +809,8 @@ function hostGroups(rows, startable=[]) {
 }
 function render() {
   const counts=Object.fromEntries(ACTIVE.map(value=>[value,filteredSessions().filter(s=>!s.archived_at && s.effective_state===value).length]));
-  for (const value of ACTIVE) $('count-'+value).textContent=counts[value];
+  counts.attention=filteredSessions().filter(row=>!row.archived_at && attention(row)).length;
+  for (const value of [...ACTIVE,'attention']) $('count-'+value).textContent=counts[value];
   $('live-badge').textContent=state.sessions.filter(row=>!row.archived_at && !row.project_hidden && ACTIVE.includes(row.effective_state)).length;
   document.querySelectorAll('[data-view]').forEach(button=>{button.classList.toggle('selected',button.dataset.view===state.view);button.setAttribute('aria-current',button.dataset.view===state.view ? 'page' : 'false');});
   document.querySelectorAll('[data-state]').forEach(button=>{button.classList.toggle('active',button.dataset.state===state.filter);button.setAttribute('aria-pressed',String(button.dataset.state===state.filter));button.setAttribute('aria-label',LABEL[button.dataset.state]+': '+counts[button.dataset.state]);button.title=LABEL[button.dataset.state];});
@@ -742,7 +819,7 @@ function render() {
   $('heartbeat-control').hidden=state.view!=='timeline';
   $('nav-search').classList.toggle('has-query',!!$('search').value.trim());
   $('page-title').textContent=state.view==='now' ? 'Live board' : state.view==='projects' ? 'Projects' : 'Timeline';
-    $('page-subtitle').textContent=state.view==='now' ? 'Hosts → agents → work.' : state.view==='projects' ? 'Repositories, worktrees and activity across hosts.' : 'Reported work, across hosts, agents and projects.';
+    $('page-subtitle').textContent=state.view==='now' ? 'What needs you, what is moving, and what changed.' : state.view==='projects' ? 'Repositories, worktrees and activity across hosts.' : 'Reported work, across hosts, agents and projects.';
   $('result-count').hidden=state.view==='now';
   document.querySelector('.section-heading').hidden=state.view==='now' && !state.filter;
   const container=$('activity');container.classList.toggle('board',state.view==='now');
@@ -753,13 +830,16 @@ function render() {
   if (state.view==='now') {
     const archived=filteredSessions().filter(row=>row.archived_at);
     let rows=filteredSessions().filter(row=>!row.archived_at);
-    if (state.filter) rows=rows.filter(row=>row.effective_state===state.filter);
+    if (state.filter) rows=rows.filter(row=>state.filter==='attention'?attention(row):row.effective_state===state.filter);
     const active=rows.filter(row=>ACTIVE.includes(row.effective_state)), visible=rows.sort(boardOrder);
     $('result-count').textContent=active.length+' live · '+(visible.length-active.length)+' recent';
     // A host that can start sessions stays on the board even when nothing is running there.
     const startable=state.filter || $('search').value.trim() ? [] : (state.hosts||[]).map(host=>host.machine)
       .filter(machine=>startOffers(machine).length && (!$('host').value || machine===$('host').value));
-    container.append(hostGroups(visible,startable));
+    container.append($('host-layout').checked ? hostGroups(visible,startable) : attentionBoard(visible));
+    if(!$('host-layout').checked && startable.length) {
+      const hosts=node('details','work-section');hosts.append(node('summary','','Start work on a host'));hosts.append(hostGroups([],startable));container.append(hosts);
+    }
     if (!visible.length && !startable.length) container.append(empty('Nothing in this view','Change your filters, or let an agent report its next bit of work.'));
     if (archived.length) {
       const section=node('details','quiet-group archived-group');section.open=!!state.archivedOpen;
@@ -773,7 +853,7 @@ function render() {
   } else {
     $('result-count').textContent=state.events.length+' events';
     let day='';
-    for (const event of state.events) {
+    for (const event of state.events.filter(event=>$('raw-events').checked || meaningful(event))) {
       const next=date(event.at);
       if (day!==next) {day=next;container.append(node('div','day-heading',day));}
       container.append(eventRow(event));
@@ -786,6 +866,7 @@ function render() {
 function timelineParams(extra={}) {
   const params=query({order:'desc',limit:String(PAGE),...extra});
   if (!$('heartbeats').checked) params.set('exclude_kind','heartbeat');
+  if (!$('raw-events').checked) params.set('meaningful','1');
   return params;
 }
 async function refresh() {
@@ -802,6 +883,9 @@ async function refresh() {
     renderResources(state.resources);
     if (!state.historyAt) loadHistory();
     options('host',state.sessions.map(s=>s.machine),'All hosts'); projectOptions(); options('agent',state.sessions.map(s=>s.agent),'All agents');
+    $('host-layout').parentElement.hidden=state.view!=='now';
+    $('show-reviewed').parentElement.hidden=state.view!=='now';
+    $('raw-events').parentElement.hidden=state.view!=='timeline';
     if (events) { state.events=events.events;state.before=events.next_before;state.more=events.events.length===PAGE; }
     state.synced=Date.now(); $('error').hidden=true; $('sync-dot').classList.remove('offline'); $('sync-status').textContent=state.live ? 'Live' : 'Polling · just synced';
     render(); route();
@@ -838,16 +922,19 @@ function detailSection(title,text) {
   const section=node('section','detail-section');section.append(node('h3','',title),node('p','',text));return section;
 }
 function renderDetail(row) {
-  const content=$('detail-content');content.replaceChildren();
-  const title=node('h2','',row.goal || row.outcome || row.project || 'Work session');title.id='detail-title';content.append(title);
-  const statusBox=node('div','detail-status');statusBox.append(status(row.effective_state || 'lost_contact'));
+  const content=$('detail-content');$('session-dialog').append($('session-input'));content.replaceChildren();
+  const title=node('h2','',workTitle(row));title.id='detail-title';content.append(title);
+  const statusBox=node('div','detail-status');statusBox.append(status(requestFor(row) && row.work_state ? row.work_state : row.effective_state || 'lost_contact'));
+  if(requestFor(row) && row.work_state!==row.effective_state) statusBox.append(node('span','delivery-label','Agent '+(LABEL[row.effective_state]||'unknown').toLowerCase()));
   if (listeningLeft(row)) statusBox.append(node('span','listening-label','Listening for input · '+duration(listeningLeft(row))+' left'));
   content.append(statusBox);
+  if(requestFor(row)) content.append(detailSection('Needs you',requestFor(row).text));
+  if(INPUT_AGENTS.includes(row.agent)) content.append(node('p','delivery-label',deliveryLabel(row)));
   const facts=node('dl','detail-facts');
   for (const [label,value] of [['Host',row.machine],['Project',row.project],['Agent',row.agent],['Source',row.source],['Session',row.session],['Branch',row.branch],['Updated',row.updated_at ? new Date(row.updated_at*1000).toLocaleString() : null]]) {
     if (value) facts.append(node('dt','',label),node('dd','',value));
   }
-  content.append(facts);
+  const metadata=node('details','session-metadata');metadata.append(node('summary','','Session metadata'),facts);content.append(metadata);
   if (INPUT_AGENTS.includes(row.agent)) {
     const label=node('label','wake-setting'), choice=node('input');choice.type='checkbox';choice.checked=!!row.wake;
     label.append(choice,document.createTextNode(' Allow dashboard messages to wake this session'));
@@ -870,9 +957,13 @@ function renderDetail(row) {
     const index=row.parent.indexOf('/'), parent=node('button','text-button','Open parent session ↗');
     parent.addEventListener('click',()=>openSession({source:row.parent.slice(0,index),session:row.parent.slice(index+1)}));content.append(parent);
   }
-  for (const [label,value] of [['Latest step',row.step],['Blocker',row.blocker],['Outcome',row.outcome]]) if (value) content.append(detailSection(label,value));
+  for (const [label,value] of [['Latest step',row.step],['Blocker',row.blocker],['Outcome',row.outcome],['Previous outcome (superseded)',row.previous_outcome]]) if (value) content.append(detailSection(label,value));
   if (row.evidence?.length) { const section=node('section','detail-section');section.append(node('h3','','EVIDENCE'),evidence(row.evidence));content.append(section); }
+  content.insertBefore($('session-input'),metadata);
   const section=node('section','detail-section detail-events');section.append(node('h3','','SESSION ACTIVITY'));
+  const rawLabel=node('label','check-label'),raw=node('input');raw.type='checkbox';raw.checked=$('raw-events').checked;
+  rawLabel.append(raw,document.createTextNode('Include lifecycle details'));section.append(rawLabel);
+  raw.addEventListener('change',()=>{$('raw-events').checked=raw.checked;route();state.detailEvents=[];state.detailRendered=null;loadDetail(false);});
   if (!state.detailEvents.length) section.append(node('p','','No retained events for this session.'));
   state.detailEvents.forEach(event=>section.append(eventRow(event,true)));content.append(section);
   if (state.detailMore) {const button=node('button','load-more','Load earlier session events ↓');button.addEventListener('click',()=>loadDetail(true));content.append(button);}
@@ -888,6 +979,7 @@ async function loadDetail(older) {
   const selected=state.selected;if (!selected) return;
   const request=++state.detailRequest;
   const params=new URLSearchParams({...selected,order:'desc',limit:'100',exclude_kind:'heartbeat'});
+  if (!$('raw-events').checked) params.set('meaningful','1');
   if (older && state.detailBefore) params.set('before',String(state.detailBefore));
   try {
     const [sessions,events,inbox]=await Promise.all([api('/sessions',new URLSearchParams(selected)),api('/events',params),
@@ -898,10 +990,11 @@ async function loadDetail(older) {
     state.detailBefore=events.next_before;state.detailMore=events.events.length===100;
     const row=sessions.sessions[0] || {...selected,goal:'Session not in current projection',effective_state:'lost_contact'};
     const snapshot=JSON.stringify({row,events:state.detailEvents});
-    if (snapshot!==state.detailRendered) { state.detailRendered=snapshot;renderDetail(row); }
+    if (snapshot+String($('raw-events').checked)!==state.detailRendered) { state.detailRendered=snapshot+String($('raw-events').checked);renderDetail(row); }
     renderInput(row,inbox);
   } catch (error) {
     if (request!==state.detailRequest) return;
+    $('session-dialog').append($('session-input'));
     $('detail-content').replaceChildren(node('h2','','Could not load this session'),node('p','detail-error',error.message));
   }
 }
@@ -915,7 +1008,7 @@ function renderInput(row, inbox) {
     state.thread=signature;
     $('message-thread').replaceChildren(...inbox.messages.map(message=>{
       const item=node('li','message'+(message.delivered_at?' delivered':''));
-      item.append(node('p','message-text',message.text),node('span','message-meta',clock(message.at)+' · '+(message.delivered_at ? 'Delivered '+clock(message.delivered_at) : 'Queued')));
+      item.append(node('p','message-text',message.text),node('span','message-meta',clock(message.at)+' · '+(message.delivered_at ? 'Accepted by agent '+clock(message.delivered_at) : 'Queued')));
       return item;
     }));
   }
@@ -956,16 +1049,19 @@ function readRoute() {
   // One-tap setup: any #...&token=... link stores the token and vanishes from the URL (fragments
   // never reach the server, so it leaves no trail) — no typing required on phones.
   if (params.get('token')) { storeToken(params.get('token')); history.replaceState(null,'',location.pathname); }
-  state.view=['timeline','projects'].includes(params.get('view'))?params.get('view'):'now';state.filter=ACTIVE.includes(params.get('state'))?params.get('state'):'';
+  state.view=['timeline','projects'].includes(params.get('view'))?params.get('view'):'now';state.filter=[...ACTIVE,'attention'].includes(params.get('state'))?params.get('state'):'';
   $('search').value=params.get('search')||'';
-  const horizon=params.get('period')||'3600';
-  $('period').value=[...$('period').options].some(option=>option.value===horizon)?horizon:'3600';
+  const horizon=params.get('period')||'86400';
+  $('period').value=[...$('period').options].some(option=>option.value===horizon)?horizon:'86400';
   for (const id of ['host','project','agent']) {
     const value=params.get(id)||'';
     if (value && ![...$(id).options].some(option=>option.value===value)) $(id).append(new Option(value,value));
     $(id).value=value;
   }
   $('heartbeats').checked=params.get('heartbeats')==='1';
+  $('host-layout').checked=params.get('layout')==='hosts';
+  $('raw-events').checked=params.get('details')==='1';
+  $('show-reviewed').checked=params.get('reviewed')==='1';
   if (params.get('source') && params.get('session')) openSession({source:params.get('source'),session:params.get('session')});
   else if ($('session-dialog').open) $('session-dialog').close();
   state.events=[];refresh();
@@ -997,3 +1093,8 @@ setInterval(()=>{
 renderResources();
 connectStream();
 readRoute();
+
+$('host-layout').addEventListener('change',()=>{route();render();});
+$('raw-events').addEventListener('change',()=>{state.events=[];state.before=null;state.detailEvents=[];state.detailRendered=null;refresh();});
+
+$('show-reviewed').addEventListener('change',()=>{route();render();});

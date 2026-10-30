@@ -67,6 +67,64 @@ class JournalTests(unittest.TestCase):
         self.assertNotIn('evidence', row)
         self.assertNotIn('step', row)
 
+    def test_explicit_wait_reopens_completion_and_survives_stop_and_restart(self):
+        self.journal.ingest(self.event('finished', outcome='Prototype installed', evidence=['build']))
+        self.journal.ingest(self.event('progress', step='Investigating a crash'))
+        row = self.journal.sessions()[0]
+        self.assertEqual(row['state'], 'working')
+        self.assertNotIn('outcome', row)
+        self.assertEqual(row['previous_outcome'], 'Prototype installed')
+        self.journal.ingest(self.event('waiting', step='Removed prototype; decide whether to continue'))
+        self.journal.ingest(self.event('waiting', activity='awaiting input'))
+        self.journal.ingest(self.event('stopped'))
+        row = Journal(self.db).sessions()[0]
+        self.assertEqual(row['state'], 'stopped')
+        self.assertEqual(row['work_state'], 'waiting')
+        self.assertEqual(row['attention']['text'], 'Removed prototype; decide whether to continue')
+        self.journal.ingest(self.event('progress', step='Continuing with the fix'))
+        self.assertNotIn('attention', self.journal.sessions()[0])
+
+    def test_existing_sticky_completion_is_corrected_without_rewriting_history(self):
+        self.journal.ingest(self.event('finished', outcome='Installed', evidence=['build']))
+        self.journal.ingest(self.event('waiting', step='Removed; need a decision'))
+        with self.journal.connect() as db:
+            payload = json.loads(db.execute('SELECT payload FROM sessions').fetchone()[0])
+            payload['state'] = 'finished'  # Snapshot produced by the old reducer.
+            db.execute('UPDATE sessions SET payload=?', (json.dumps(payload),))
+        row = Journal(self.db).sessions()[0]
+        self.assertEqual(row['state'], 'waiting')
+        self.assertNotIn('outcome', row)
+        self.assertEqual(len(self.journal.events()), 2)
+
+    def test_attention_ignores_old_arrivals_and_clears_on_new_work_or_completion(self):
+        self.journal.ingest(self.event('waiting', step='Need operator reload'))
+        self.journal.ingest(self.event('heartbeat', activity='working'))
+        self.assertIn('attention', self.journal.sessions()[0])
+        self.journal.ingest(self.event('start', goal='Next task'))
+        self.journal.ingest(self.event('blocked', at=self.at-5, blocker='Old blocker'))
+        self.assertNotIn('attention', self.journal.sessions()[0])
+        self.journal.ingest(self.event('blocked', blocker='Missing dependency'))
+        self.assertIn('attention', self.journal.sessions()[0])
+        self.journal.ingest(self.event('finished', outcome='Resolved', evidence=['check']))
+        self.assertNotIn('attention', self.journal.sessions()[0])
+
+    def test_human_approval_survives_stop_but_clears_when_tools_continue(self):
+        self.journal.ingest(self.event('waiting', activity='needs approval', approval_gate='auto'))
+        self.assertNotIn('attention', self.journal.sessions()[0])
+        self.journal.ingest(self.event('waiting', activity='needs approval', approval_gate='human'))
+        self.journal.ingest(self.event('stopped'))
+        self.assertEqual(self.journal.sessions()[0]['attention']['kind'], 'approval')
+        self.journal.ingest(self.event('progress', activity='working'))
+        self.assertNotIn('attention', self.journal.sessions()[0])
+
+    def test_meaningful_events_page_past_hook_noise(self):
+        self.journal.ingest(self.event('start', goal='Fix device'))
+        for _ in range(10):
+            self.journal.ingest(self.event('progress', activity='working'))
+        self.journal.ingest(self.event('waiting', step='Need a decision'))
+        events = self.journal.events({'meaningful':'1', 'limit':2, 'order':'desc'})
+        self.assertEqual([event['kind'] for event in events], ['waiting', 'start'])
+
     def test_expiry_is_not_completion_and_heartbeat_renews_lease(self):
         self.journal.ingest(self.event('start', at=self.at - 100, lease_seconds=30))
         self.assertEqual(self.journal.sessions()[0]['effective_state'], 'lost_contact')
