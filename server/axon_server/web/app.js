@@ -580,12 +580,29 @@ function inputNote(row, enabled=true) {
     : row.effective_state==='working' ? 'Working: the message arrives at its next tool call.'
     : row.resume_hold ? 'Not resumed: '+resumeRefusal(row.resume_hold.reason)+'. Sending again retries.'
     : hostResumes(row) && row.wake ? 'Sending resumes it on '+hostName(row)+'.'
-    : hostResumes(row) ? hostName(row)+' can resume it: allow wake in the session details first.'
+    : wakeHelps(row) ? 'Wake is off: sending asks whether to wake it.'
     // Codex hooks cannot start a turn, so an idle Codex thread reads input when it next runs.
     : row.agent==='codex' && ACTIVE.includes(row.effective_state) ? 'Idle: Codex reads this when its next turn starts.'
     : ACTIVE.includes(row.effective_state) ? 'Not listening: the message waits until the session next runs.'
     : row.effective_state==='exited' ? 'Exited on its host: the message waits until it is resumed.'
     : 'Session has ended or lost contact: the message waits if it resumes.';
+}
+// Idle and ended sessions only see dashboard input unattended once wake is allowed; a working
+// one reads it at its next tool call either way.
+function wakeHelps(row) {
+  return !row.wake && INPUT_AGENTS.includes(row.agent) && row.effective_state!=='working'
+    && (ACTIVE.includes(row.effective_state) || hostResumes(row));
+}
+function askWake(row) {
+  const dialog=$('wake-ask'), where=agentName(row)+' on '+hostName(row);
+  $('wake-ask-text').textContent=ACTIVE.includes(row.effective_state)
+    ? where+' is idle and not allowed to wake, so this message would wait until it next runs there. Allowing wake delivers it now, and later messages wake it too.'
+    : where+' has ended. Allowing wake lets '+hostName(row)+' resume it for this message and later ones.';
+  dialog.returnValue='';dialog.showModal();
+  return new Promise(resolve=>dialog.addEventListener('close',()=>resolve(dialog.returnValue),{once:true}));
+}
+function setWake(row, enabled) {
+  return fetch(sessionPath(row)+'/wake',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+storedToken()},body:JSON.stringify({wake:enabled}),signal:AbortSignal.timeout(8000)});
 }
 function composer(row) {
   const id=key(row), box=node('form','card-composer');
@@ -614,13 +631,26 @@ function composer(row) {
   return box;
 }
 async function postMessage(row, text) {
+  // A composer keeps the row it rendered with; ask about wake from the board's latest copy.
+  row=state.sessions.find(item=>key(item)===key(row)) || row;
   try {
+    let woke=false;
+    if (wakeHelps(row)) {
+      const choice=await askWake(row);
+      if (!choice) return {ok:false,message:'Not sent.'};
+      if (choice==='wake') {
+        const response=await setWake(row,true);
+        if (response.status===401) { storeToken('');return {ok:false,retoken:true,message:'Token rejected. Paste it again.'}; }
+        if (!response.ok) return {ok:false,message:'Not sent: could not allow wake ('+response.status+').'};
+        woke=row.wake=true;
+      }
+    }
     const response=await fetch(sessionPath(row)+'/messages',{method:'POST',cache:'no-store',signal:AbortSignal.timeout(8000),
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+storedToken()},body:JSON.stringify({text})});
     if (response.status===401) { storeToken('');return {ok:false,retoken:true,message:'Token rejected. Paste it again.'}; }
     if (response.status===403) return {ok:false,message:'Session input is disabled on this server.'};
     if (!response.ok) return {ok:false,message:'Not sent: the journal returned '+response.status+'.'};
-    return {ok:true,message:'Queued · waiting for the agent to accept it.'};
+    return {ok:true,message:woke ? 'Queued · wake allowed, waiting for the agent to accept it.' : 'Queued · waiting for the agent to accept it.'};
   } catch (error) { return {ok:false,message:'Not sent: '+error.message}; }
 }
 function eventRow(event, compact=false) {
@@ -945,7 +975,7 @@ function renderDetail(row) {
       if(!storedToken()){choice.checked=!enabled;help.textContent='Add the input token in the message panel to change wake permission.';return;}
       choice.disabled=true;
       try {
-        const response=await fetch(sessionPath(row)+'/wake',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+storedToken()},body:JSON.stringify({wake:enabled}),signal:AbortSignal.timeout(8000)});
+        const response=await setWake(row,enabled);
         if(!response.ok)throw Error('Could not change wake permission ('+response.status+').');
         await loadDetail(false);
       } catch(error){choice.checked=!enabled;help.textContent=error.message;}

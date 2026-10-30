@@ -54,4 +54,8 @@
  <h2 id="archive-auth-title">Archive sessions</h2><p id="archive-token-status"></p>
  <form id="archive-token-form"><input id="archive-token" type="password" autocomplete="off" aria-label="Archive input token" placeholder="Server input token" required><div class="message-actions"><button id="archive-cancel" type="button" class="text-button">Cancel</button><button type="submit" class="send-button">Continue</button></div></form>
 </dialog>
+<dialog id="wake-ask" aria-labelledby="wake-ask-title">
+ <h2 id="wake-ask-title">Wake this session?</h2><p id="wake-ask-text"></p>
+ <form method="dialog"><div class="message-actions"><button value="queue" class="text-button">Just queue it</button><button value="wake" class="send-button">Allow wake and send</button></div></form>
+</dialog>
 </body></html>
