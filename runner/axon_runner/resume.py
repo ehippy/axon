@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sqlite3
 import time
 import urllib.parse
 
@@ -19,6 +20,10 @@ from . import config
 
 RESUME_TIMEOUT = 90
 UUID = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
+
+
+class QueuedWakeFailed(Exception):
+    """Codex accepted durable input, but its separate resume request failed."""
 
 
 class Refused(Exception):
@@ -149,6 +154,17 @@ def resume_claude(key, messages, settings, executable=None):
     return 'resumed in the background'
 
 
+def queue_receipts(key, messages, log_dir, warning=None, remember=False):
+    """Local IDs-only receipts survive an acknowledgment retry without another enqueue."""
+    path=(log_dir or Path('.'))/'codex-queue-receipts.sqlite3'
+    fd=os.open(path,os.O_CREAT|os.O_WRONLY,0o600);os.close(fd)
+    with sqlite3.connect(path,timeout=2) as db:
+        db.execute('CREATE TABLE IF NOT EXISTS receipts(session TEXT,id TEXT,warning TEXT,PRIMARY KEY(session,id))')
+        if remember:
+            db.executemany('INSERT OR REPLACE INTO receipts VALUES(?,?,?)',[(key,m['id'],warning) for m in messages])
+        return {row[0]:row[1] for row in db.execute('SELECT id,warning FROM receipts WHERE session=?',(key,))}
+
+
 def resume_codex(key, messages, settings, executable=None, log_dir=None):
     executable = executable or 'codex'
     sandbox = settings['sandbox']
@@ -159,17 +175,27 @@ def resume_codex(key, messages, settings, executable=None, log_dir=None):
         raise Refused('session_not_found')
     if not cwd or not cwd.is_dir():
         raise Refused('project_path_missing')
-    prompt = delivery(messages)
+    receipts=queue_receipts(key,messages,log_dir)
+    pending=[m for m in messages if m['id'] not in receipts]
+    prior_warning=any(receipts.get(m['id']) for m in messages)
+    if not pending:
+        if prior_warning: raise QueuedWakeFailed
+        return 'already accepted by Codex'
+    prompt=delivery(pending)
     if codex_loaded(thread):
         # A client has it open: its own durable queue makes this the next turn there.
         try:
-            done = subprocess.run([executable, 'queue', '--thread', thread, '--message', prompt],
+            done = subprocess.run([executable, 'queue', '--thread', thread, '--message', prompt, '--resume'],
                                   capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
         except (OSError, subprocess.TimeoutExpired):
             raise Refused('queue_failed') from None
         if done.returncode:
             raise Refused('queue_failed: ' + tail_of(done.stderr or done.stdout, done.returncode))
-        return 'queued for the open thread'
+        warning='codex_queue_wake_failed' if 'could not resume thread' in (done.stderr or '').lower() else None
+        queue_receipts(key,pending,log_dir,warning,remember=True)
+        if warning or prior_warning:
+            raise QueuedWakeFailed
+        return 'queued and resume requested for the open thread'
     # `exec resume` also drains anything already in the thread's Codex queue into this turn.
     command = [executable, 'exec', 'resume', '--json', '-c', 'sandbox_mode="%s"' % sandbox, thread, prompt]
     log_path = (log_dir or Path('.')) / ('resume-%s.log' % key[:8])
@@ -211,18 +237,23 @@ def run_once(server, machine, credential, policy, wait, post, log=print, log_dir
     if not claim:
         return None
     agent, key, messages = claim['agent'], claim['session'], claim['messages']
+    warning = None
     resumer = RESUMERS.get(agent)
     try:
         if resumer is None or agent not in policy.resume['agents']:
             raise Refused('not_allowed')
         kwargs = {'log_dir': log_dir} if agent == 'codex' else {}
         detail, refusal = resumer(key, messages, policy.resume, policy.executable.get(agent), **kwargs), None
+    except QueuedWakeFailed:
+        detail, refusal, warning = 'queued in Codex; automatic wake failed', None, 'codex_queue_wake_failed'
     except Refused as error:
         detail, refusal = None, str(error)
     payload = {'ids': [m['id'] for m in messages], 'claim_token': messages[0]['claim_token'],
                'accepted': refusal is None}
     if refusal:
         payload['error'] = refusal
+    if warning:
+        payload['warning'] = warning
     try:
         post('%s/sessions/%s/%s/inbox/wake/ack' % (base, urllib.parse.quote(claim['source']), key),
              payload=payload, credential=credential)

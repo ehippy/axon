@@ -53,6 +53,19 @@ def accepted_ids(agent, session, ids, remember=False):
         return {row[0] for row in db.execute('SELECT message_id FROM native_deliveries WHERE source=? AND session=?',(source,key))} & set(ids)
 
 
+def queue_warning(agent, session, ids, remember=False):
+    """Remember only the canned wake warning alongside native queue receipts."""
+    source,key,_=report.identity(agent,str(session))
+    path=report.spool_path()
+    fd=os.open(path,os.O_CREAT|os.O_WRONLY,0o600);os.close(fd)
+    with closing(sqlite3.connect(path,timeout=.5)) as db,db:
+        db.execute('CREATE TABLE IF NOT EXISTS queue_wake_warnings(source TEXT,session TEXT,message_id TEXT,PRIMARY KEY(source,session,message_id))')
+        if remember:
+            db.executemany('INSERT OR IGNORE INTO queue_wake_warnings VALUES(?,?,?)',[(source,key,i) for i in ids])
+        known={row[0] for row in db.execute('SELECT message_id FROM queue_wake_warnings WHERE source=? AND session=?',(source,key))}
+        return 'codex_queue_wake_failed' if known.intersection(ids) else None
+
+
 def main(agent):
     config=json.loads(sys.stdin.readline(16384))
     if not isinstance(config,dict):return
