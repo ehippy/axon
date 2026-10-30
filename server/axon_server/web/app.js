@@ -885,7 +885,7 @@ function chatMessage(message, first) {
   const item=node('article','chat-item mine'+(message.delivered_at?' delivered':''));
   if (first) item.append(node('span','chat-sender','You'));
   const bubble=node('div','chat-bubble');bubble.append(node('p','chat-text',message.text));
-  item.append(bubble,node('span','chat-meta',clock(message.at)+' · '+(message.delivered_at ? 'Accepted by agent '+clock(message.delivered_at) : 'Queued')));
+  item.append(bubble,node('span','chat-meta',clock(message.at)+' · '+(message.wake_warning ? 'Queued in Codex · automatic wake failed' : message.delivered_at ? 'Accepted by agent '+clock(message.delivered_at) : 'Queued')));
   return item;
 }
 function chatLog(row) {

@@ -15,7 +15,7 @@ Set `AXON_WAKE=codex` (or add `codex` to its comma-separated list) in the
 reporter's host settings. When a turn ends cleanly, the Stop hook detaches one
 idle watcher per thread; it long-polls the authenticated inbox on the
 `codex-queue` wake path and hands whatever arrives to
-`codex queue --thread <id> --message …`. Whichever client holds the thread
+`codex queue --thread <id> --message … --resume`. Whichever client holds the thread
 runs it as a turn in front of the user. The watcher only works while a client
 has the thread loaded: Codex holds an flock on
 `~/.codex/thread-writer-locks/<id>.lock` while it does. Once nothing holds the
@@ -29,3 +29,9 @@ never leaves this host — the server only sees the hashed session key. A
 failed `codex queue` call releases the lease, so the message is retried
 instead of dropped. The dashboard message answers in-turn while the thread
 is busy, exactly as before.
+
+Queueing and waking are separate: the CLI can save input but warn that resume
+failed while exiting zero. Axon keeps ownership with Codex (no duplicate enqueue)
+and shows that warning on the dashboard message. It does not claim that a turn
+started merely because the queue command succeeded. A busy/owned writer can
+refuse resume; queued input remains available to its owning client.

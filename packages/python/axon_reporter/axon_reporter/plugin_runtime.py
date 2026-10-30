@@ -123,12 +123,14 @@ def claim(agent, session, wait=0, timeout=None, wake_path=None):
         return json.load(response).get('messages', [])
 
 
-def acknowledge_wake(agent, session, messages, accepted=True):
+def acknowledge_wake(agent, session, messages, accepted=True, warning=None):
     credential=read_credential()
     if not credential:
         raise ValueError('Host credential required')
     source,key,_=report.identity(agent,str(session))
     payload={'ids':[m['id'] for m in messages],'claim_token':messages[0]['claim_token'],'accepted':accepted}
+    if warning:
+        payload['warning']=warning
     request=urllib.request.Request(f'{server_url().rstrip("/")}/sessions/{source}/{key}/inbox/wake/ack',
         data=json.dumps(payload).encode(),headers={'Authorization':'Bearer '+credential,'Content-Type':'application/json'})
     with urllib.request.urlopen(request,timeout=5) as response:
@@ -229,22 +231,44 @@ def listen(agent):
         return 0
 
 
+class QueueDelivery:
+    def __init__(self, accepted, warning=None):
+        self.accepted, self.warning = accepted, warning
+
+    def __bool__(self):
+        return self.accepted
+
+
 def queue_delivery(agent, session, messages):
-    """Hand dashboard input to the agent's own durable queue; True when accepted."""
-    path = QUEUE_AGENTS.get(agent)
-    if not path:
-        return False
+    """Queue each message once and explicitly request a native resume.
+
+    CLI resume failures are warnings with exit zero: keep native ownership of
+    the durable message and expose the warning instead of submitting it again.
+    """
+    if agent not in QUEUE_AGENTS:
+        return QueueDelivery(False)
     import shutil
+    from .native_inbox import accepted_ids, queue_warning
     binary = report.setting('AXON_CODEX_BIN') or shutil.which('codex') or str(Path.home()/'.local/bin/codex')
+    warning = queue_warning(agent,session,[m['id'] for m in messages if m.get('id')])
     for message in messages:
+        if message.get('id') and message['id'] in accepted_ids(agent, session, [message['id']]):
+            continue
         try:
             done = subprocess.run([binary, 'queue', '--thread', str(session),
-                                   '--message', message['text']], capture_output=True, timeout=15)
+                                   '--message', message['text'], '--resume'], capture_output=True, timeout=30)
         except (OSError, subprocess.TimeoutExpired):
-            return False
+            return QueueDelivery(False)
         if done.returncode != 0:
-            return False
-    return True
+            return QueueDelivery(False)
+        if message.get('id'):
+            accepted_ids(agent, session, [message['id']], remember=True)
+        stderr = done.stderr.decode(errors='replace') if isinstance(done.stderr, bytes) else done.stderr or ''
+        if 'could not resume thread' in stderr.lower():
+            warning = 'codex_queue_wake_failed'
+            if message.get('id'):
+                queue_warning(agent,session,[message['id']],remember=True)
+    return QueueDelivery(True, warning)
 
 
 def codex_thread_loaded(thread):
@@ -314,11 +338,11 @@ def queue_listen(agent):
                     pass
                 stand_down(agent, session, token)
                 return 0
-            from .native_inbox import accepted_ids
+            from .native_inbox import accepted_ids, queue_warning
             known = accepted_ids(agent, session, [m['id'] for m in messages])
             already = [m for m in messages if m['id'] in known]
             if already:
-                acknowledge_wake(agent, session, already)
+                acknowledge_wake(agent, session, already,warning=queue_warning(agent,session,[m['id'] for m in already]))
             messages = [m for m in messages if m['id'] not in known]
             if not messages:
                 continue
@@ -328,7 +352,7 @@ def queue_listen(agent):
             if accepted:
                 accepted_ids(agent, session, [m['id'] for m in messages], remember=True)
             try:
-                acknowledge_wake(agent, session, messages, accepted)
+                acknowledge_wake(agent, session, messages, bool(accepted), warning=accepted.warning)
             except (OSError, ValueError):
                 pass
             if not accepted:

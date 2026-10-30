@@ -115,6 +115,8 @@ class Journal(ProjectStore):
               CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY, source TEXT, session TEXT, at REAL, text TEXT,
                 delivered_at REAL);
+              CREATE TABLE IF NOT EXISTS message_wake_warnings (
+                message_id TEXT PRIMARY KEY, warning TEXT NOT NULL);
               CREATE INDEX IF NOT EXISTS message_session ON messages(source, session, at);
               CREATE TABLE IF NOT EXISTS message_claims (
                 message_id TEXT PRIMARY KEY, token TEXT, until_at REAL, path TEXT);
@@ -173,6 +175,7 @@ class Journal(ProjectStore):
             events = db.execute('DELETE FROM events WHERE at < ?', (cutoff,)).rowcount
             sessions = db.execute('DELETE FROM sessions WHERE at < ?', (cutoff,)).rowcount
             db.execute('DELETE FROM messages WHERE at < ?', (cutoff,))
+            db.execute('DELETE FROM message_wake_warnings WHERE message_id NOT IN (SELECT id FROM messages)')
             db.execute('DELETE FROM message_claims WHERE NOT EXISTS (SELECT 1 FROM messages WHERE messages.id=message_claims.message_id)')
             db.execute('DELETE FROM session_archives WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.source=session_archives.source AND s.session=session_archives.session)')
             db.execute('DELETE FROM host_jobs WHERE ended_at IS NOT NULL AND ended_at < ?', (cutoff,))
@@ -521,8 +524,8 @@ class Journal(ProjectStore):
 
     def messages(self, source, session):
         with self.connect() as db:
-            rows = db.execute('SELECT id,source,session,at,text,delivered_at FROM messages WHERE source=? AND session=? ORDER BY at', (source, session)).fetchall()
-        return [dict(r) for r in rows]
+            rows = db.execute('SELECT m.id,m.source,m.session,m.at,m.text,m.delivered_at,w.warning AS wake_warning FROM messages m LEFT JOIN message_wake_warnings w ON w.message_id=m.id WHERE m.source=? AND m.session=? ORDER BY m.at', (source, session)).fetchall()
+        return [{k:v for k,v in dict(r).items() if k != 'wake_warning' or v is not None} for r in rows]
 
     def mint_host_credential(self, machine):
         if not isinstance(machine, str) or not MACHINE.fullmatch(machine):
@@ -789,7 +792,7 @@ class Journal(ProjectStore):
                 self.inbox.wait(min(remaining, 1))
 
     def acknowledge_wake(self, source, session, credential, payload):
-        if not isinstance(payload,dict) or not {'ids','claim_token','accepted'} <= set(payload) <= {'ids','claim_token','accepted','error'}:
+        if not isinstance(payload,dict) or not {'ids','claim_token','accepted'} <= set(payload) <= {'ids','claim_token','accepted','error','warning'}:
             raise ValueError('invalid acknowledgment')
         ids, lease, accepted, error = payload['ids'], payload['claim_token'], payload['accepted'], payload.get('error')
         if error is not None and (accepted is not False or not isinstance(error,str) or not RESUME_REASON.fullmatch(error)):
@@ -798,6 +801,9 @@ class Journal(ProjectStore):
             raise ValueError('invalid message IDs')
         if not isinstance(lease,str) or not re.fullmatch('[a-f0-9]{32}',lease) or type(accepted) is not bool:
             raise ValueError('invalid acknowledgment')
+        warning=payload.get('warning')
+        if warning is not None and (accepted is not True or warning != 'codex_queue_wake_failed'):
+            raise ValueError('invalid wake warning')
         events=[]
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -812,6 +818,8 @@ class Journal(ProjectStore):
                 if not row['claim_until'] or row['claim_until']<time.time():
                     raise ValueError('expired claim')
                 if accepted:
+                    if warning:
+                        db.execute('INSERT OR REPLACE INTO message_wake_warnings VALUES(?,?)',(message_id,warning))
                     db.execute('UPDATE messages SET delivered_at=? WHERE id=?',(time.time(),message_id))
                     events.append(dict(version=1,source=source,session=session,id='wake-'+hashlib.sha256((message_id+lease).encode()).hexdigest()[:32],
                         at=time.time(),kind='heartbeat',data={'activity':'Dashboard input token via '+row['claim_path']}))

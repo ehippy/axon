@@ -20,6 +20,7 @@ from axon_reporter import plugin_runtime, report
 SHIM = """#!/usr/bin/env python3
 import os, sys, pathlib
 pathlib.Path(os.environ['FAKE_CODEX_LOG']).write_text('\\n'.join(sys.argv[1:]))
+if os.environ.get('FAKE_CODEX_WARN'): print('Warning: message was queued, but could not resume thread', file=sys.stderr)
 sys.exit(0 if os.environ.get('FAKE_CODEX_OK', '1') == '1' else 1)
 """
 
@@ -83,8 +84,19 @@ class CodexQueueWakeTests(unittest.TestCase):
             self.assertTrue(plugin_runtime.queue_delivery('codex', 'thread-uuid-1',
                           [{'text': 'Check the failing test'}]))
         recorded = self.log.read_text()
-        self.assertIn('queue', recorded); self.assertIn('--thread', recorded)
+        self.assertIn('--resume', recorded); self.assertIn('queue', recorded); self.assertIn('--thread', recorded)
         self.assertIn('thread-uuid-1', recorded); self.assertIn('Check the failing test', recorded)
+
+    def test_zero_exit_wake_warning_is_accepted_but_not_hidden(self):
+        with patch.dict(os.environ, {**self.env, 'FAKE_CODEX_WARN':'1'}):
+            result=plugin_runtime.queue_delivery('codex','thread-uuid-1',[{'text':'wake once','id':'message-one'}])
+            self.assertTrue(result)
+            self.assertEqual(result.warning,'codex_queue_wake_failed')
+            self.log.unlink()
+            result=plugin_runtime.queue_delivery('codex','thread-uuid-1',[{'text':'wake once','id':'message-one'}])
+            self.assertTrue(result)
+            self.assertFalse(self.log.exists(), 'Retry must not duplicate durable queued input')
+            self.assertEqual(result.warning,'codex_queue_wake_failed')
 
     def test_queue_failure_is_reported_as_not_accepted(self):
         with patch.dict(os.environ, {**self.env, 'FAKE_CODEX_OK': '0'}):
@@ -105,6 +117,14 @@ class CodexQueueWakeTests(unittest.TestCase):
         events = json.dumps(self.j.events())
         self.assertNotIn('Wake and summarize', events); self.assertNotIn('thread-uuid-1', events)
         self.assertIn('codex-queue', events)
+
+    def test_idle_watcher_reports_warning_without_losing_native_ownership(self):
+        self.j.send_message(self.source,self.key,'Wake once')
+        self.env['FAKE_CODEX_WARN']='1'
+        self.watcher();self.wait_delivered()
+        message=self.j.messages(self.source,self.key)[0]
+        self.assertEqual(message['wake_warning'],'codex_queue_wake_failed')
+        self.assertEqual(self.j.queued(),{})
 
     def test_failed_queue_call_keeps_the_message_queued(self):
         self.j.send_message(self.source, self.key, 'Still wanted later')

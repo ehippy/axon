@@ -149,7 +149,24 @@ class ResumeTests(unittest.TestCase):
         fcntl.flock(lock, fcntl.LOCK_EX)
         self.poll(self.policy(executable={'codex': self.fake('codex')}))
         self.assertEqual(self.argv('codex')[:3], ['queue', '--thread', CODEX_ID])
+        self.assertIn('--resume',self.argv('codex'))
         self.assertEqual(self.journal.queued(), {})
+
+    def test_loaded_codex_resume_warning_is_visible_without_retrying_the_message(self):
+        source,key=self.dormant('codex',CODEX_ID)
+        lock=open(self.root/'codex'/'thread-writer-locks'/(CODEX_ID+'.lock'),'w')
+        self.addCleanup(lock.close);fcntl.flock(lock,fcntl.LOCK_EX)
+        fake=self.fake('codex', 'echo "Warning: message was queued, but could not resume thread" >&2; exit 0')
+        self.poll(self.policy(executable={'codex':fake}))
+        self.assertEqual(self.journal.queued(),{})
+        self.assertEqual(self.journal.messages(source,key)[0]['wake_warning'],'codex_queue_wake_failed')
+        self.assertIsNone(self.board(source,key).get('resume_hold'))
+        # The runner may retry when its server acknowledgment was lost.
+        messages=self.journal.messages(source,key)
+        Path(self.root/'codex.argv').unlink()
+        with self.assertRaises(resume.QueuedWakeFailed):
+            resume.resume_codex(key,messages,self.policy().resume,fake,self.root)
+        self.assertIsNone(self.argv('codex'))
 
     def test_resume_is_off_without_its_own_config_section(self):
         self.assertIsNone(self.policy('').resume)
