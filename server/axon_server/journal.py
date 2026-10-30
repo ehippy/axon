@@ -7,6 +7,7 @@ import hmac
 import hashlib
 import json
 import logging
+import math
 import re
 import os
 import select
@@ -34,6 +35,10 @@ APPROVAL_BEAT = 60
 IDENTITY = re.compile(r'[a-zA-Z0-9_.-]{1,128}')
 INFERENCE_LABEL = re.compile(r'[a-zA-Z0-9_.-]{1,80}')
 MESSAGE_LIMIT = 4000
+# Conversation text a host chose to share (AXON_TRANSCRIPT): masked there, kept here only briefly.
+TRANSCRIPT_TEXT_LIMIT = 8000
+TRANSCRIPT_BATCH = 200
+TRANSCRIPT_ROLES = ('user', 'assistant')
 CLAIM_WAIT_LIMIT = 55
 STREAM_PING = 15
 UPDATE_UNIT = 'axon-update.service'
@@ -86,10 +91,13 @@ def server_revision():
 
 
 class Journal(ProjectStore):
-    def __init__(self, path, retention_days=30):
+    def __init__(self, path, retention_days=30, transcript_days=7):
         if type(retention_days) is not int or retention_days < 0:
             raise ValueError('retention_days must be a nonnegative integer')
+        if type(transcript_days) is not int or transcript_days < 1:
+            raise ValueError('transcript_days must be a positive integer')
         self.retention_days = retention_days
+        self.transcript_days = transcript_days
         self.path = str(path)
         self.inbox = threading.Condition()
         self.changes = threading.Condition()
@@ -116,6 +124,10 @@ class Journal(ProjectStore):
                 id TEXT PRIMARY KEY, source TEXT, session TEXT, at REAL, text TEXT,
                 delivered_at REAL);
               CREATE INDEX IF NOT EXISTS message_session ON messages(source, session, at);
+              CREATE TABLE IF NOT EXISTS transcript (
+                source TEXT, session TEXT, id TEXT, at REAL, role TEXT, text TEXT,
+                PRIMARY KEY(source, session, id));
+              CREATE INDEX IF NOT EXISTS transcript_session ON transcript(source, session, at);
               CREATE TABLE IF NOT EXISTS message_claims (
                 message_id TEXT PRIMARY KEY, token TEXT, until_at REAL, path TEXT);
               CREATE TABLE IF NOT EXISTS host_credentials (
@@ -165,9 +177,12 @@ class Journal(ProjectStore):
         self.prune()
 
     def prune(self, now=None):
+        now = time.time() if now is None else now
+        with self.connect() as db:
+            # Conversation text expires on its own shorter clock, even with history kept forever.
+            db.execute('DELETE FROM transcript WHERE at < ?', (now - self.transcript_days * 86400,))
         if not self.retention_days:
             return {'events': 0, 'sessions': 0}
-        now = time.time() if now is None else now
         cutoff = now - self.retention_days * 86400
         with self.connect() as db:
             events = db.execute('DELETE FROM events WHERE at < ?', (cutoff,)).rowcount
@@ -523,6 +538,33 @@ class Journal(ProjectStore):
         with self.connect() as db:
             rows = db.execute('SELECT id,source,session,at,text,delivered_at FROM messages WHERE source=? AND session=? ORDER BY at', (source, session)).fetchall()
         return [dict(r) for r in rows]
+
+    def add_transcript(self, source, session, credential, payload):
+        """Store conversation text from the host that owns the session; resent entries are ignored."""
+        entries = payload.get('messages') if isinstance(payload, dict) else None
+        if not isinstance(entries, list) or not 0 < len(entries) <= TRANSCRIPT_BATCH:
+            raise ValueError('messages must be a list of 1..%d entries' % TRANSCRIPT_BATCH)
+        rows = []
+        for entry in entries:
+            if not (isinstance(entry, dict) and isinstance(entry.get('id'), str) and 0 < len(entry['id']) <= 128
+                    and entry.get('role') in TRANSCRIPT_ROLES and isinstance(entry.get('text'), str)
+                    and 0 < len(entry['text']) <= TRANSCRIPT_TEXT_LIMIT and isinstance(entry.get('at'), (int, float))
+                    and math.isfinite(entry['at'])):
+                raise ValueError('invalid transcript entry')
+            rows.append((source, session, entry['id'], float(entry['at']), entry['role'], entry['text']))
+        with self.connect() as db:
+            self.claim_machine(db, credential, source, session)
+            added = sum(db.execute('INSERT OR IGNORE INTO transcript VALUES(?,?,?,?,?,?)', row).rowcount for row in rows)
+        if added:
+            self.changed()
+        return {'added': added}
+
+    def transcript(self, source, session, limit=300):
+        """The newest conversation entries, oldest first."""
+        with self.connect() as db:
+            rows = db.execute('SELECT id,at,role,text FROM transcript WHERE source=? AND session=? ORDER BY at DESC, rowid DESC LIMIT ?',
+                              (source, session, limit)).fetchall()
+        return [dict(r) for r in reversed(rows)]
 
     def mint_host_credential(self, machine):
         if not isinstance(machine, str) or not MACHINE.fullmatch(machine):
@@ -894,7 +936,7 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
                 if url.path == '/health':
                     data = {'ok': True, 'retention_days': journal.retention_days, 'protocol': capabilities(),
                             'host_claims': {'enrollment': True, 'required': not allow_legacy_claims, 'wake_leases':True},
-                            'host_jobs': True, 'host_resume': sorted(RESUME_PATHS)}
+                            'host_jobs': True, 'host_resume': sorted(RESUME_PATHS), 'transcript_days': journal.transcript_days}
                 elif url.path == '/resources':
                     data = {'resources': journal.resources()}
                 elif url.path == '/resources/tokens':
@@ -927,6 +969,8 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
                         self.send_error(404); return
                 elif (parts := session_path(url.path)) and parts[2] == 'messages':
                     data = {'messages': journal.messages(parts[0], parts[1]), 'input': bool(token)}
+                elif parts and parts[2] == 'transcript':
+                    data = {'messages': journal.transcript(parts[0], parts[1])}
                 elif url.path == '/events':
                     events = journal.events(filters)
                     data = {'events': events, 'next_after': max(e['seq'] for e in events) if events else int(filters.get('after', 0))}
@@ -1074,7 +1118,7 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
                 self.send_header('Content-Length', str(len(body)))
                 self.end_headers(); self.wfile.write(body); return
             parts = session_path(url.path)
-            if not parts or parts[2] not in ('messages', 'inbox/claim', 'inbox/wake/claim', 'inbox/wake/ack', 'archive', 'wake'):
+            if not parts or parts[2] not in ('messages', 'inbox/claim', 'inbox/wake/claim', 'inbox/wake/ack', 'archive', 'wake', 'transcript'):
                 self.send_error(501); return
             try:
                 if parts[2] in ('messages', 'archive', 'wake'):
@@ -1098,7 +1142,11 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
                         logging.warning('Legacy unauthenticated inbox claim')
                     if parts[2].startswith('inbox/wake/') and allow_legacy_claims:
                         self.send_error(403, 'Unattended wake requires claim enforcement'); return
-                    if parts[2]=='inbox/wake/ack':
+                    if parts[2]=='transcript':
+                        length=int(self.headers.get('Content-Length',0))
+                        if not 0<length<=TRANSCRIPT_BATCH*(4*TRANSCRIPT_TEXT_LIMIT+512):raise ValueError('invalid body')
+                        data,status=journal.add_transcript(parts[0],parts[1],credential,json.loads(self.rfile.read(length))),200
+                    elif parts[2]=='inbox/wake/ack':
                         length=int(self.headers.get('Content-Length',0))
                         if not 0<length<=16384:raise ValueError('invalid body')
                         data,status=journal.acknowledge_wake(parts[0],parts[1],credential,json.loads(self.rfile.read(length))),200
@@ -1434,6 +1482,7 @@ def main():
     p.add_argument('--listen', default='127.0.0.1')
     p.add_argument('--port', type=int, default=8510)
     p.add_argument('--retention-days', type=int, default=30, help='History lifetime in days (default 30; 0 disables cleanup)')
+    p.add_argument('--transcript-days', type=int, default=7, help='Lifetime of shared conversation text in days (default 7)')
     p.add_argument('--no-mqtt', action='store_true')
     p.add_argument('--no-web', action='store_true', help='Disable the browser UI')
     p.add_argument('--require-host-credentials', action='store_true',
@@ -1456,6 +1505,8 @@ def main():
         p.error('--broker-port must be between 1 and 65535')
     if args.retention_days < 0:
         p.error('--retention-days must be nonnegative')
+    if args.transcript_days < 1:
+        p.error('--transcript-days must be at least 1')
     try:
         inference = inference_endpoints(args.inference)
     except ValueError as exc:
@@ -1467,7 +1518,7 @@ def main():
     token = Path(args.input_token_file).read_text().strip() if args.input_token_file else None
     if args.input_token_file and len(token or '') < 16:
         p.error('--input-token-file must hold a token of at least 16 characters')
-    journal = Journal(args.db, args.retention_days)
+    journal = Journal(args.db, args.retention_days, args.transcript_days)
     stop = threading.Event()
     maintenance = threading.Thread(target=maintain, args=(journal, stop), daemon=True)
     maintenance.start()

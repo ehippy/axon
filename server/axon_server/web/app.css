@@ -81,6 +81,8 @@
 .chat-text{margin:0;font-size:13px;line-height:1.5;white-space:pre-wrap}
 .chat-bubble .evidence{margin:6px 0 0}
 .chat-meta{font:10px var(--mono);color:var(--dim);margin:3px 6px 0}.chat-item.mine:not(.delivered) .chat-meta{color:var(--amber)}
+.chat-status{display:flex;align-items:baseline;gap:7px;margin:10px 4px 2px;font:10px var(--mono);color:var(--dim);min-width:0}
+.chat-status .status-dot{flex:none;width:5px;height:5px;align-self:center}.chat-status span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.chat-status time{flex:none}
 .session-input .input-note{margin:0 0 8px;font-size:11px}
 .message-form{display:grid;grid-template-columns:1fr auto;gap:6px 8px;align-items:end}
 .message-form textarea{resize:none;max-height:160px;border-radius:18px;padding:8px 14px;line-height:1.4;background:var(--bg)}

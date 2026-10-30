@@ -76,7 +76,8 @@ def heartbeat_due(agent, session, now=None):
 
 
 def lifecycle(agent, data):
-    """Only identifiers, cwd, event and tool names are read, plus usage counts from the transcript; other payloads are ignored."""
+    """Only identifiers, cwd, event and tool names are read, plus usage counts from the transcript; other payloads are ignored.
+    Conversation text is read separately, only when AXON_TRANSCRIPT opts the agent in (see transcript.py)."""
     session = data.get('session_id')
     event = data.get('hook_event_name')
     if not session:
@@ -443,6 +444,13 @@ def run_hook(agent):
         except Exception:
             pass
         event, session = data.get('hook_event_name'), data.get('session_id')
+        # Opt-in chat text for the dashboard: prompts and replies only, sent as the turn goes.
+        if event in ('PostToolUse','Stop','SessionEnd'):
+            try:
+                from .transcript import sync
+                sync(agent,session,data.get('transcript_path'))
+            except Exception:
+                pass
         notes = []
         if event in ('SessionStart','UserPromptSubmit') and session:
             notes.append(context(agent,session))

@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const PAGE = 50;
 const ACTIVE = ['working', 'waiting', 'blocked'];
 const LABEL = {working:'Working', waiting:'Waiting', blocked:'Blocked', finished:'Finished', stopped:'Stopped', interrupted:'Interrupted', lost_contact:'Lost contact', exited:'Exited'};
-const state = {compose:null, drafts:{}, starting:null, startDraft:{}, startJobs:{}, view:'now', filter:'', sessions:[], events:[], before:null, more:false, selected:null, detailEvents:[], detailMessages:[], detailScroll:'', detailBefore:null, detailMore:false, synced:null, live:false, request:0, detailRequest:0};
+const state = {compose:null, drafts:{}, starting:null, startDraft:{}, startJobs:{}, view:'now', filter:'', sessions:[], events:[], before:null, more:false, selected:null, detailEvents:[], detailMessages:[], detailTranscript:[], detailScroll:'', detailBefore:null, detailMore:false, synced:null, live:false, request:0, detailRequest:0};
 let timer;
 function workTitle(row) { return row.goal || row.title || row.step || row.outcome || row.topic || 'Work session'; }
 const loadedVersion=document.documentElement.dataset.axonVersion;
@@ -881,6 +881,19 @@ function chatEvent(event, row, first) {
   const meta=node('span','chat-meta',['progress','heartbeat'].includes(event.kind) ? '' : event.kind.replaceAll('_',' ')+' · ');meta.append(time);
   item.append(bubble,meta);return item;
 }
+// With the conversation itself shared, status reports become quiet lines between the messages.
+function chatStatus(event) {
+  const line=node('div','chat-status'),time=node('time','',clock(event.at));time.title=new Date(event.at*1000).toLocaleString();
+  line.append(node('i','status-dot '+(EVENT_STATE[event.kind] || '')),node('span','',event.kind.replaceAll('_',' ')+' · '+eventText(event)),time);
+  return line;
+}
+function chatSaid(entry, row, first) {
+  const mine=entry.role==='user', identity={agent:row.agent}, item=node('article','chat-item '+(mine ? 'mine delivered' : agentClass(identity)));
+  if (first) item.append(node('span','chat-sender',mine ? 'You' : agentName(identity)));
+  const bubble=node('div','chat-bubble');bubble.append(node('p','chat-text',entry.text));
+  const time=node('time','chat-meta',clock(entry.at));time.title=new Date(entry.at*1000).toLocaleString();
+  item.append(bubble,time);return item;
+}
 function chatMessage(message, first) {
   const item=node('article','chat-item mine'+(message.delivered_at?' delivered':''));
   if (first) item.append(node('span','chat-sender','You'));
@@ -893,13 +906,16 @@ function chatLog(row) {
   if (state.detailMore) {const button=node('button','load-more','Load earlier activity');button.addEventListener('click',()=>loadDetail(true));log.append(button);}
   // Until history is fully paged in, older messages would sit in an empty stretch of the log.
   const oldest=state.detailMore && state.detailEvents.length ? state.detailEvents.at(-1).at : -Infinity;
-  const items=[...state.detailEvents.map(event=>({at:event.at,event})),...state.detailMessages.filter(message=>message.at>=oldest).map(message=>({at:message.at,message}))].sort((a,b)=>a.at-b.at);
+  const spoken=state.detailTranscript.length>0;
+  const items=[...state.detailEvents.map(event=>({at:event.at,event})),...state.detailMessages.filter(message=>message.at>=oldest).map(message=>({at:message.at,message})),
+    ...state.detailTranscript.filter(entry=>entry.at>=oldest).map(entry=>({at:entry.at,said:entry}))].sort((a,b)=>a.at-b.at);
   if (!items.length) log.append(node('p','chat-empty','No retained activity for this session yet.'));
   let day='', sender='';
   for (const item of items) {
     if (date(item.at)!==day) {day=date(item.at);sender='';log.append(node('div','chat-day',day));}
-    const who=item.message ? 'you' : 'agent';
-    log.append(item.message ? chatMessage(item.message,sender!==who) : chatEvent(item.event,row,sender!==who));sender=who;
+    if (item.event && spoken) {log.append(chatStatus(item.event));continue;}
+    const who=item.message || item.said?.role==='user' ? 'you' : 'agent';
+    log.append(item.message ? chatMessage(item.message,sender!==who) : item.said ? chatSaid(item.said,row,sender!==who) : chatEvent(item.event,row,sender!==who));sender=who;
   }
   return log;
 }
@@ -949,7 +965,7 @@ function renderDetail(row) {
 }
 function growComposer() { const text=$('message-text');text.style.height='auto';if (text.scrollHeight) text.style.height=text.scrollHeight+2+'px'; }
 async function openSession(row) {
-  state.selected={source:row.source,session:row.session};state.detailEvents=[];state.detailBefore=null;state.detailMore=false;state.detailRendered='';state.detailMessages=[];
+  state.selected={source:row.source,session:row.session};state.detailEvents=[];state.detailBefore=null;state.detailMore=false;state.detailRendered='';state.detailMessages=[];state.detailTranscript=[];
   $('message-text').value=restoredDraft && key(restoredDraft)===key(row) ? restoredDraft.text : '';restoredDraft=null;$('message-status').textContent='';$('session-input').hidden=true;
   $('detail-content').replaceChildren(node('h2','','Loading session…'));
   if (!$('session-dialog').open) $('session-dialog').showModal();
@@ -962,15 +978,15 @@ async function loadDetail(older) {
   if (!$('raw-events').checked) params.set('meaningful','1');
   if (older && state.detailBefore) params.set('before',String(state.detailBefore));
   try {
-    const [sessions,events,inbox]=await Promise.all([api('/sessions',new URLSearchParams(selected)),api('/events',params),
-      api(sessionPath(selected)+'/messages').catch(()=>null)]);
+    const [sessions,events,inbox,said]=await Promise.all([api('/sessions',new URLSearchParams(selected)),api('/events',params),
+      api(sessionPath(selected)+'/messages').catch(()=>null),api(sessionPath(selected)+'/transcript').catch(()=>null)]);
     if (request!==state.detailRequest || !state.selected || key(selected)!==key(state.selected)) return;
     if (!older && state.detailEvents.length>100) return; // keep an explicitly paged history stable
     state.detailEvents=older ? state.detailEvents.concat(events.events) : events.events;
-    state.detailBefore=events.next_before;state.detailMore=events.events.length===100;state.detailMessages=inbox?.messages || [];
+    state.detailBefore=events.next_before;state.detailMore=events.events.length===100;state.detailMessages=inbox?.messages || [];state.detailTranscript=said?.messages || [];
     if (older) state.detailScroll='older';
     const row=sessions.sessions[0] || {...selected,goal:'Session not in current projection',effective_state:'lost_contact'};
-    const snapshot=JSON.stringify({row,events:state.detailEvents,messages:state.detailMessages,raw:$('raw-events').checked});
+    const snapshot=JSON.stringify({row,events:state.detailEvents,messages:state.detailMessages,said:state.detailTranscript,raw:$('raw-events').checked});
     renderInput(row,inbox);growComposer(); // first, so the composer's height is settled before the log scrolls
     if (snapshot!==state.detailRendered) { state.detailRendered=snapshot;renderDetail(row); }
     state.detailScroll='';
