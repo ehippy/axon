@@ -62,3 +62,33 @@
 .host-sync-warning{font-size:.7rem;font-weight:500;color:var(--muted);border:1px solid currentColor;border-radius:4px;padding:2px 6px;margin-left:10px}
 .project-summary{padding:18px 0;border-bottom:1px solid var(--edge)}.project-summary h2{font-size:20px;margin:0 0 10px}.project-meta{font-size:12px;color:var(--muted);margin:6px 0}.project-editor{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:14px 0}.project-editor input:not([type=checkbox]),.project-editor select{max-width:100%;padding:7px 9px;color:var(--text);background:var(--panel);border:1px solid var(--edge);border-radius:5px}.project-editor label{font-size:12px}.project-editor [role=status]{width:100%}
 .new-session-toggle{margin-left:auto;border-color:var(--edge)}.new-session{margin:0 0 14px}.new-session-choices{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.new-session-choices .check-label{font-size:11px;color:var(--muted)}
+
+/* Attention-first work view. Host grouping remains an optional diagnostic view. */
+.board-options{display:flex;gap:1rem;flex-wrap:wrap;font-size:.8rem;color:#a8ada4;margin:0 0 1rem}
+.board-options label{display:flex;align-items:center;gap:.4rem}
+.activity.board:has(.work-section){display:block}
+.work-section{margin:1.2rem 0 1.8rem;min-width:0}
+.work-section-title,.work-section>summary{font-size:1rem;font-weight:650;margin-bottom:.8rem;cursor:pointer}
+.work-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:.8rem;align-items:start}
+.attention-label{color:#edbd75;font-weight:650}.delivery-label{font-size:.75rem;color:#b9c3b1}
+.card-bottom{flex-wrap:wrap}.session-id{opacity:.55}.card-tools .archive-button{opacity:.65}
+.session-metadata{margin:1rem 0}.session-metadata summary{cursor:pointer;color:#a8ada4}
+
+.mini-window{display:flex;flex-direction:column;gap:4px;min-width:45px}
+.mini-window .mini-bar{width:100%}.mini-caption{font:9px var(--mono);white-space:nowrap;color:var(--muted)}
+.resource-strip{min-height:46px;flex-wrap:wrap;padding-top:8px;padding-bottom:8px}
+.resource-strip .strip-name{display:inline;font-size:10px}
+.resource-strip .strip-seg{gap:8px}.attention-empty{color:var(--muted);font-size:.85rem;margin:1rem 0}
+
+.metric[data-state="attention"]{color:var(--amber)}
+@media(max-width:700px){.rail .metric[data-state="attention"]>span{display:inline;font-size:9px}.rail .metrics{gap:2px}.rail .metric{padding:4px}.rail .nav-icon{display:none}}
+
+.card-tools{position:static;justify-content:flex-end;flex-wrap:wrap;padding:7px 12px;background:var(--panel);border:1px solid var(--edge);border-top:0;border-radius:0 0 8px 8px;min-height:34px}
+.card-frame>.session-card{border-bottom-left-radius:0;border-bottom-right-radius:0}
+.card-bottom{justify-content:flex-start;gap:8px 12px}.card-bottom .session-id{margin-left:auto}
+.work-grid .card-step{display:block;-webkit-line-clamp:unset;overflow:visible}
+
+.resource-strip .strip-seg:not(.inference-seg) .strip-name{display:inline}
+.work-grid .agent-identity{font-size:13px}.work-grid .work-title{font-size:16px;line-height:1.4}
+.board-options label[hidden]{display:none}
+@media(max-width:700px){.rail .horizon-filter{flex-basis:64px;min-width:64px}.resource-strip{gap:10px}.resource-strip .strip-seg{gap:6px}.mini-window{min-width:42px}}

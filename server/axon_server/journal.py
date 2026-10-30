@@ -94,6 +94,7 @@ class Journal(ProjectStore):
         self.inbox = threading.Condition()
         self.changes = threading.Condition()
         self.version = 0
+        self._work_lock = threading.Lock()
         with self.connect() as db:
             db.executescript('''
               PRAGMA journal_mode=WAL;
@@ -176,6 +177,10 @@ class Journal(ProjectStore):
             db.execute('DELETE FROM session_archives WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.source=session_archives.source AND s.session=session_archives.session)')
             db.execute('DELETE FROM host_jobs WHERE ended_at IS NOT NULL AND ended_at < ?', (cutoff,))
         if events or sessions:
+            with self._work_lock:
+                self._work_version = None
+                self._work_cursor = 0
+                self._work_reports = {}
             self.changed()
         return {'events': events, 'sessions': sessions}
 
@@ -247,8 +252,12 @@ class Journal(ProjectStore):
                 current.pop('approval_pending', None)
             state = {'start': 'working', 'waiting': 'waiting', 'blocked': 'blocked',
                      'finished': 'finished', 'stopped': 'stopped', 'interrupted': 'interrupted'}.get(v['kind'])
-            # Late lifecycle/tool hooks cannot erase an explicitly recorded result.
-            if prior and json.loads(prior['payload']).get('state') == 'finished' and v['kind'] != 'start':
+            # Generic hooks preserve completion; explicit work updates can reopen it.
+            substantive = v['kind'] in ('blocked', 'start', 'finished') or (
+                v['kind'] in ('waiting', 'progress') and bool(patch.get('step')))
+            if substantive and v['kind'] == 'progress':
+                state = 'working'
+            if prior and json.loads(prior['payload']).get('state') == 'finished' and not substantive:
                 current['state'] = 'finished'
             elif state:
                 current['state'] = state
@@ -258,6 +267,51 @@ class Journal(ProjectStore):
             db.execute('INSERT OR REPLACE INTO sessions VALUES(?,?,?,?)', (v['source'], v['session'], v['at'], json.dumps(current)))
             self.project_seen(db,current,v['at'])
         return True
+
+    def work_reports(self):
+        """Project explicit work reports independently of lifecycle hooks, including old data."""
+        with self._work_lock:
+            return self._project_work_reports()
+
+    def _project_work_reports(self):
+        if getattr(self, '_work_version', None) == self.version:
+            return self._work_reports
+        version = self.version
+        reports = dict(getattr(self, '_work_reports', {}))
+        cursor = getattr(self, '_work_cursor', 0)
+        with self.connect() as db:
+            db.execute('BEGIN')
+            newest = db.execute('SELECT COALESCE(MAX(seq),0) FROM events').fetchone()[0]
+            rows = db.execute("""SELECT source,session,kind,at,payload FROM events
+                WHERE seq>? AND seq<=? AND (kind IN ('start','finished','blocked','progress') OR
+                (kind='waiting' AND (json_extract(payload,'$.data.step') IS NOT NULL OR
+                    (json_extract(payload,'$.data.activity')='needs approval' AND
+                     json_extract(payload,'$.data.approval_gate')='human'))))
+                ORDER BY at,seq""", (cursor, newest)).fetchall()
+        for row in rows:
+            data = json.loads(row['payload']).get('data', {})
+            kind = row['kind']
+            identity = (row['source'], row['session'])
+            if row['at'] < reports.get(identity, {}).get('work_at', 0):
+                continue
+            if kind == 'progress' and not data.get('step'):
+                # A subsequent tool proves a permission prompt was resolved. It says
+                # nothing about an explicit request for a decision or operator action.
+                if reports.get(identity, {}).get('attention', {}).get('kind') != 'approval':
+                    continue
+            human_approval = (kind == 'waiting' and data.get('activity') == 'needs approval'
+                              and data.get('approval_gate') == 'human' and not data.get('step'))
+            report = {'work_state': {'start':'working','progress':'working','waiting':'waiting',
+                                    'blocked':'blocked','finished':'finished'}[kind],
+                      'work_at': row['at']}
+            if kind in ('waiting','blocked'):
+                report['attention'] = {'text': data.get('blocker') or data.get('step') or ('Needs your approval in the agent client' if human_approval else 'Blocked'),
+                                       'at': row['at'], 'kind': 'approval' if human_approval else kind}
+            reports[(row['source'], row['session'])] = report
+        self._work_reports = reports
+        self._work_version = version
+        self._work_cursor = newest
+        return reports
 
     def sessions(self, filters=None):
         filters = filters or {}
@@ -269,10 +323,19 @@ class Journal(ProjectStore):
             last_wakes = {(r['source'],r['session']):{'at':r['at'],'activity':json.loads(r['payload']).get('data',{}).get('activity','Dashboard delivery')}
                 for r in db.execute("SELECT * FROM events WHERE id LIKE 'wake-%' ORDER BY at")}
         result = []
+        reports = self.work_reports()
         overrides = self.project_overrides()
         names = self.project_names()
         for row in rows:
             item = json.loads(row[0])
+            report = reports.get((item['source'], item['session']), {})
+            item.update(report)
+            # A later explicit report supersedes completion, even without another start.
+            if item.get('state') == 'finished' and report.get('work_state', 'finished') != 'finished':
+                item['state'] = report['work_state']
+            if report and report.get('work_state') != 'finished' and item.get('outcome'):
+                item['previous_outcome'] = item.pop('outcome')
+                item['previous_evidence'] = item.pop('evidence', [])
             label = item.get('project')
             item = self.apply_project_override(item, overrides, names)
             item['wake'] = wake.get((item['source'], item['session']), False)
@@ -411,6 +474,11 @@ class Journal(ProjectStore):
                 args.append(filters[field])
         if filters.get('q'):
             clauses.append('instr(lower(payload), lower(?))>0'); args.append(filters['q'])
+        if filters.get('meaningful') == '1':
+            clauses.append("(json_extract(payload,'$.data.step') <> '' OR "
+                           "json_extract(payload,'$.data.goal') <> '' OR "
+                           "json_extract(payload,'$.data.outcome') <> '' OR "
+                           "json_extract(payload,'$.data.blocker') <> '')")
         if filters.get('exclude_kind'):
             clauses.append('kind<>?'); args.append(filters['exclude_kind'])
         order = filters.get('order', 'asc')

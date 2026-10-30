@@ -31,6 +31,8 @@ class ContractTests(unittest.TestCase):
             expected = self.fixture('view')['sessions'][0]
             expected['wake'] = False
             expected['exited'] = False
+            expected['work_state'] = 'finished'
+            expected['work_at'] = self.fixture('finished')['at']
             # No repository is known by the old label, so it reads as a topic.
             expected['topic'] = expected.pop('project')
             self.assertEqual(journal.sessions(), [expected])
