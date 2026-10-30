@@ -75,6 +75,19 @@ Reuses the #14 host credential at `~/.config/axon/host-credential`
 hostname or `AXON_MACHINE`; claims only ever return jobs addressed to that
 machine with this credential.
 
+## Starting sessions from the dashboard
+
+Each claim also sends the host's start offers: the `[[allow]]` project names
+with the agents that have an executor, leaving out any entry whose folder is
+missing. Paths are never sent. While the runner keeps polling, the board shows
+that host with a **New session** button, even when nothing runs there. Pick a
+project and agent, write the prompt, and choose whether it gets its own
+worktree (the default). Starting needs the input token. The form shows the
+job's state: queued, starting, started, or the refusal reason. The new session
+appears on the board once its own hooks report. Project pages list the same
+agents under each host. A runner that stops polling for 3 minutes stops being
+offered.
+
 ## Job lifecycle
 
 `queued → claimed → started | refused`, and `started → finished | failed` once

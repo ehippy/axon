@@ -23,5 +23,6 @@ the input token. IDs are git hashes; a `legacy:<name>` ID remains only where an
 override was saved for it before labels became topics. URL-encode IDs in paths.
 Session and event project filters accept the canonical identity, the project
 name, or the label a session originally reported. Project inventories never contain
-checkout paths or remote URLs. Allowed start agents remain empty until the host
-runner publishes an explicit policy (#19).
+checkout paths or remote URLs. A host's `allowed_agents` lists the agents its
+runner offers to start for the project, by name, while that runner is polling;
+see [runner/README.md](../runner/README.md#starting-sessions-from-the-dashboard).

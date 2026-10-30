@@ -202,7 +202,9 @@ def run_once(server, machine, credential, policy, wait, log=print):
     """Claim one job and report its outcome; returns the job or None."""
     base = server.rstrip('/')
     try:
+        # Each claim also tells the board what this host offers to start.
         reply = post('%s/hosts/%s/jobs/claim?wait=%d' % (base, urllib.parse.quote(machine), wait),
+                     payload={'starts': policy.starts(list(STARTERS))},
                      credential=credential, timeout=wait + 15)
     except OSError as error:
         log('server unavailable: %s' % type(error).__name__)

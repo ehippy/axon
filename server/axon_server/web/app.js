@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const PAGE = 50;
 const ACTIVE = ['working', 'waiting', 'blocked'];
 const LABEL = {working:'Working', waiting:'Waiting', blocked:'Blocked', finished:'Finished', stopped:'Stopped', interrupted:'Interrupted', lost_contact:'Lost contact', exited:'Exited'};
-const state = {compose:null, drafts:{}, view:'now', filter:'', sessions:[], events:[], before:null, more:false, selected:null, detailEvents:[], detailBefore:null, detailMore:false, synced:null, live:false, request:0, detailRequest:0};
+const state = {compose:null, drafts:{}, starting:null, startDraft:{}, startJobs:{}, view:'now', filter:'', sessions:[], events:[], before:null, more:false, selected:null, detailEvents:[], detailBefore:null, detailMore:false, synced:null, live:false, request:0, detailRequest:0};
 let timer;
 const loadedVersion=document.documentElement.dataset.axonVersion;
 const RELOAD_STATE='axon:reload-state';
@@ -618,13 +618,90 @@ function projectView(container) {
   }
   if(!groups.length)container.append(empty('No projects reported','Projects appear when an agent reports from a git checkout.'));
 }
-function hostGroups(rows) {
+// What a host's runner offers to start (#19): only while it is polling for jobs.
+function startOffers(machine) {
+  const runner=state.hosts?.find(host=>host.machine===machine)?.runner;
+  return runner && Date.now()/1000-runner.seen_at<180 ? runner.starts||[] : [];
+}
+const START_REASONS = {not_allowed:'the host does not allow this project and agent', no_executor:'the host cannot start this agent',
+  project_path_missing:'the project folder is gone from the host', launch_timeout:'the agent did not start in time',
+  bad_permission_mode:'the host permission mode is not allowed', bad_sandbox:'the host sandbox is not allowed',
+  worktree_setup_failed:'the host could not create a worktree'};
+function startNote(job) {
+  if (!job) return 'Starts on this host in its own worktree unless you untick it.';
+  const code=String(job.detail||'').split(':')[0];
+  return job.status==='queued' ? 'Queued · waiting for the host to pick it up.'
+    : job.status==='claimed' ? 'Starting on the host…'
+    : job.status==='refused' ? 'Not started: '+(START_REASONS[code] || (code==='launch_failed' ? 'the agent failed to start ('+String(job.detail).slice(15)+')' : code.replace(/_/g,' ')))+'.'
+    : job.status==='lost' ? 'The host has not picked it up yet. It starts when the host polls again.'
+    : 'Started'+(job.detail ? ' ('+job.detail+')' : '')+'. It appears here once it reports.';
+}
+async function watchJob(machine, id) {
+  for (let tries=0; tries<60; tries++) {
+    await new Promise(resolve=>setTimeout(resolve,2000));
+    try {
+      const job=(await api('/hosts/'+encodeURIComponent(machine)+'/jobs')).jobs.find(job=>job.id===id);
+      if (!job || state.startJobs[machine]?.id!==id) return;
+      state.startJobs[machine]=job;render();
+      if (!['queued','claimed'].includes(job.status)) return;
+    } catch {}
+  }
+  if (state.startJobs[machine]?.id===id) {state.startJobs[machine]={...state.startJobs[machine],status:'lost'};render();}
+}
+function newSessionForm(machine, offers) {
+  const box=node('form','card-composer new-session');box.dataset.machine=machine;
+  if (!storedToken()) {
+    const input=node('input');input.type='password';input.autocomplete='off';input.placeholder="Paste the server's input token";input.setAttribute('aria-label','Input token');
+    const save=node('button','send-button','Save');save.type='submit';box.append(input,save);
+    // Blur first: render() leaves a focused composer alone, which would keep this token form up.
+    box.addEventListener('submit',event=>{event.preventDefault();if(input.value.trim()){storeToken(input.value.trim());input.blur();render();
+      document.querySelector('.new-session textarea')?.focus();}});
+    return box;
+  }
+  const draft=state.startDraft[machine] ||= {project:offers[0].project, agent:'', prompt:'', worktree:true};
+  if (!offers.some(offer=>offer.project===draft.project)) draft.project=offers[0].project;
+  const project=node('select');project.setAttribute('aria-label','Project');
+  project.append(...offers.map(offer=>new Option(offer.project,offer.project)));project.value=draft.project;
+  const agent=node('select');agent.setAttribute('aria-label','Agent');
+  const agents=()=>offers.find(offer=>offer.project===project.value).agents;
+  const fillAgents=()=>{agent.replaceChildren(...agents().map(a=>new Option(agentName({agent:a}),a)));agent.value=agents().includes(draft.agent)?draft.agent:agents()[0];draft.agent=agent.value;};
+  fillAgents();
+  const text=node('textarea');text.rows=3;text.maxLength=4000;text.placeholder='What should it work on?';text.setAttribute('aria-label','Prompt');text.value=draft.prompt;
+  const worktree=node('input');worktree.type='checkbox';worktree.checked=draft.worktree;
+  const worktreeLabel=node('label','check-label');worktreeLabel.append(worktree,document.createTextNode('Own worktree'));
+  const choices=node('div','new-session-choices');choices.append(project,agent,worktreeLabel);
+  const start=node('button','send-button','Start'), note=node('span','composer-note',startNote(state.startJobs[machine]));start.type='submit';
+  note.setAttribute('role','status');
+  const actions=node('div','composer-actions');actions.append(note,start);box.append(choices,text,actions);
+  project.addEventListener('change',()=>{draft.project=project.value;fillAgents();});
+  agent.addEventListener('change',()=>{draft.agent=agent.value;});
+  worktree.addEventListener('change',()=>{draft.worktree=worktree.checked;});
+  text.addEventListener('input',()=>{draft.prompt=text.value;});
+  box.addEventListener('keydown',event=>{if(event.key==='Escape'){state.starting=null;render();}});
+  text.addEventListener('keydown',event=>{if(event.key==='Enter' && (event.metaKey||event.ctrlKey)){event.preventDefault();box.requestSubmit();}});
+  box.addEventListener('submit',async event=>{
+    event.preventDefault();if (!text.value.trim()) {text.focus();return;}
+    start.disabled=true;note.textContent='Sending…';
+    try {
+      const response=await fetch('/hosts/'+encodeURIComponent(machine)+'/jobs',{method:'POST',cache:'no-store',signal:AbortSignal.timeout(8000),
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+storedToken()},
+        body:JSON.stringify({agent:agent.value,project:project.value,prompt:text.value.trim(),worktree:worktree.checked})});
+      if (response.status===401) {storeToken('');render();return;}
+      if (!response.ok) throw new Error(response.status===403 ? 'Session starts are disabled on this server.' : 'Not started: the journal returned '+response.status+'.');
+      const job=(await response.json()).job;
+      state.startJobs[machine]=job;draft.prompt='';render();watchJob(machine,job.id);
+    } catch(error) {note.textContent=error.message;start.disabled=false;}
+  });
+  return box;
+}
+function hostGroups(rows, startable=[]) {
   const fragment=document.createDocumentFragment();
   const hosts=new Map();
   for (const row of rows) {const host=hostName(row);if(!hosts.has(host)) hosts.set(host,[]);hosts.get(host).push(row);}
-  for (const [host,sessions] of hosts) {
+  for (const machine of startable) if (!hosts.has(machine)) hosts.set(machine,[]);
+  for (const [host,sessions] of [...hosts].sort(([a],[b])=>a.localeCompare(b))) {
     const section=node('section','host-group'), heading=node('div','host-heading');
-    const title=node('h2','host-title'), icon=hostIcon(hostKind(sessions));
+    const title=node('h2','host-title'), icon=hostIcon(hostKind(sessions.length ? sessions : state.sessions.filter(row=>row.machine===host)));
     if (icon) title.append(icon);
     title.append(document.createTextNode(host));
     const sync=state.hosts?.find(row=>row.machine===host);
@@ -632,7 +709,17 @@ function hostGroups(rows) {
       const badge=node('span','host-sync-warning',sync.ok===0 ? 'Sync failed' : 'Hooks behind');
       badge.title=sync.error || 'Waiting for this host to sync the deployed revision';title.append(badge);
     }
-    heading.append(title,node('span','host-count',sessions.filter(row=>ACTIVE.includes(row.effective_state)).length+' live · '+sessions.filter(row=>!ACTIVE.includes(row.effective_state)).length+' recent'));section.append(heading);
+    heading.append(title,node('span','host-count',sessions.filter(row=>ACTIVE.includes(row.effective_state)).length+' live · '+sessions.filter(row=>!ACTIVE.includes(row.effective_state)).length+' recent'));
+    const offers=startOffers(host);
+    if (offers.length) {
+      const toggle=node('button','filter-pill new-session-toggle','New session');toggle.type='button';
+      toggle.setAttribute('aria-expanded',String(state.starting===host));toggle.setAttribute('aria-label','New session on '+host);
+      toggle.addEventListener('click',()=>{state.starting=state.starting===host?null:host;render();
+        if (state.starting) document.querySelector('.new-session textarea, .new-session input')?.focus();});
+      heading.append(toggle);
+    }
+    section.append(heading);
+    if (offers.length && state.starting===host) section.append(newSessionForm(host,offers));
     const columns=node('div','agent-columns'), agents=new Map();
     for (const row of sessions) {const name=agentName(row);if(!agents.has(name)) agents.set(name,[]);agents.get(name).push(row);}
     for (const [name,items] of [...agents].sort(agentOrder)) {
@@ -669,8 +756,11 @@ function render() {
     if (state.filter) rows=rows.filter(row=>row.effective_state===state.filter);
     const active=rows.filter(row=>ACTIVE.includes(row.effective_state)), visible=rows.sort(boardOrder);
     $('result-count').textContent=active.length+' live · '+(visible.length-active.length)+' recent';
-    container.append(hostGroups(visible));
-    if (!visible.length) container.append(empty('Nothing in this view','Change your filters, or let an agent report its next bit of work.'));
+    // A host that can start sessions stays on the board even when nothing is running there.
+    const startable=state.filter || $('search').value.trim() ? [] : (state.hosts||[]).map(host=>host.machine)
+      .filter(machine=>startOffers(machine).length && (!$('host').value || machine===$('host').value));
+    container.append(hostGroups(visible,startable));
+    if (!visible.length && !startable.length) container.append(empty('Nothing in this view','Change your filters, or let an agent report its next bit of work.'));
     if (archived.length) {
       const section=node('details','quiet-group archived-group');section.open=!!state.archivedOpen;
       section.addEventListener('toggle',()=>{state.archivedOpen=section.open;});

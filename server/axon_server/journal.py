@@ -62,6 +62,8 @@ JOB_STATES = {'queued': {'claimed'}, 'claimed': {'started', 'refused'},
 JOB_REPORTS = {'started', 'refused', 'failed', 'finished'}
 JOB_DETAIL_LIMIT = 512
 JOB_LIST_LIMIT = 100
+# A runner names at most this many startable projects; the board offers them.
+START_LIMIT = 64
 
 
 WEB_ASSETS = {'/': ('index.html', 'text/html; charset=utf-8'),
@@ -134,8 +136,11 @@ class Journal(ProjectStore):
                 source TEXT, session TEXT, until_at REAL NOT NULL, reason TEXT NOT NULL,
                 PRIMARY KEY(source, session));
               CREATE TABLE IF NOT EXISTS host_runners (
-                machine TEXT PRIMARY KEY, seen_at REAL NOT NULL, resume_agents TEXT NOT NULL);
+                machine TEXT PRIMARY KEY, seen_at REAL NOT NULL, resume_agents TEXT NOT NULL,
+                starts TEXT NOT NULL DEFAULT '[]');
             ''')
+            if 'starts' not in {r['name'] for r in db.execute('PRAGMA table_info(host_runners)')}:
+                db.execute("ALTER TABLE host_runners ADD COLUMN starts TEXT NOT NULL DEFAULT '[]'")
 
 
             # Old databases used rowids that can be reused after deletion. Preserve
@@ -497,7 +502,8 @@ class Journal(ProjectStore):
     def hosts(self, revision=None):
         with self.connect() as db:
             sync = {r['machine']: dict(r) for r in db.execute('SELECT * FROM host_sync')}
-            runners = {r['machine']: {'seen_at': r['seen_at'], 'resume_agents': json.loads(r['resume_agents'])}
+            runners = {r['machine']: {'seen_at': r['seen_at'], 'resume_agents': json.loads(r['resume_agents']),
+                                      'starts': json.loads(r['starts'])}
                        for r in db.execute('SELECT * FROM host_runners')}
         machines = {s.get('machine') for s in self.sessions() if s.get('machine')} | set(sync) | set(runners)
         return [{'machine': machine, **sync.get(machine, {}),
@@ -517,7 +523,7 @@ class Journal(ProjectStore):
         agent, project, prompt = payload.get('agent'), payload.get('project'), payload.get('prompt')
         if agent not in JOB_AGENTS:
             raise ValueError('unknown agent')
-        if not isinstance(project, str) or not 0 < len(project.strip()) <= 80 or any(sep in project for sep in ('/', '\\')):
+        if not bare_project(project):
             raise ValueError('project must be a bare name of at most 80 characters')
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > MESSAGE_LIMIT:
             raise ValueError('prompt must be 1..%d characters' % MESSAGE_LIMIT)
@@ -536,10 +542,21 @@ class Journal(ProjectStore):
             self.inbox.notify_all()
         return job
 
-    def claim_job(self, machine, credential, wait=0):
-        """Atomically hand a host its oldest queued job; it stays claimed until reported."""
+    def claim_job(self, machine, credential, wait=0, starts=None):
+        """Atomically hand a host its oldest queued job; it stays claimed until reported.
+
+        A runner names what it may start (project names and agents, never paths) with
+        each claim, so the board offers only what the host would accept."""
         if not isinstance(machine, str) or not MACHINE.fullmatch(machine):
             raise ValueError('invalid machine')
+        if starts is not None:
+            starts = start_offers(starts)
+            with self.connect() as db:
+                if self.host_machine(credential, db) != machine:
+                    raise PermissionError('invalid host credential or machine')
+                db.execute("INSERT INTO host_runners VALUES(?,?,'[]',?) ON CONFLICT(machine) DO UPDATE"
+                           ' SET seen_at=excluded.seen_at, starts=excluded.starts', (machine, time.time(), json.dumps(starts)))
+            self.changed()
         deadline = time.time() + min(CLAIM_WAIT_LIMIT, max(0, wait))
         while True:
             with self.connect() as db:
@@ -603,7 +620,9 @@ class Journal(ProjectStore):
                 now = time.time()
                 if self.host_machine(credential, db) != machine:
                     raise PermissionError('invalid host credential or machine')
-                db.execute('INSERT OR REPLACE INTO host_runners VALUES(?,?,?)', (machine, now, json.dumps(agents)))
+                db.execute("INSERT INTO host_runners VALUES(?,?,?,'[]') ON CONFLICT(machine) DO UPDATE"
+                           ' SET seen_at=excluded.seen_at, resume_agents=excluded.resume_agents',
+                           (machine, now, json.dumps(agents)))
                 found = None
                 candidates = db.execute(
                     'SELECT m.source, m.session, s.payload FROM messages m'
@@ -951,7 +970,13 @@ def handler(journal, web=True, token=None, stop=None, updater=None, prometheus_u
                     try:
                         if action == 'claim':
                             wait = float(parse_qs(url.query).get('wait', ['0'])[-1])
-                            data, status = {'job': journal.claim_job(machine, credential, wait)}, 200
+                            length = int(self.headers.get('Content-Length', 0))
+                            if not 0 <= length <= 64 * 1024: raise ValueError('invalid body')
+                            # Runners from before start offers send no body; leave their offers unknown.
+                            body = json.loads(self.rfile.read(length)) if length else {}
+                            if not isinstance(body, dict): raise ValueError('invalid body')
+                            starts = body.get('starts')
+                            data, status = {'job': journal.claim_job(machine, credential, wait, starts)}, 200
                         elif action == 'report':
                             length = int(self.headers.get('Content-Length', 0))
                             if not 0 < length <= JOB_DETAIL_LIMIT + 1024: raise ValueError('invalid body')
@@ -1074,6 +1099,24 @@ def session_path(path):
     if len(parts) >= 5 and parts[:2] == ['', 'sessions'] and IDENTITY.fullmatch(parts[2]) and IDENTITY.fullmatch(parts[3]):
         return parts[2], parts[3], '/'.join(parts[4:])
     return None
+
+
+def bare_project(project):
+    return isinstance(project, str) and 0 < len(project.strip()) <= 80 and not any(sep in project for sep in ('/', '\\'))
+
+
+def start_offers(starts):
+    """Validate a runner's startable projects: bare names and known agents only."""
+    if not isinstance(starts, list) or len(starts) > START_LIMIT:
+        raise ValueError('invalid starts')
+    offers = []
+    for entry in starts:
+        agents = entry.get('agents') if isinstance(entry, dict) else None
+        if not bare_project(entry.get('project') if isinstance(entry, dict) else None) or not isinstance(agents, list) \
+                or not agents or any(agent not in JOB_AGENTS for agent in agents):
+            raise ValueError('invalid starts')
+        offers.append({'project': entry['project'].strip(), 'agents': sorted(set(agents))})
+    return offers
 
 
 def host_job_path(path):

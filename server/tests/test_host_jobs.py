@@ -71,6 +71,30 @@ class HostJobTests(unittest.TestCase):
         self.assertEqual((claimed['id'],claimed['status']),(job['id'],'claimed'))
         self.assertIsNone(self.request('/hosts/host-a/jobs/claim',auth=self.credential)['job'])
 
+    def test_claim_records_what_the_host_offers_to_start(self):
+        offer={'starts':[{'project':'sample','agents':['codex','claude']}]}
+        self.request('/hosts/host-a/jobs/claim',offer,auth=self.credential)
+        runner={h['machine']:h for h in self.journal.hosts()}['host-a']['runner']
+        self.assertEqual(runner['starts'],[{'project':'sample','agents':['claude','codex']}])
+        self.request('/hosts/host-a/jobs/claim',auth=self.credential) # a runner from before offers keeps them
+        self.journal.claim_resume('host-a',self.credential,['claude']) # resume polls do not erase them
+        runner={h['machine']:h for h in self.journal.hosts()}['host-a']['runner']
+        self.assertEqual((runner['starts'][0]['project'],runner['resume_agents']),('sample',['claude']))
+        for bad in ({'starts':[{'project':'a/b','agents':['claude']}]},{'starts':[{'project':'x','agents':['zelda']}]},
+                    {'starts':[{'project':'x','agents':[]}]},{'starts':'x'},[1]):
+            self.request('/hosts/host-a/jobs/claim',bad,auth=self.credential,expect=400)
+        other=self.journal.mint_host_credential('host-b')['credential']
+        self.request('/hosts/host-a/jobs/claim',offer,auth=other,expect=401)
+
+    def test_project_page_lists_agents_a_fresh_runner_offers(self):
+        self.journal.ingest(dict(version=1,source='s',session='x',id='1',at=time.time(),kind='progress',
+            data={'agent':'codex','machine':'host-b','project':'sample','project_id':'a'*64}))
+        self.journal.claim_job('host-a',self.credential,0,[{'project':'sample','agents':['pi']}])
+        hosts={h['machine']:h['allowed_agents'] for h in self.journal.projects()[0]['hosts']}
+        self.assertEqual(hosts,{'host-a':['pi'],'host-b':[]})
+        with self.journal.connect() as db:db.execute('UPDATE host_runners SET seen_at=0')
+        self.assertEqual({h['machine'] for h in self.journal.projects()[0]['hosts']},{'host-b'})
+
     def test_claims_are_fifo_and_scoped_to_the_machine(self):
         first=self.post_job(prompt='first');second=self.post_job(prompt='second')
         self.post_job(agent='codex')

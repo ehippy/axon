@@ -3,6 +3,9 @@ import json
 import math
 import time
 
+# A runner that has not polled this recently cannot pick up a job.
+RUNNER_FRESH = 180
+
 
 def project_key(session):
     return session.get('project_id') or ('legacy:'+session['project'] if session.get('project') else None)
@@ -85,6 +88,8 @@ class ProjectStore:
         with self.connect() as db:
             checkouts=[dict(r) for r in db.execute('SELECT * FROM project_checkouts ORDER BY seen_at')]
             names={r['project_id']:r['name'] for r in db.execute('SELECT * FROM project_names')}
+            offers={r['machine']:json.loads(r['starts']) for r in db.execute(
+                'SELECT machine,starts FROM host_runners WHERE seen_at>?',(time.time()-RUNNER_FRESH,))}
         for row in checkouts:
             key=canonical(row['project_id'],overrides)
             group=groups.setdefault(key,{'id':key,'name':row['name'],'hosts':{},'sessions':[],'last_activity':0})
@@ -106,6 +111,12 @@ class ProjectStore:
             override=overrides.get(key,{})
             group['name']=override.get('name') or names.get(key) or group['name']
             group['hidden']=bool(override.get('hidden'))
+            # A host offers a start here when its runner names this project (#19).
+            called={group['name'],names.get(key)}
+            for machine,starts in offers.items():
+                agents=sorted({a for offer in starts if offer['project'] in called for a in offer['agents']})
+                if agents:
+                    group['hosts'].setdefault(machine,{'machine':machine,'checkouts':[],'allowed_agents':[]})['allowed_agents']=agents
             group['hosts']=list(group['hosts'].values())
             group['sessions'].sort(key=lambda s:(s['effective_state'] not in ('working','waiting','blocked'),-s['updated_at']))
             keys={(s['source'],s['session']) for s in group['sessions']}

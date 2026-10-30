@@ -79,6 +79,15 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(self.outcome(other['id'])['detail'],'not_allowed')
         self.assertEqual(self.outcome(wrong_agent['id'])['detail'],'not_allowed')
 
+    def test_each_claim_offers_existing_projects_and_agents_with_executors(self):
+        policy=self.config_for([('sample',str(self.project),[]),('sample',str(self.project),['opencode','claude']),
+                                ('gone',str(self.root/'missing'),['claude']),('other',str(self.project),['opencode'])])
+        self.assertEqual(policy.starts(list(cli.STARTERS)),[{'project':'sample','agents':['claude','codex','pi']}])
+        self.poll(policy)
+        runner={h['machine']:h for h in self.journal.hosts()}['runner-test']['runner']
+        self.assertEqual(runner['starts'],[{'project':'sample','agents':['claude','codex','pi']}])
+        self.assertEqual(runner['resume_agents'],[])
+
     def test_allowed_project_without_executor_refuses_not_drops(self):
         policy=self.config_for([('sample',str(self.project),[])])
         job=self.enqueue(agent='opencode')

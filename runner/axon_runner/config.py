@@ -49,6 +49,18 @@ class Policy:
             return path, settings, None
         return None, None, 'not_allowed'
 
+    def starts(self, executors):
+        """What the dashboard may offer for this host: project names and agents only,
+        never paths. An entry whose folder is gone, or with no agent that has an
+        executor, would only be refused, so it is left out."""
+        offered = {}
+        for entry in self.allow:
+            agents = [a for a in (entry['agents'] or executors) if a in executors]
+            if agents and Path(entry['path']).expanduser().is_dir():
+                known = offered.setdefault(entry['project'], [])
+                known.extend(a for a in agents if a not in known)
+        return [{'project': project, 'agents': agents} for project, agents in offered.items()]
+
 
 def load(path=None):
     """Read ~/.config/axon/runner.toml; a missing file means refuse everything."""
