@@ -102,11 +102,9 @@ the loopback API should use a secured tunnel; reads have no authentication.
 
 Open `http://127.0.0.1:8510/` on the server, or forward that loopback port over
 SSH and open the forwarded local address. The packaged UI offers Now,
-a filterable event timeline, and session details with evidence. The board
-prioritizes requests, active work and recent changes (see
-[Attention-first dashboard](#attention-first-dashboard)). Optional host grouping
-organizes sessions by host and agent, with a separate tile for each source/session
-pair. Tile order is stable across activity updates. Agent identity
+a filterable event timeline, and session details with evidence. The board groups
+live reporting sessions by host, then agent, with a separate tile for each
+source/session pair. Tile order is stable across activity updates. Agent identity
 colors follow the handset palette; status dots separately indicate work state.
 Host labels come from reported `machine` values (`AXON_MACHINE` sets a friendly
 label, `auto` reports the host name); missing host metadata is shown explicitly
@@ -124,7 +122,7 @@ access, since activity can contain personal project details. Agent-reported text
 is displayed as text; evidence becomes a link only for explicit HTTP(S) URLs.
 
 The top bar's time horizon controls both board sessions (by last report) and
-timeline events. It defaults to 24 hours and offers 15m, 30m, 1h, 6h, 24h, 7d,
+timeline events. It defaults to one hour and offers 15m, 30m, 1h, 6h, 24h, 7d,
 30d, and Any time. Selecting a longer horizon reveals older sessions without
 changing their reported state or extending their heartbeat lease.
 
@@ -273,29 +271,17 @@ with anything other than usable metrics is Offline, not a row of zeros. Load sta
 aggregate: it cannot say which of Hermes, Pi or OpenCode caused it. See the reporter
 [inference collectors](../packages/python/axon_reporter/README.md#shared-inference-servers).
 
-## Attention-first dashboard
+## Work status and session history
 
-The board defaults to 24 hours and orders work into Needs you, Working now,
-Since your last visit (up to eight recent changes), and collapsed earlier activity.
-Explicit requests and queued input remain visible outside the selected time horizon.
-Group by host restores the host/agent layout and exposes host start controls.
-Routine topics (memory refreshes, gaming snapshots and Homarr sync) and apparent
-probes are grouped in disclosures, never removed from history. These topic-based
-suggestions can include ordinary work; expand a group or use the host view to inspect it.
+The board groups sessions by host, then agent, and defaults to the last hour.
+The selected time horizon applies to every session, including sessions with older
+requests or queued messages. There is no review queue or acknowledgment workflow.
 
-Work reports and process status are separate. Explicit waiting/blocked reports survive
-Stop and heartbeat hooks until another explicit start, progress, or completion report.
-A substantive report after completion supersedes the earlier outcome; generic hooks
-still preserve completed results. Existing retained events are projected the same way,
-without rewriting history. Reported requests may become outdated when work continues
-in a different session; Axon does not infer resolution across sessions.
+Explicit work updates after a completion supersede its earlier outcome. Session
+details label that outcome as superseded; generic Stop/heartbeat hooks still
+preserve valid completions. This also corrects existing retained history.
 
-Mark reviewed acknowledges a request in this browser only. Show reviewed requests
-restores it for inspection or marking unreviewed; a newer request appears automatically.
-The previous visit marker is also browser-local. Neither setting changes agent work.
-
-The timeline and session history default to reports with goals, steps, outcomes or
-blockers. Include lifecycle details restores hook events; Include heartbeats additionally
-restores lease renewals. Filtering happens before pagination. Session details put input
-before metadata and history. Message status distinguishes queued from accepted by an
-agent; acceptance does not prove an answer or completed action.
+Timeline and session history default to meaningful reports. Include lifecycle
+details reveals hook events, with filtering applied before pagination. Message
+status distinguishes queued from accepted by the agent; acceptance does not
+prove an answer or completed action.
