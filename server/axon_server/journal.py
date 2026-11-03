@@ -1259,6 +1259,46 @@ def host_resume_path(path):
     return None
 
 
+def ingest_line(journal, line, stop, retry_delay=0.25):
+    """Store one mosquitto_sub JSON line. The broker already counts it delivered,
+    so a busy database is waited out rather than losing the event."""
+    try:
+        envelope = json.loads(line)
+        topic = envelope['topic'].split('/')
+        event = json.loads(envelope['payload'])
+        if len(topic)==4 and topic[:2]==['axon','resources']:
+            if topic[2:]!=[event.get('provider'),event.get('account')]:
+                raise ValueError('resource topic mismatch')
+            store = journal.ingest_resource
+        elif len(topic) != 5 or topic[2:4] != [event.get('source'), event.get('session')]:
+            raise ValueError('topic identity mismatch')
+        else:
+            store = journal.ingest
+    except (ValueError, KeyError, TypeError, AttributeError):
+        logging.warning('Rejected malformed activity event')
+        return False
+    delay = retry_delay
+    while True:
+        try:
+            store(event)
+            return True
+        except sqlite3.OperationalError as error:
+            if 'locked' not in str(error) and 'busy' not in str(error):
+                logging.exception('Unable to store activity event')
+                return False
+            logging.warning('Activity database busy; retrying event')
+            if stop.wait(delay):
+                return False
+            delay = min(delay * 2, 5)
+        except (ValueError, KeyError, TypeError, AttributeError):
+            logging.warning('Rejected malformed activity event')
+            return False
+        except Exception:
+            # One bad event must not stop every later one from reaching the board.
+            logging.exception('Unable to store activity event')
+            return False
+
+
 def mqtt(journal, broker, stop, port=1883):
     while not stop.is_set():
         proc = None
@@ -1276,23 +1316,12 @@ def mqtt(journal, broker, stop, port=1883):
                 pending += chunk
                 while b'\n' in pending:
                     line, pending = pending.split(b'\n', 1)
-                    try:
-                        envelope = json.loads(line)
-                        topic = envelope['topic'].split('/')
-                        event = json.loads(envelope['payload'])
-                        if len(topic)==4 and topic[:2]==['axon','resources']:
-                            if topic[2:]!=[event.get('provider'),event.get('account')]:
-                                raise ValueError('resource topic mismatch')
-                            journal.ingest_resource(event)
-                            continue
-                        if len(topic) != 5 or topic[2:4] != [event.get('source'), event.get('session')]:
-                            raise ValueError('topic identity mismatch')
-                        journal.ingest(event)
-                    except (ValueError, KeyError, TypeError, AttributeError):
-                        logging.warning('Rejected malformed activity event')
+                    ingest_line(journal, line, stop)
                 if len(pending) > 65536:
                     pending = b''
-        except OSError:
+        except Exception:
+            # Anything escaping here used to end this thread for good while the web side
+            # kept serving a frozen board; log it and resubscribe instead.
             logging.exception('MQTT subscriber unavailable')
         finally:
             if proc:

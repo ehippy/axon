@@ -95,5 +95,51 @@ class BrokerTests(unittest.TestCase):
                 broker.terminate(); broker.wait(timeout=5)
 
 
+class IngestLineTests(unittest.TestCase):
+    """The subscriber thread must survive database errors (board went dark on Oct 30)."""
+    def setUp(self):
+        from axon_server import journal
+        self.journal = journal
+
+    def line(self, source='codex', session='s1'):
+        payload = json.dumps({'source': source, 'session': session})
+        return json.dumps({'topic': f'axon/activity/{source}/{session}/events', 'payload': payload}).encode()
+
+    def test_locked_database_is_retried_until_stored(self):
+        import sqlite3, threading
+        calls = []
+        class Store:
+            def ingest(self, event):
+                calls.append(event)
+                if len(calls) < 3:
+                    raise sqlite3.OperationalError('database is locked')
+        with self.assertLogs(level='WARNING'):
+            self.assertTrue(self.journal.ingest_line(Store(), self.line(), threading.Event(), retry_delay=0))
+        self.assertEqual(len(calls), 3)
+
+    def test_unexpected_error_skips_only_that_event(self):
+        import threading
+        class Store:
+            def ingest(self, event):
+                raise RuntimeError('boom')
+        with self.assertLogs(level='ERROR'):
+            self.assertFalse(self.journal.ingest_line(Store(), self.line(), threading.Event()))
+
+    def test_stop_ends_retry(self):
+        import sqlite3, threading
+        stop = threading.Event(); stop.set()
+        class Store:
+            def ingest(self, event):
+                raise sqlite3.OperationalError('database is locked')
+        with self.assertLogs(level='WARNING'):
+            self.assertFalse(self.journal.ingest_line(Store(), self.line(), stop))
+
+    def test_identity_mismatch_is_rejected(self):
+        import threading
+        bad = json.dumps({'topic': 'axon/activity/codex/other/events', 'payload': json.dumps({'source': 'codex', 'session': 's1'})}).encode()
+        with self.assertLogs(level='WARNING'):
+            self.assertFalse(self.journal.ingest_line(object(), bad, threading.Event()))
+
+
 if __name__ == '__main__':
     unittest.main()
