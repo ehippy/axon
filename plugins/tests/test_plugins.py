@@ -915,6 +915,18 @@ class UninstallTests(unittest.TestCase):
         self.assertEqual(gone['archived'],None)
         self.assertFalse((self.home/'.local/share/axon').exists())
 
+    def test_purge_reports_state_a_running_agent_wrote_back(self):
+        payload=self.home/'.local/share/axon'; payload.mkdir(parents=True)
+        state=Path(self.env['AXON_ACTIVITY_HOME']); state.mkdir(parents=True)
+        (state/'outbox.sqlite3').write_text('journal')
+        with patch.dict(os.environ,self.env):
+            self.assertEqual(sorted(manage.reappeared_paths(self.home)),sorted([str(payload),str(state)]))
+            saved=manage.purge_host(self.home,discard=True)
+            self.assertEqual(saved['reappeared'],[])
+            # a session holding Axon in memory can write the journal as it is deleted
+            state.mkdir(parents=True); (state/'outbox.sqlite3').write_text('late')
+            self.assertEqual(manage.reappeared_paths(self.home),[str(state)])
+
     def test_archive_carries_the_host_credential_before_the_delete(self):
         config=self.home/'.config'/'axon'; config.mkdir(parents=True)
         (config/'host-credential').write_text('c'*43)

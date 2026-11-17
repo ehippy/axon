@@ -926,6 +926,14 @@ def archive_host(home, destination, stamp=None):
     return {'path': str(target), 'copied': copied}
 
 
+def reappeared_paths(home):
+    """What exists again after a delete — a session that still holds Axon in memory
+    can write the journal while we remove it, and that is not a failed uninstall."""
+    home = Path(home).expanduser()
+    return [str(path) for path in (home/'.local/share/axon', state_dir(home), home/'.config'/'axon')
+            if path.exists() or path.is_symlink()]
+
+
 def purge_host(home, archive=None, discard=False, i_am_server=False):
     """Delete payload and state. Refuses to guess what happens to the host's data."""
     home = Path(home).expanduser()
@@ -941,7 +949,8 @@ def purge_host(home, archive=None, discard=False, i_am_server=False):
     saved = archive_host(home, archive) if archive else None
     for path in (payload, state, home/'.config'/'axon'):
         shutil.rmtree(path, ignore_errors=True)
-    return {'removed': [str(payload), str(state), str(home/'.config'/'axon')], 'archived': saved}
+    return {'removed': [str(payload), str(state), str(home/'.config'/'axon')], 'archived': saved,
+            'reappeared': reappeared_paths(home)}
 
 
 def uninstall_agents(home, agents, apply=False):
@@ -964,7 +973,8 @@ def decommission(home=Path.home(), apply=False, purge=False, archive=None, disca
     home = Path(home).expanduser().resolve()
     agents = (agent,) if agent else AGENTS
     report = {'home': str(home), 'apply': apply, 'agents': {}, 'failed': {},
-              'payload': str(home/'.local/share/axon'), 'journal': str(state_dir(home))}
+              'manual_steps': [], 'payload': str(home/'.local/share/axon'),
+              'journal': str(state_dir(home))}
     if apply:
         # Clear both opt-in markers first: a concurrent `chezmoi apply` must not
         # re-install mid-run, and the stamp alone is enough for it to think it may.
@@ -977,6 +987,11 @@ def decommission(home=Path.home(), apply=False, purge=False, archive=None, disca
         report['services'] = uninstall_services(home, True, system, run)
         if purge:
             report['purge'] = purge_host(home, archive, discard, i_am_server)
+            if report['purge']['reappeared']:
+                report['manual_steps'].append(
+                    'still running: ' + ', '.join(report['purge']['reappeared']) + ' came back as it was '
+                    'deleted; an agent session holds Axon in memory. Restart that agent, then remove '
+                    'the leftovers by hand')
     else:
         report['agents'], report['failed'] = uninstall_agents(home, agents, False)
         report['timer'] = uninstall_timer(home, False, system, run)
@@ -996,11 +1011,10 @@ def decommission(home=Path.home(), apply=False, purge=False, archive=None, disca
                                                       'env_lines_removed', 'links_removed', 'settings_removed',
                                                       'statusline_removed', 'files_removed',
                                                       'rules_lines_removed')))
-    report['manual_steps'] = []
     if not purge:
         report['manual_steps'].append(
-            f'journal and payload left in place; rerun with --purge --archive DIR or --discard-data '
-            f'to remove {report["payload"]}, {report["journal"]} and ~/.config/axon')
+            f'journal and payload left in place; rerun with --purge --archive DIR or '
+            f'--discard-data to remove {report["payload"]}, {report["journal"]} and ~/.config/axon')
     report['manual_steps'] += [f'review systemd unit {u}: it was not written by install-timer'
                                for u in report['services'].get('manual_units', [])]
     report['manual_steps'].append('reload running agent sessions: an open session still carries the '

@@ -129,7 +129,10 @@ refuses to guess what that means for the data: pass `--archive DIR` (copies the 
 credential, `*.sqlite3`, `sync-status.json` and the pre-uninstall backups into a `0700`
 directory named for the host label, files `0600`) or `--discard-data`. It also refuses
 when `~/.local/share/axon/server` exists, because that host is the journal other hosts
-report to; stop the server deliberately, then pass `--i-am-the-server`. `uninstall pi`
+report to; stop the server deliberately, then pass `--i-am-the-server`. Anything that
+exists again immediately is listed under `reappeared` and repeated in `manual_steps`: a
+session that still holds Axon in memory can write the journal as it is deleted, which is
+not a failed uninstall but does need that agent restarted. `uninstall pi`
 limits the first step to one agent. Exit code 2 means at least one agent was left
 installed (a malformed config is reported, not repaired). The Codex path parses TOML, so
 it needs Python 3.11+; other agents install on 3.10+. Reload running agent sessions
