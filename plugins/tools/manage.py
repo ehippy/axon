@@ -761,6 +761,13 @@ def uninstall(agent, home, apply=False, hermes_command='hermes', run=subprocess.
     for link in links:
         if axon_symlink(link, payload):
             plan['links_removed'].append(str(link))
+    ours_files = {Path(plan['settings'])} if plan['settings'] else set()
+    ours_files |= set(links)
+    if agent == 'codex':
+        ours_files.add(home/'.codex'/'config.toml')
+    if agent == 'hermes':
+        ours_files.add(home/'.hermes'/'.env')
+    plan['stale_references'] = stale_references(home, agent, ours_files)
     if agent == 'hermes':
         plan['commands'] = [f'{hermes_command} plugins disable axon-activity']
     if not apply:
@@ -926,6 +933,28 @@ def archive_host(home, destination, stamp=None):
     return {'path': str(target), 'copied': copied}
 
 
+def stale_references(home, agent, live):
+    """Config-dir files that still name the payload but are not read any more.
+
+    Old backups of a settings file keep whole hook blocks pointing at deleted code.
+    They are reported, never deleted: a backup is the host's, not ours.
+    """
+    root = home/'.claude' if agent == 'claude' else home/f'.{agent}' if agent in ('codex',) else \
+        home/'.config'/'opencode' if agent == 'opencode' else home/f'.{agent}'
+    if not root.is_dir():
+        return []
+    found = []
+    for path in sorted([*root.glob('*'), *root.glob('rules/*'), *root.glob('hooks/*')]):
+        if not path.is_file() or path in live or path.stat().st_size > 1_000_000:
+            continue
+        try:
+            if PAYLOAD_MARKER in path.read_text(errors='ignore').replace('\\', '/'):
+                found.append(str(path))
+        except OSError:
+            continue
+    return found
+
+
 def reappeared_paths(home):
     """What exists again after a delete — a session that still holds Axon in memory
     can write the journal while we remove it, and that is not a failed uninstall."""
@@ -1019,6 +1048,12 @@ def decommission(home=Path.home(), apply=False, purge=False, archive=None, disca
                                for u in report['services'].get('manual_units', [])]
     report['manual_steps'].append('reload running agent sessions: an open session still carries the '
                                   'reporting instructions in its context')
+    stale = sorted({p for r in report['agents'].values() if isinstance(r, dict)
+                    for p in r.get('stale_references', [])})
+    if stale:
+        report['manual_steps'].append(
+            'left alone because they are the host\'s own backups, not registrations: '
+            + ', '.join(stale))
     if report['failed']:
         report['warning'] = 'these agents were left installed; repair the config and rerun'
     return report

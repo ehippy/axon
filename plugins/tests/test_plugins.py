@@ -843,6 +843,21 @@ class UninstallTests(unittest.TestCase):
             self.assertEqual(json.loads((self.home/'.claude'/'settings.json').read_text())['statusLine'],
                              {'type':'command','command':'git branch --show-current'})
 
+    def test_a_stale_backup_is_named_but_never_touched(self):
+        (self.home/'.codex').mkdir(parents=True)
+        stale=self.home/'.codex'/'hooks.json.before-labels'
+        stale.write_text(json.dumps({'hooks':{'Stop':[{'hooks':[{'type':'command',
+            'command':str(self.home/'.local/share/axon/plugins/codex/hooks/run.py')}]}]}},indent=2))
+        with patch.dict(os.environ,self.env):
+            report=manage.uninstall('codex',self.home,apply=True)
+            self.assertEqual([Path(p).name for p in report['stale_references']],
+                             ['hooks.json.before-labels'])
+            self.assertTrue(stale.exists(),'a host backup is not ours to delete')
+            self.assertEqual(report['hooks_removed'],0)
+            planned=manage.decommission(self.home,apply=False)
+            self.assertTrue(any('before-labels' in step for step in planned['manual_steps']))
+            self.assertNotIn('codex',planned['cleared'])
+
     def test_hand_written_codex_hook_and_trust_rules_are_found_by_content(self):
         hooks=self.home/'.codex'/'hooks.json'
         (self.home/'.codex'/'hooks').mkdir(parents=True)
