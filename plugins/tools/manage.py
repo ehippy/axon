@@ -955,6 +955,33 @@ def stale_references(home, agent, live):
     return found
 
 
+def payload_holders(home, run=subprocess.run):
+    """Processes with the payload or journal open, as pid plus command.
+
+    A long-lived agent daemon -- a Hermes gateway, an editor, a runner -- loads a
+    plugin into memory once and keeps executing it after the files are gone, then
+    recreates whatever it writes. Deleting cannot evict it; name it, and say which
+    process to restart.
+
+    A process that opens the journal only between its own ticks may show up under
+    `reappeared` rather than here: this is best effort, not a guarantee.
+    """
+    try:
+        done = run(['lsof', '-w'], check=False, capture_output=True, text=True)
+    except OSError:
+        return []  # no lsof on this host; the reappeared check still catches the behaviour
+    text = str(getattr(done, 'stdout', '') or '')
+    markers = (str(home/'.local/share/axon'), str(state_dir(home)))
+    found = {}
+    for line in text.splitlines():
+        words = line.split(None, 9)
+        if len(words) < 9 or words[1] == 'PID':
+            continue
+        if any(marker in line for marker in markers):
+            found.setdefault(words[1], words[0])
+    return [{'pid': pid, 'command': name} for pid, name in sorted(found.items(), key=lambda p: int(p[0]) if p[0].isdigit() else 0)]
+
+
 def reappeared_paths(home):
     """What exists again after a delete — a session that still holds Axon in memory
     can write the journal while we remove it, and that is not a failed uninstall."""
@@ -1002,8 +1029,14 @@ def decommission(home=Path.home(), apply=False, purge=False, archive=None, disca
     home = Path(home).expanduser().resolve()
     agents = (agent,) if agent else AGENTS
     report = {'home': str(home), 'apply': apply, 'agents': {}, 'failed': {},
-              'manual_steps': [], 'payload': str(home/'.local/share/axon'),
+              'manual_steps': [], 'holders': payload_holders(home, run),
+              'payload': str(home/'.local/share/axon'),
               'journal': str(state_dir(home))}
+    if report['holders']:
+        report['manual_steps'].append(
+            'still resident: ' + ', '.join(f"{h['command']} (pid {h['pid']})" for h in report['holders'])
+            + ' holds Axon open. Restart it; deleting files does not evict code that is '
+            'already loaded, and it will rewrite the journal until it is restarted')
     if apply:
         # Clear both opt-in markers first: a concurrent `chezmoi apply` must not
         # re-install mid-run, and the stamp alone is enough for it to think it may.

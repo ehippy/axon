@@ -91,7 +91,8 @@ reporters. No Hermes, Glass, Gabbie, or shell config publishes to 1883 independe
 
 ## Phase 1 — Stop resurrection paths (do not clean before this)
 
-Three independent installers will rewrite agent configs after you clean them:
+Three independent installers will rewrite agent configs after you clean them, and a fourth
+step evicts the code they already loaded into running daemons:
 
 ```sh
 # 1. crumb — the 5-minute self-updater that follows main
@@ -105,7 +106,18 @@ ssh neuralforge 'systemctl --user disable --now axon-sync.timer axon-inference.s
 launchctl bootout gui/$(id -u)/org.axon.runner 2>/dev/null
 launchctl bootout gui/$(id -u)/org.axon.resources.codex 2>/dev/null
 pkill -f 'axon-runner' 2>/dev/null
+
+# 4. every long-lived agent daemon that started before the removal — a Hermes gateway
+#    holds its plugin in memory, so no deletion evicts it. Ask the uninstaller who is
+#    still holding the payload, then restart those processes.
+python3 ~/.local/share/axon/src/plugins/tools/manage.py uninstall | python3 -c \
+  'import json,sys; print("\n".join("%s pid %s" % (h["command"], h["pid"]) for h in json.load(sys.stdin)["holders"]))'
+lsof -w | grep '/.local/share/axon' | awk '{print $1, $2}' | sort -u
 ```
+
+Restart what that names — `launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway` for a
+Hermes gateway, or reload the agent's own service. Until then the host reports cleanly
+while a daemon keeps executing the plugin it loaded.
 
 Then, in the same sitting, delete `run_after_50-axon-agent-hooks.sh` from chezmoi and
 commit. Until that script is gone, `com.dotfiles.chezmoi-fresh` (hourly, `RunAtLoad`)
@@ -264,6 +276,13 @@ Four things worth knowing before doing another host:
 - A session opened before the cleanup still carries the reporting instructions and can
   rewrite `~/.local/state/axon` as it is deleted. The report now names that under
   `reappeared`; restart the agent, then remove what came back.
+- The real culprit here was not a chat session but the **Hermes gateway**, running since
+  2026-11-11: it loaded the plugin from `~/.hermes/plugins/axon-activity` at startup and
+  kept executing it after the payload was deleted, recreating the journal every ~25s and
+  still able to reach the server over the HTTP inbox path even after `mosquitto` was
+  removed. `launchctl list` shows no Axon job, and the host looks clean, while a daemon
+  runs the code. `manage.py uninstall` now reports `holders` (pids from `lsof -w`) for
+  exactly this; restart whatever it names.
 
 ## Phase 7 — Findings to keep (write these down)
 1. **It was a write-only system by arithmetic, not by neglect.** 552 sessions / 7 d,

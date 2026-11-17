@@ -930,6 +930,23 @@ class UninstallTests(unittest.TestCase):
         self.assertEqual(gone['archived'],None)
         self.assertFalse((self.home/'.local/share/axon').exists())
 
+    def test_a_daemon_holding_the_payload_is_named_not_blamed_on_the_tool(self):
+        payload=(self.home/'.local/share/axon'); (payload/'plugins'/'hermes').mkdir(parents=True)
+        listing=('COMMAND  PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME\n'
+                 f'python3.1 4242 u  txt  REG  1,8  1234 567 {payload.resolve()}/plugins/hermes/hooks/run.py\n'
+                 f'Python 99 u  cwd  VDIR  1,8     0 1 {self.home.resolve()}\n')
+        result=type('Report',(),{'stdout':listing,'returncode':0})()
+        fake=lambda *a,**k: result
+        with patch.dict(os.environ,self.env):
+            self.assertEqual(manage.payload_holders(self.home,run=fake),
+                             [{'pid':'4242','command':'python3.1'}])
+            plan=manage.decommission(self.home,apply=False,run=fake)
+            self.assertEqual([h['pid'] for h in plan['holders']],['4242'])
+            self.assertTrue(any('Restart it' in step for step in plan['manual_steps']))
+            no_lsof=lambda *a,**k: (_ for _ in ()).throw(OSError('no lsof here'))
+            self.assertEqual(manage.decommission(self.home,apply=False,run=no_lsof)['holders'],[],
+                             'a host without lsof still gets a report')
+
     def test_purge_reports_state_a_running_agent_wrote_back(self):
         payload=self.home/'.local/share/axon'; payload.mkdir(parents=True)
         state=Path(self.env['AXON_ACTIVITY_HOME']); state.mkdir(parents=True)

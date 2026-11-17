@@ -132,7 +132,14 @@ when `~/.local/share/axon/server` exists, because that host is the journal other
 report to; stop the server deliberately, then pass `--i-am-the-server`. Anything that
 exists again immediately is listed under `reappeared` and repeated in `manual_steps`: a
 session that still holds Axon in memory can write the journal as it is deleted, which is
-not a failed uninstall but does need that agent restarted. `uninstall pi`
+not a failed uninstall but does need that agent restarted. Before it deletes anything the
+command lists `holders` — every process with the payload or journal open right now
+(`lsof -w`), by pid and command. A daemon that opens the journal only between its own
+ticks won't be caught there; `reappeared` is what catches it. That is how a decommission
+misses a host: a daemon that started before
+the removal, such as a Hermes gateway, keeps executing the plugin it loaded and rewrites
+the journal on its own schedule, including over the HTTP inbox path rather than only MQTT.
+Deleting files cannot evict loaded code, so restart the named process. `uninstall pi`
 limits the first step to one agent. Exit code 2 means at least one agent was left
 installed (a malformed config is reported, not repaired). The Codex path parses TOML, so
 it needs Python 3.11+; other agents install on 3.10+. Reload running agent sessions
