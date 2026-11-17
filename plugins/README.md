@@ -87,6 +87,52 @@ retries. Exit code 2 means something failed; `--force` reinstalls, and
 without `--apply` sync only reports the plan. Restart agents to load hooks;
 Codex will ask to trust changed ones.
 
+## Taking a host out
+
+`uninstall` is the inverse of `install` and `install-timer`, because removal has the
+same five vendor shapes and the same risk of deleting something that is not ours. It
+uses the installer's own predicate: a hook is ours only if its command runs
+`~/.local/share/axon/plugins/…/hooks/run.py`, and a path is ours only if it is a symlink
+into that payload. Every other hook, environment key and config line survives.
+
+```sh
+python3 "$SRC/plugins/tools/manage.py" uninstall              # plan for every agent
+python3 "$SRC/plugins/tools/manage.py" uninstall all --apply  # unregister, stop timers
+python3 "$SRC/plugins/tools/manage.py" uninstall all --apply \
+  --purge --archive "$HOME/axon-archive"                      # also delete payload + journal
+```
+
+Without `--apply` nothing is written and the plan lists each file it would touch and
+what it would remove. `--apply` backs up every rewritten file to
+`~/.local/state/axon/config-backups/pre-uninstall-<stamp>` first. It then, in order:
+
+1. deletes `~/.config/axon/auto-report`, so a concurrent chezmoi apply cannot reinstall;
+2. unregisters each agent — Claude hooks plus `env.AXON_*` and the usage directory in
+   `CLAUDE_CODE_PLUGIN_DIRS`; Codex hooks, the `[shell_environment_policy.set]` transport
+   block and, when the hooks file held nothing else, the file itself plus the Codex trust
+   hashes that named it; Hermes `AXON_*` lines (every other line stays) and the plugin
+   symlink in each profile, asking `hermes plugins disable` first when the binary is found;
+   Pi's extension and skill symlinks; OpenCode's plugin and skill symlinks;
+3. removes the `install-timer` unit, booting it out first (`org.axon.sync` on macOS,
+   `axon-sync.timer` on Linux) so the next tick cannot reinstall what was just cleaned;
+4. removes companion jobs it did not install but can prove are Axon's — a launchd agent
+   whose `ProgramArguments` name `~/.local/share/axon` or `axon-runner`, the matching
+   plists, and the `axon-runner` uv tool. A Linux unit that `install-timer` did not write
+   is listed under `manual_units` and left running, because on a server host it is
+   probably the journal itself.
+
+`--purge` deletes `~/.local/share/axon`, `~/.local/state/axon` and `~/.config/axon`, and
+refuses to guess what that means for the data: pass `--archive DIR` (copies the host
+credential, `*.sqlite3`, `sync-status.json` and the pre-uninstall backups into a `0700`
+directory named for the host label, files `0600`) or `--discard-data`. It also refuses
+when `~/.local/share/axon/server` exists, because that host is the journal other hosts
+report to; stop the server deliberately, then pass `--i-am-the-server`. `uninstall pi`
+limits the first step to one agent. Exit code 2 means at least one agent was left
+installed (a malformed config is reported, not repaired). The Codex path parses TOML, so
+it needs Python 3.11+; other agents install on 3.10+. Reload running agent sessions
+afterwards: a session opened before the cleanup still carries the reporting instructions
+in its context and will keep trying to report.
+
 Configuration: Python 3.10+, `mosquitto_pub`, `AXON_BROKER`, `AXON_PORT`,
 `AXON_ACTIVITY_HOME`, optional `AXON_MOSQUITTO_PUB`, `AXON_MACHINE`, `AXON_SOURCE`.
 Install and sync add `AXON_MACHINE=auto` to `~/.config/axon/env` (or

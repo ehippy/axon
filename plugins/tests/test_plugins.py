@@ -717,4 +717,253 @@ class TimerTests(unittest.TestCase):
         self.assertIsNone(manage.status(self.home))
 
 
+class UninstallTests(unittest.TestCase):
+    """`install` has five shapes, so removal is tested shape by shape."""
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(); self.root=Path(self.tmp.name)
+        self.home=self.root/'home'
+        self.env={'AXON_ACTIVITY_HOME':str(self.root/'state'),'AXON_CONFIG_FILE':str(self.root/'reporter-env'),
+                  'AXON_MOSQUITTO_PUB':'/missing/axon-pub','AXON_SERVER':'http://127.0.0.1:9',
+                  'PATH':'/usr/bin:/bin','PYTHONDONTWRITEBYTECODE':'1'}
+    def tearDown(self):
+        self.tmp.cleanup()
+    def prune(self,hooks):
+        return {event:groups for event,groups in hooks.items() if groups}
+    def seed_claude(self):
+        (self.home/'.claude').mkdir(parents=True)
+        seed={'hooks':{'SessionStart':[{'matcher':'','hooks':[{'type':'command','command':'/usr/bin/true --host'}]}],
+                       'Stop':[{'hooks':[{'type':'command','command':'/opt/other/hook.py'}]}]},
+              'env':{'API_KEY':'keep-me','AXON_BROKER':'crumb','AXON_PORT':'1883'}}
+        (self.home/'.claude'/'settings.json').write_text(json.dumps(seed,indent=2))
+        return seed
+
+    def test_install_then_uninstall_restores_what_the_host_owns(self):
+        with patch.dict(os.environ,self.env):
+            seed=self.seed_claude()
+            manage.install('claude',self.home,apply=True)
+            installed=json.loads((self.home/'.claude'/'settings.json').read_text())
+            self.assertGreater(sum(len(g['hooks']) for g in installed['hooks']['SessionStart']),
+                               1,'install added nothing')
+            self.assertTrue((self.home/'.claude'/'skills'/'axon-activity').is_symlink())
+            report=manage.uninstall('claude',self.home,apply=True)
+            after=json.loads((self.home/'.claude'/'settings.json').read_text())
+            self.assertEqual(self.prune(after['hooks']),self.prune(seed['hooks']))
+            self.assertEqual(after['env'],{'API_KEY':'keep-me'})
+            self.assertEqual(report['env_removed'],['AXON_BROKER','AXON_PORT','CLAUDE_CODE_PLUGIN_DIRS'])
+            self.assertFalse((self.home/'.claude'/'skills'/'axon-activity').exists())
+            # Idempotent: a second pass finds nothing, and the payload stays without --purge.
+            again=manage.uninstall('claude',self.home,apply=True)
+            self.assertEqual((again['hooks_removed'],again['links_removed'],again['env_removed']),(0,[],[]))
+            self.assertTrue((self.home/'.local/share/axon/plugins/claude'/'hooks'/'run.py').is_file())
+
+    def test_backup_precedes_every_rewrite(self):
+        with patch.dict(os.environ,self.env):
+            self.seed_claude()
+            manage.install('claude',self.home,apply=True)
+            before=(self.home/'.claude'/'settings.json').read_text()
+            report=manage.uninstall('claude',self.home,apply=True)
+            self.assertEqual((Path(report['backup'])/'settings.json').read_text(),before)
+
+    def test_codex_transport_block_and_trust_hashes_go_and_nothing_else_moves(self):
+        import tomllib
+        hooks=self.home/'.codex'/'hooks.json'
+        text=('model = "gpt-5"\n\n# Axon reporting transport for local agent commands.\n'
+              '[shell_environment_policy.set]\nAXON_BROKER = "crumb"\nAXON_PORT = "1883"\n\n'
+              '[features]\nsandbox = true\n\n[hooks.state]\n\n'
+              f'[hooks.state."{hooks}:session_start:0:0"]\ntrusted_hash = "sha256:aa"\n\n'
+              f'[hooks.state."{hooks}:stop:0:0"]\ntrusted_hash = "sha256:bb"\n\n'
+              '[hooks.state."/home/u/.other/hooks.json:stop:0:0"]\ntrusted_hash = "sha256:cc"\n'
+              'enabled = true\n')
+        with patch.dict(os.environ,self.env):
+            manage.install('codex',self.home,apply=True)
+            # The shape an older installer left behind: our hooks beside our own blurb.
+            installed=json.loads(hooks.read_text())
+            hooks.write_text(json.dumps({'description':'Codex activity on Axon.','hooks':installed['hooks']},
+                                        indent=2))
+            (self.home/'.codex'/'config.toml').write_text(text)
+            report=manage.uninstall('codex',self.home,apply=True)
+            kept=(self.home/'.codex'/'config.toml').read_text()
+            self.assertEqual(sorted(report['tables_removed']),
+                             sorted(['shell_environment_policy.set',
+                                     f'hooks.state."{hooks}:session_start:0:0"',
+                                     f'hooks.state."{hooks}:stop:0:0"']))
+            parsed=tomllib.loads(kept)
+            self.assertEqual(parsed['model'],'gpt-5')
+            self.assertEqual(parsed['features'],{'sandbox':True})
+            self.assertEqual(parsed['hooks']['state'],
+                             {'/home/u/.other/hooks.json:stop:0:0':{'trusted_hash':'sha256:cc','enabled':True}})
+            # The hooks file held nothing but Axon handlers, so it is Axon-owned too.
+            self.assertFalse(hooks.exists())
+            self.assertEqual(report['settings_removed'].replace('/private/var','/var'),str(hooks))
+
+    def test_a_key_the_host_wrote_keeps_the_hooks_file_alive(self):
+        hooks=self.home/'.codex'/'hooks.json'
+        with patch.dict(os.environ,self.env):
+            manage.install('codex',self.home,apply=True)
+            seeded=json.loads(hooks.read_text())
+            seeded['schema_version']=2
+            hooks.write_text(json.dumps(seeded,indent=2))
+            report=manage.uninstall('codex',self.home,apply=True)
+            self.assertIsNone(report['settings_removed'])
+            self.assertEqual((self.home/'.codex'/'hooks.json').read_text(),
+                             json.dumps({'hooks':{},'schema_version':2},indent=2)+'\n')
+
+    def test_an_explicit_empty_table_stays_when_its_children_go(self):
+        import tomllib
+        hooks=self.home/'.codex'/'hooks.json'
+        text=(f'[hooks.state]\n\n[hooks.state."{hooks}:stop:0:0"]\n'
+              'trusted_hash = "sha256:aa"\nenabled = true\n')
+        kept,gone=manage.toml_strip(text,lambda parts,value: parts[:2]==['hooks','state']
+                                    and len(parts)==3)
+        self.assertEqual(len(gone),1)
+        self.assertEqual(tomllib.loads(kept),{'hooks':{'state':{}}})
+        self.assertIn('[hooks.state]',kept)
+
+    def test_a_transport_block_holding_something_of_ours_is_left_alone(self):
+        text=('[shell_environment_policy.set]\nAXON_BROKER = "crumb"\nSANDBOX_NETWORK_MODE = "proxy"\n')
+        gone=manage.toml_strip(text,lambda parts,value: parts==['shell_environment_policy','set']
+                               and all(str(k).startswith('AXON_') for k in value))
+        self.assertEqual(gone,(text,[]))
+
+    def test_symlinks_into_the_payload_go_and_foreign_files_never_do(self):
+        (self.home/'.hermes'/'profiles'/'lucy'/'plugins').mkdir(parents=True)
+        (self.home/'.pi'/'agent'/'extensions').mkdir(parents=True)
+        (self.home/'.config'/'opencode'/'plugins').mkdir(parents=True)
+        payload=self.home/'.local/share/axon/plugins'
+        for agent in ('hermes','pi','opencode'):
+            (payload/agent).mkdir(parents=True)
+        links=[self.home/'.hermes'/'plugins'/'axon-activity',
+               self.home/'.hermes'/'profiles'/'lucy'/'plugins'/'axon-activity',
+               self.home/'.pi'/'agent'/'extensions'/'axon-activity',
+               self.home/'.config'/'opencode'/'plugins'/'axon-activity.js']
+        for link in links:
+            link.parent.mkdir(parents=True,exist_ok=True)
+            link.symlink_to(payload/('hermes' if 'hermes' in str(link) else
+                                     'pi' if 'pi' in str(link) else 'opencode'))
+        foreign=self.home/'.pi'/'agent'/'extensions'/'live-context.ts'
+        foreign.write_text('// mine\n')
+        with patch.dict(os.environ,self.env):
+            for agent in ('hermes','pi','opencode'):
+                manage.uninstall(agent,self.home,apply=True)
+        self.assertTrue(all(not link.exists() and not link.is_symlink() for link in links))
+        self.assertEqual(foreign.read_text(),'// mine\n')
+
+    def test_hermes_dotenv_keeps_its_567_other_lines(self):
+        dotenv=self.home/'.hermes'/'.env'; dotenv.parent.mkdir(parents=True)
+        dotenv.write_text('ONE=1\nAXON_BROKER=crumb\nTWO=2\nexport AXON_PORT=1883\nTHREE=3\n')
+        with patch.dict(os.environ,self.env):
+            report=manage.uninstall('hermes',self.home,apply=True)
+        self.assertEqual(report['env_lines_removed'],2)
+        self.assertEqual(dotenv.read_text(),'ONE=1\nTWO=2\nTHREE=3\n')
+
+    def test_purge_refuses_to_guess_about_the_data_and_the_server(self):
+        (self.home/'.local/share/axon').mkdir(parents=True)
+        with patch.dict(os.environ,self.env):
+            with self.assertRaises(ValueError) as refused:
+                manage.purge_host(self.home)
+            self.assertIn('--archive',str(refused.exception))
+            self.assertTrue((self.home/'.local/share/axon').exists())
+            (self.home/'.local/share/axon'/'server').mkdir()
+            with self.assertRaises(ValueError) as server:
+                manage.purge_host(self.home,discard=True)
+            self.assertIn('journal server',str(server.exception))
+            self.assertTrue((self.home/'.local/share/axon').exists())
+            gone=manage.purge_host(self.home,discard=True,i_am_server=True)
+        self.assertEqual(gone['archived'],None)
+        self.assertFalse((self.home/'.local/share/axon').exists())
+
+    def test_archive_carries_the_host_credential_before_the_delete(self):
+        config=self.home/'.config'/'axon'; config.mkdir(parents=True)
+        (config/'host-credential').write_text('c'*43)
+        state=Path(self.env['AXON_ACTIVITY_HOME']); state.mkdir(parents=True)
+        (state/'outbox.sqlite3').write_text('journal')
+        with patch.dict(os.environ,self.env):
+            saved=manage.purge_host(self.home,archive=self.root/'archive')
+        archived=Path(saved['archived']['path'])
+        self.assertEqual((archived/'config-axon'/'host-credential').read_text(),'c'*43)
+        self.assertEqual((archived/'outbox.sqlite3').read_text(),'journal')
+        self.assertEqual(stat.S_IMODE((archived/'config-axon'/'host-credential').stat().st_mode),0o600)
+        self.assertFalse(config.exists())
+
+    def test_companion_jobs_are_matched_by_command_not_by_label(self):
+        import plistlib
+        agents=self.home/'Library'/'LaunchAgents'; agents.mkdir(parents=True)
+        (agents/'org.axon.runner.plist').write_bytes(plistlib.dumps(
+            {'Label':'org.axon.runner','ProgramArguments':[str(self.home/'.local/bin'/'axon-runner')]}))
+        (agents/'org.axon.quota.plist').write_bytes(plistlib.dumps(
+            {'Label':'org.axon.quota','ProgramArguments':[str(self.home/'.local/share/axon/resources/current/venv/bin/axon-resources'),'codex']}))
+        (agents/'org.axon.keepme.plist').write_bytes(plistlib.dumps(
+            {'Label':'org.axon.keepme','ProgramArguments':['/usr/bin/true']}))
+        calls=[]
+        with patch.dict(os.environ,self.env):
+            report=manage.uninstall_services(self.home,apply=True,system='Darwin',
+                                             run=lambda *a,**k: calls.append(list(a[0])))
+        self.assertEqual(report['jobs'],['org.axon.quota','org.axon.runner'])
+        self.assertTrue((agents/'org.axon.keepme.plist').exists())
+        self.assertFalse((agents/'org.axon.runner.plist').exists())
+        self.assertIn(['launchctl','bootout',f'gui/{os.getuid()}/org.axon.runner'],calls)
+
+    def test_both_opt_in_markers_go_so_a_later_apply_cannot_reinstall(self):
+        conf=self.home/'.config'/'axon'; conf.mkdir(parents=True)
+        flag=conf/'auto-report'; flag.write_text('')
+        state=Path(self.env['AXON_ACTIVITY_HOME']); state.mkdir(parents=True)
+        stamp=state/'hooks-installed'; stamp.write_text('components-v2 abc codex\n')
+        with patch.dict(os.environ,self.env):
+            report=manage.decommission(self.home,apply=True,run=lambda *a,**k: None)
+        self.assertEqual(sorted(Path(p).name for p in report['opt_in']),
+                         ['auto-report','hooks-installed'])
+        # a tmpdir under /var is a symlink on macOS, so reports may carry the resolved form
+        self.assertEqual(sorted(str(Path(p).parent).replace('/private/var','/var')
+                                for p in report['opt_in']),
+                         sorted([str(conf),str(state)]))
+        self.assertFalse(flag.exists())
+        self.assertFalse(stamp.exists())
+        self.assertTrue(state.exists(),'without --purge the journal stays put')
+
+    def test_timer_agent_is_booted_out_before_it_is_unlinked(self):
+        calls=[]
+        with patch.dict(os.environ,self.env):
+            plan=manage.uninstall_timer(self.home,False,'Darwin',run=lambda *a,**k: calls.append(a))
+            self.assertEqual((plan['files'],plan['commands'],calls),
+                             ([],[f'launchctl bootout gui/{os.getuid()}/org.axon.sync'],[]))
+            self.assertFalse(self.home.exists(),'a plan must not create the timer file')
+            (self.home/'Library'/'LaunchAgents').mkdir(parents=True)
+            plist=self.home/'Library'/'LaunchAgents'/'org.axon.sync.plist'
+            plist.write_text('<plist/>')
+            manage.uninstall_timer(self.home,True,'Darwin',run=lambda c,**k: calls.append(c))
+        self.assertEqual(calls,[['launchctl','bootout',f'gui/{os.getuid()}/org.axon.sync']])
+        self.assertFalse(plist.exists())
+
+    def test_decommission_plan_touches_nothing_and_names_the_journal(self):
+        with patch.dict(os.environ,self.env):
+            report=manage.decommission(self.home,apply=False)
+            self.assertEqual(report['failed'],{})
+            self.assertEqual(report['cleared'],[])
+            self.assertEqual(report['purge'],{'planned':False})
+            self.assertFalse(self.home.exists())
+            self.assertTrue(any('--purge' in step for step in report['manual_steps']))
+            self.assertTrue(any('reload' in step.lower() for step in report['manual_steps']))
+            planned=manage.decommission(self.home,apply=False,purge=True)
+            # a tmpdir under /var is a symlink on macOS, so plans may carry the resolved form
+            self.assertEqual([p.replace('/private/var','/var')
+                              for p in planned['purge']['would_remove']],
+                             [str(self.home/'.local/share/axon'),
+                              str(Path(self.env['AXON_ACTIVITY_HOME'])),
+                              str(self.home/'.config'/'axon')])
+            self.assertIn('--archive',planned['purge']['blocked_reason'])
+        self.assertFalse(self.home.exists(),'a plan wrote to the host')
+
+    def test_cli_plans_and_refuses_an_unguarded_purge(self):
+        env={**os.environ,**self.env}
+        run=lambda *args: subprocess.run([sys.executable,str(ROOT/'plugins/tools/manage.py'),
+                                          'uninstall',*args],capture_output=True,text=True,env=env)
+        planned=run('--home',str(self.home))
+        self.assertEqual(planned.returncode,0,planned.stderr)
+        self.assertFalse(json.loads(planned.stdout)['apply'])
+        refused=run('--home',str(self.home),'--apply','--purge')
+        self.assertEqual(refused.returncode,1)
+        self.assertIn('--archive',refused.stderr)
+        self.assertFalse(self.home.exists())
+
+
 if __name__=='__main__': unittest.main()

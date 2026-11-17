@@ -455,6 +455,522 @@ def status(home=Path.home()):
     return json.loads(path.read_text()) if path.exists() else None
 
 
+# --- uninstall -----------------------------------------------------------
+#
+# `install` has five vendor-specific shapes, so removal is equally specific. The
+# predicate stays the installer's own: a hook is ours only if its command runs
+# `/.local/share/axon/plugins/…/hooks/run.py`, and a path is ours only if it is a
+# symlink into our payload. Anything else in a host config is left byte-for-byte.
+
+AXON_ENV_PREFIX = 'AXON_'
+OPT_IN_FLAG = 'auto-report'
+# Written by the chezmoi run_after script; while it exists, that script treats the host
+# as opted in even without the flag, because it predates the toggle.
+DOTFILES_STAMP = 'hooks-installed'
+# An older installer wrote a `description` beside `hooks`; that file is still ours.
+OWNED_SETTINGS_KEYS = ('description',)
+
+
+def axon_owned_extras(proposed):
+    """True when every key beside `hooks` is one an Axon installer wrote itself."""
+    extra = {k: v for k, v in proposed.items() if k != 'hooks'}
+    if set(extra) - set(OWNED_SETTINGS_KEYS):
+        return False
+    return all(isinstance(v, str) and 'axon' in v.lower() for v in extra.values())
+
+
+def axon_symlink(path, payload):
+    """True for a symlink pointing inside our payload; a real file is never ours.
+
+    Compared on resolved paths as well as the recorded text, because a host whose
+    $HOME contains a symlink records targets that look different but point the same,
+    and a dangling link has no realpath to fall back on.
+    """
+    if not path.is_symlink():
+        return False
+    target = Path(os.readlink(path))
+    if not target.is_absolute():
+        target = path.parent/target
+    prefix = str(payload).replace('\\', '/').rstrip('/')
+    return any(str(candidate).replace('\\', '/').rstrip('/') == prefix
+               or str(candidate).replace('\\', '/').startswith(prefix+'/')
+               for candidate in (target, target.resolve()))
+
+
+def agent_links(home, agent):
+    """Every symlink this agent's own config holds for Axon."""
+    payload = home/'.local/share/axon/plugins'/agent
+    if agent == 'hermes':
+        links = [home/'.hermes/plugins/axon-activity',
+                 *sorted((home/'.hermes/profiles').glob('*/plugins/axon-activity'))]
+    elif agent == 'pi':
+        links = [home/'.pi/agent/extensions/axon-activity', home/'.pi/agent/skills/axon-activity']
+    elif agent == 'opencode':
+        links = [home/'.config/opencode/plugins/axon-activity.js',
+                 home/'.config/opencode/skills/axon-activity']
+    else:
+        links = [home/f'.{agent}'/'skills'/'axon-activity']
+    return payload, links
+
+
+def stripped_hooks(hooks):
+    """Drop Axon handlers and the groups that held nothing else; return (hooks, removed)."""
+    removed, result = 0, {}
+    for event, groups in hooks.items():
+        if not isinstance(groups, list):
+            raise ValueError(f'Invalid existing hook groups for {event}')
+        kept = []
+        for group in groups:
+            if not isinstance(group, dict) or not isinstance(group.get('hooks', []), list):
+                raise ValueError(f'Invalid existing hook group for {event}')
+            handlers = group['hooks']
+            mine = [h for h in handlers if isinstance(h, dict) and ours(h.get('command', ''))]
+            kept_handlers = [h for h in handlers if h not in mine]
+            removed += len(handlers) - len(kept_handlers)
+            if kept_handlers:
+                kept.append({**group, 'hooks': kept_handlers})
+            elif not handlers:
+                # An empty group the host wrote itself is not ours to delete.
+                kept.append(group)
+        if kept:
+            result[event] = kept
+    return result, removed
+
+
+def stripped_env(env):
+    """Axon publishes transport through AXON_* keys; nothing else in env is ours."""
+    kept = {k: v for k, v in env.items() if not str(k).startswith(AXON_ENV_PREFIX)}
+    return kept, [k for k in env if k not in kept]
+
+
+def usage_dirs(value, payload):
+    """Remove only the Axon usage directory from Claude's CLAUDE_CODE_PLUGIN_DIRS."""
+    parts = [d for d in str(value).split(os.pathsep) if d]
+    marker = str(payload/'usage').replace('\\', '/').rstrip('/')
+    kept = [d for d in parts if d.replace('\\', '/').rstrip('/') != marker]
+    return os.pathsep.join(kept), len(parts) - len(kept)
+
+
+def env_file_text(text):
+    """Strip AXON_* assignments from a dotenv file, leaving every other line alone."""
+    import re
+    pattern = re.compile(r'\s*(?:export\s+)?AXON_[A-Z_]*\s*=')
+    lines = text.splitlines()
+    kept = [line for line in lines if not pattern.match(line)]
+    trailing = '\n' if text.endswith('\n') and kept else ''
+    return '\n'.join(kept)+trailing, len(lines)-len(kept)
+
+
+def toml_split_name(name):
+    """Split a TOML table header into key parts, honouring quoted dotted keys."""
+    parts, buf, quoted = [], '', False
+    for char in name:
+        if char == '"':
+            quoted = not quoted
+        elif char == '.' and not quoted:
+            parts.append(buf)
+            buf = ''
+        else:
+            buf += char
+    return parts+[buf]
+
+
+def toml_lookup(doc, parts):
+    node = doc
+    for part in parts:
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
+def toml_strip(text, drop):
+    """Delete table header blocks `drop` accepts. Re-parses and proves the diff first.
+
+    TOML has no comment model, so a `# Axon …` comment immediately above a removed
+    table goes with it; nothing else is rewritten, and an unexpected diff raises.
+    """
+    import copy
+    import tomllib
+    before = tomllib.loads(text)
+    lines = text.splitlines(keepends=True)
+    headers = [(i, l.strip()[1:-1].strip()) for i, l in enumerate(lines)
+               if l.lstrip().startswith('[') and not l.lstrip().startswith('[[')]
+    remove, gone = set(), []
+    explicit = {tuple(toml_split_name(header)) for _, header in headers}
+    for n, (start, header) in enumerate(headers):
+        end = headers[n+1][0] if n+1 < len(headers) else len(lines)
+        parts = toml_split_name(header)
+        value = toml_lookup(before, parts)
+        if not drop(parts, value):
+            continue
+        if start > 0 and lines[start-1].lstrip().startswith('#') and 'axon' in lines[start-1].lower():
+            remove.add(start-1)
+        remove.update(range(start, end))
+        gone.append((parts, header))
+    if not gone:
+        return text, []
+    kept = ''.join(l for i, l in enumerate(lines) if i not in remove)
+    kept = __import__('re').sub(r'\n{3,}', '\n\n', kept)
+    after = tomllib.loads(kept)
+    expected = copy.deepcopy(before)
+    for parts, header in gone:
+        parent = toml_lookup(expected, parts[:-1])
+        if parent is not None:
+            parent.pop(parts[-1], None)
+        # A `[parent]` header written only to hold the removed table vanishes with it.
+        # One the host wrote itself stays, even left empty: TOML distinguishes an
+        # explicit empty table from an absent one, and so does the re-parse.
+        for depth in range(len(parts)-1, 0, -1):
+            node = toml_lookup(expected, parts[:depth])
+            if node is None:
+                continue
+            if node or tuple(parts[:depth]) in explicit:
+                break
+            grand = toml_lookup(expected, parts[:depth-1])
+            if isinstance(grand, dict):
+                grand.pop(parts[depth-1], None)
+    if after != expected:
+        raise ValueError('TOML rewrite would change unrelated settings: '
+                         +', '.join(header for _, header in gone))
+    return kept, [header for _, header in gone]
+
+
+def codex_config_text(text, hooks_path, hooks_empty):
+    """Drop the Axon transport block, and the trust hashes of a hooks file we deleted."""
+    def drop(parts, value):
+        if parts == ['shell_environment_policy', 'set']:
+            return isinstance(value, dict) and bool(value) and \
+                all(str(k).startswith(AXON_ENV_PREFIX) for k in value)
+        if parts[:2] == ['hooks', 'state'] and len(parts) == 3 and hooks_empty:
+            recorded, colon, rest = str(parts[2]).partition(':')
+            return bool(colon) and os.path.realpath(recorded) == os.path.realpath(str(hooks_path))
+        return False
+    return toml_strip(text, drop)
+
+
+def uninstall(agent, home, apply=False, hermes_command='hermes', run=subprocess.run):
+    """Undo one agent's Axon registration. Plans without apply; idempotent either way."""
+    if agent not in AGENTS:
+        raise ValueError('Unknown agent')
+    home = Path(home).expanduser().resolve()
+    payload, links = agent_links(home, agent)
+    plan = {'agent': agent, 'apply': apply, 'settings': None, 'hooks_removed': 0,
+            'env_removed': [], 'tables_removed': [], 'env_lines_removed': 0,
+            'links_removed': [], 'settings_removed': None, 'writes': [], 'commands': []}
+    pending = []
+    if agent in ('claude', 'codex'):
+        settings = home/f'.{agent}'/('hooks.json' if agent == 'codex' else 'settings.json')
+        plan['settings'] = str(settings)
+        current = json.loads(settings.read_text()) if settings.exists() else None
+        if current is not None and (not isinstance(current, dict)
+                                    or not isinstance(current.get('hooks', {}), dict)):
+            raise ValueError(f'{settings} must contain a hooks object')
+        if current is None:
+            hooks, removed = {}, 0
+        else:
+            hooks, removed = stripped_hooks(current['hooks'])
+        plan['hooks_removed'] = removed
+        proposed = {**current, 'hooks': hooks} if current is not None else None
+        if agent == 'claude' and isinstance((proposed or {}).get('env'), dict):
+            env, names = stripped_env(proposed['env'])
+            plan['env_removed'] = names
+            value, dropped = usage_dirs(env.get('CLAUDE_CODE_PLUGIN_DIRS', ''), payload)
+            if dropped:
+                if value:
+                    env['CLAUDE_CODE_PLUGIN_DIRS'] = value
+                else:
+                    env.pop('CLAUDE_CODE_PLUGIN_DIRS', None)
+                plan['env_removed'].append('CLAUDE_CODE_PLUGIN_DIRS')
+            proposed['env'] = env
+            if not env:
+                proposed.pop('env')
+        if proposed == current:
+            proposed = None
+        elif not any(proposed['hooks'].values()) and axon_owned_extras(proposed):
+            # Nothing but our hooks ever lived in this file, so the file is ours too.
+            plan['settings_removed'] = str(settings)
+            proposed = None
+        if proposed is not None:
+            pending.append((settings, json.dumps(proposed, indent=2)+'\n'))
+        elif plan['settings_removed']:
+            pending.append((settings, None))
+        if agent == 'codex':
+            config = home/'.codex'/'config.toml'
+            if config.exists():
+                original = config.read_text()
+                text, gone = codex_config_text(original, home/'.codex'/'hooks.json',
+                                               plan['settings_removed'] is not None)
+                plan['tables_removed'] = gone
+                if text != original:
+                    pending.append((config, text))
+    elif agent == 'hermes':
+        dotenv = home/'.hermes'/'.env'
+        if dotenv.exists():
+            original = dotenv.read_text()
+            text, removed = env_file_text(original)
+            plan['env_lines_removed'] = removed
+            if text != original:
+                pending.append((dotenv, text))
+    plan['writes'] = [str(path) for path, _ in pending]
+    for link in links:
+        if axon_symlink(link, payload):
+            plan['links_removed'].append(str(link))
+    if agent == 'hermes':
+        plan['commands'] = [f'{hermes_command} plugins disable axon-activity']
+    if not apply:
+        return plan
+
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
+    backup = state_dir(home)/'config-backups'/f'pre-uninstall-{stamp}'
+    backup.mkdir(parents=True, mode=0o700)
+    plan['backup'] = str(backup)
+    for path, text in pending:
+        if path.exists():
+            shutil.copy2(path, backup/path.name)
+        if text is None:
+            path.unlink()
+        elif path.suffix == '.json':
+            write_json(path, json.loads(text))
+        else:
+            mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
+            path.write_text(text)
+            path.chmod(mode)
+    for name in plan['links_removed']:
+        Path(name).unlink()
+    if agent == 'hermes':
+        search_path = os.environ.get('PATH', '')+os.pathsep+os.pathsep.join(
+            str(home/d) for d in EXTRA_BIN_DIRS)
+        executable = shutil.which(hermes_command, path=search_path)
+        if executable:
+            # Hermes owns its plugin registry; ask it before the payload disappears.
+            plan['commands'] = [shlex.join([executable, 'plugins', 'disable', 'axon-activity'])]
+            try:
+                run([executable, 'plugins', 'disable', 'axon-activity'], check=False,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except OSError:
+                pass
+    return plan
+
+
+def launchd_axon_agents(home):
+    """LaunchAgents owned by this user that run Axon code (label alone is not proof).
+
+    `org.axon.sync` is excluded: `uninstall_timer` owns the installer's own unit.
+    """
+    import plistlib
+    found = {}
+    for plist in sorted((home/'Library'/'LaunchAgents').glob('org.axon.*.plist')):
+        try:
+            body = plistlib.loads(plist.read_bytes())
+        except (ValueError, OSError):
+            continue
+        label = body.get('Label', plist.stem)
+        if label == 'org.axon.sync':
+            continue
+        program = ' '.join(body.get('ProgramArguments', [])).replace('\\', '/')
+        if '.local/share/axon/' in program or 'axon-runner' in program or 'axon-resources' in program:
+            found[label] = plist
+    return found
+
+
+def systemd_axon_units(home):
+    """User units written by `install_timer`; anything else is reported, not stopped."""
+    units = home/'.config'/'systemd'/'user'
+    owned = {name: units/name for name in ('axon-sync.service', 'axon-sync.timer')
+             if (units/name).exists()}
+    other = sorted(p.name for p in units.glob('axon-*') if p.name not in owned) if units.exists() else []
+    return owned, other
+
+
+def uninstall_timer(home, apply=False, system=None, run=subprocess.run):
+    """Remove the timer that would reinstall everything on the next tick."""
+    home = Path(home).expanduser()
+    system = system or platform.system()
+    plan = {'system': system, 'files': [], 'commands': [], 'apply': apply}
+    if system == 'Darwin':
+        plist = home/'Library'/'LaunchAgents'/'org.axon.sync.plist'
+        commands = [['launchctl', 'bootout', f'gui/{os.getuid()}/org.axon.sync']]
+        files = [plist] if plist.exists() else []
+    elif system == 'Linux':
+        units = home/'.config'/'systemd'/'user'
+        files = [units/n for n in ('axon-sync.service', 'axon-sync.timer') if (units/n).exists()]
+        commands = [['systemctl', '--user', 'disable', '--now', 'axon-sync.timer', 'axon-sync.service'],
+                    ['systemctl', '--user', 'daemon-reload']]
+    else:
+        return plan
+    plan['files'] = [str(p) for p in files]
+    plan['commands'] = [shlex.join(c) for c in commands]
+    if not apply:
+        return plan
+    for command in commands:
+        run(command, check=False, capture_output=True)
+    for path in files:
+        path.unlink()
+    return plan
+
+
+def uninstall_services(home, apply=False, system=None, run=subprocess.run):
+    """Stop and remove Axon's companion jobs and tools that `install` never owned."""
+    home = Path(home).expanduser()
+    system = system or platform.system()
+    plan = {'jobs': [], 'plists': [], 'uv_tools': [], 'commands': [], 'manual_units': [], 'apply': apply}
+    if system == 'Darwin':
+        agents = launchd_axon_agents(home)
+        plan['jobs'] = sorted(agents)
+        plan['plists'] = [str(p) for p in agents.values()]
+        if apply:
+            for label, plist in agents.items():
+                run(['launchctl', 'bootout', f'gui/{os.getuid()}/{label}'], check=False,
+                    capture_output=True)
+                plist.unlink()
+    else:
+        owned, other = systemd_axon_units(home)
+        plan['plists'] = [str(p) for p in owned.values()]
+        plan['manual_units'] = other
+        plan['commands'] = [['systemctl', '--user', 'daemon-reload']]
+        if apply and owned:
+            run(['systemctl', '--user', 'disable', '--now', *sorted(p.name for p in owned.values())],
+                check=False, capture_output=True)
+            for path in owned.values():
+                path.unlink()
+            run(['systemctl', '--user', 'daemon-reload'], check=False, capture_output=True)
+    if shutil.which('uv'):
+        done = run(['uv', 'tool', 'list'], check=False, capture_output=True, text=True)
+        tools = str(getattr(done, 'stdout', '') or '')
+        installed = [t for t in ('axon-runner',) if f'{t} v' in tools]
+        plan['uv_tools'] = installed
+        if apply:
+            for tool in installed:
+                run(['uv', 'tool', 'uninstall', tool], check=False, capture_output=True)
+                link = home/'.local'/'bin'/tool
+                if link.is_symlink() and '.local/share/uv/tools/' in os.readlink(link):
+                    link.unlink()
+    return plan
+
+
+def archive_host(home, destination, stamp=None):
+    """Copy what identifies this host, and its journal, before anything is deleted."""
+    destination = Path(destination).expanduser().resolve()
+    home = Path(home).expanduser()
+    label = read_machine_label(machine_label_path(home)) or platform.node()
+    label = ''.join(c if c.isalnum() or c in '-_' else '-' for c in str(label)) or 'host'
+    target = destination/f'axon-{label}-{stamp or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")}'
+    target.mkdir(parents=True)
+    target.chmod(0o700)
+    state = state_dir(home)
+    copied = []
+    config = home/'.config'/'axon'
+    if config.exists():
+        shutil.copytree(config, target/'config-axon')
+        copied.append('config-axon')
+    for path in sorted(state.glob('*.sqlite3'))+sorted(state.glob('*.json')):
+        shutil.copy2(path, target/path.name)
+        copied.append(path.name)
+    backup = state/'config-backups'
+    if backup.exists():
+        shutil.copytree(backup, target/'config-backups', symlinks=True)
+        copied.append('config-backups')
+    for path in [target, *target.rglob('*')]:
+        path.chmod(0o700 if path.is_dir() else 0o600)
+    return {'path': str(target), 'copied': copied}
+
+
+def purge_host(home, archive=None, discard=False, i_am_server=False):
+    """Delete payload and state. Refuses to guess what happens to the host's data."""
+    home = Path(home).expanduser()
+    if archive and discard:
+        raise ValueError('Choose --archive DIR or --discard-data, not both')
+    if not archive and not discard:
+        raise ValueError('Purging needs --archive DIR or --discard-data; nothing was deleted')
+    payload, state = home/'.local/share/axon', state_dir(home)
+    if (payload/'server').exists() and not i_am_server:
+        raise ValueError(f'{payload}/server exists: this host runs the Axon journal server and '
+                         'other hosts report to it. See docs/DECOMMISSION.md, then pass '
+                         '--i-am-the-server once the server and its timers are stopped.')
+    saved = archive_host(home, archive) if archive else None
+    for path in (payload, state, home/'.config'/'axon'):
+        shutil.rmtree(path, ignore_errors=True)
+    return {'removed': [str(payload), str(state), str(home/'.config'/'axon')], 'archived': saved}
+
+
+def uninstall_agents(home, agents, apply=False):
+    reports, failed = {}, {}
+    for agent in agents:
+        try:
+            reports[agent] = uninstall(agent, home, apply)
+        except Exception as failure:  # noqa: BLE001 — one malformed agent must not stop the rest
+            failed[agent] = str(failure)
+    return reports, failed
+
+
+def decommission(home=Path.home(), apply=False, purge=False, archive=None, discard=False,
+                 i_am_server=False, agent=None, system=None, run=subprocess.run):
+    """Take one host out of Axon: unregister agents, stop the timers, then optionally purge.
+
+    Every agent is visited, not just the detected ones: a hook left behind by an agent
+    whose binary is off PATH now still fires the next time that agent runs.
+    """
+    home = Path(home).expanduser().resolve()
+    agents = (agent,) if agent else AGENTS
+    report = {'home': str(home), 'apply': apply, 'agents': {}, 'failed': {},
+              'payload': str(home/'.local/share/axon'), 'journal': str(state_dir(home))}
+    if apply:
+        # Clear both opt-in markers first: a concurrent `chezmoi apply` must not
+        # re-install mid-run, and the stamp alone is enough for it to think it may.
+        for marker in (home/'.config'/'axon'/OPT_IN_FLAG, state_dir(home)/DOTFILES_STAMP):
+            if marker.exists():
+                marker.unlink()
+                report.setdefault('opt_in', []).append(str(marker))
+        report['agents'], report['failed'] = uninstall_agents(home, agents, True)
+        report['timer'] = uninstall_timer(home, True, system, run)
+        report['services'] = uninstall_services(home, True, system, run)
+        if purge:
+            report['purge'] = purge_host(home, archive, discard, i_am_server)
+    else:
+        report['agents'], report['failed'] = uninstall_agents(home, agents, False)
+        report['timer'] = uninstall_timer(home, False, system, run)
+        if (system or platform.system()) == 'Darwin':
+            jobs = launchd_axon_agents(home)
+            units = []
+        else:
+            jobs = {}
+            _, units = systemd_axon_units(home)
+        report['services'] = {'jobs': sorted(jobs), 'plists': [str(p) for p in jobs.values()],
+                              'manual_units': units}
+        report['purge'] = (purge_plan(home, archive, discard, i_am_server) if purge
+                           else {'planned': False})
+    report['cleared'] = sorted(a for a, r in report['agents'].items()
+                               if isinstance(r, dict) and any(
+                                   r.get(k) for k in ('hooks_removed', 'env_removed', 'tables_removed',
+                                                      'env_lines_removed', 'links_removed', 'settings_removed')))
+    report['manual_steps'] = []
+    if not purge:
+        report['manual_steps'].append(
+            f'journal and payload left in place; rerun with --purge --archive DIR or --discard-data '
+            f'to remove {report["payload"]}, {report["journal"]} and ~/.config/axon')
+    report['manual_steps'] += [f'review systemd unit {u}: it was not written by install-timer'
+                               for u in report['services'].get('manual_units', [])]
+    report['manual_steps'].append('reload running agent sessions: an open session still carries the '
+                                  'reporting instructions in its context')
+    if report['failed']:
+        report['warning'] = 'these agents were left installed; repair the config and rerun'
+    return report
+
+
+def purge_plan(home, archive=None, discard=False, i_am_server=False):
+    """Dry-run purge: report what would be archived and deleted, deleting nothing."""
+    home = Path(home).expanduser()
+    would = [str(home/'.local/share/axon'), str(state_dir(home)), str(home/'.config'/'axon')]
+    guarded = (home/'.local/share/axon'/'server').exists() and not i_am_server
+    return {'planned': True, 'would_remove': would,
+            'archive': str(archive) if archive else None,
+            'discard': bool(discard),
+            'blocked_reason': ('this host runs the Axon journal server'
+                               if guarded else (None if archive or discard else
+                                               'purge needs --archive DIR or --discard-data'))}
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     sub=p.add_subparsers(dest='command',required=True)
@@ -472,6 +988,14 @@ def main():
     u.add_argument('--home',type=Path,default=Path.home()); u.add_argument('--apply',action='store_true')
     st=sub.add_parser('status',help='print the last timer sync result')
     st.add_argument('--home',type=Path,default=Path.home())
+    x=sub.add_parser('uninstall',help='remove Axon from this host: agent hooks, timers, then optionally payload and journal')
+    x.add_argument('agent',nargs='?',default='all',choices=[*AGENTS,'all'])
+    x.add_argument('--home',type=Path,default=Path.home())
+    x.add_argument('--apply',action='store_true')
+    x.add_argument('--purge',action='store_true',help='also delete the payload, journal and ~/.config/axon')
+    x.add_argument('--archive',type=Path,metavar='DIR',help='copy credentials and journal here before --purge deletes them')
+    x.add_argument('--discard-data',action='store_true',help='delete credentials and journal with no copy')
+    x.add_argument('--i-am-the-server',action='store_true',help='acknowledge this host is the journal other hosts report to')
     en=sub.add_parser('enroll-host',help='mint and store this host claim credential; reuse it on later runs')
     en.add_argument('--home',type=Path,default=Path.home())
     args=p.parse_args()
@@ -498,6 +1022,13 @@ def main():
             print(json.dumps(current,indent=2))
             if current is None:
                 p.exit(1,'No timer sync has run yet\n')
+        elif args.command=='uninstall':
+            report=decommission(args.home,args.apply,args.purge,args.archive,args.discard_data,
+                                args.i_am_the_server,
+                                None if args.agent=='all' else args.agent)
+            print(json.dumps(report,indent=2))
+            if report.get('failed'):
+                p.exit(2)
         else:
             print(json.dumps(install(args.agent,args.home,args.apply,not args.no_enable,args.hermes_command),indent=2))
     except (ValueError,OSError,subprocess.CalledProcessError) as error:
