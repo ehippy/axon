@@ -891,11 +891,13 @@ class UninstallTests(unittest.TestCase):
 
     def test_hermes_dotenv_keeps_its_567_other_lines(self):
         dotenv=self.home/'.hermes'/'.env'; dotenv.parent.mkdir(parents=True)
-        dotenv.write_text('ONE=1\nAXON_BROKER=crumb\nTWO=2\nexport AXON_PORT=1883\nTHREE=3\n')
+        dotenv.write_text('ONE=1\n# Axon reporting transport.\nAXON_BROKER=crumb\nTWO=2\n'
+                          'export AXON_PORT=1883\n# how many taxons per sample\nTHREE=3\n')
         with patch.dict(os.environ,self.env):
             report=manage.uninstall('hermes',self.home,apply=True)
-        self.assertEqual(report['env_lines_removed'],2)
-        self.assertEqual(dotenv.read_text(),'ONE=1\nTWO=2\nTHREE=3\n')
+        self.assertEqual(report['env_lines_removed'],3)
+        self.assertEqual(dotenv.read_text(),
+                         'ONE=1\nTWO=2\n# how many taxons per sample\nTHREE=3\n')
 
     def test_purge_refuses_to_guess_about_the_data_and_the_server(self):
         (self.home/'.local/share/axon').mkdir(parents=True)

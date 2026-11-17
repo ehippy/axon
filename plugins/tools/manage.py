@@ -577,13 +577,23 @@ def usage_dirs(value, payload):
 
 
 def env_file_text(text):
-    """Strip AXON_* assignments from a dotenv file, leaving every other line alone."""
+    """Strip AXON_* assignments from a dotenv file, plus the `# …Axon…` comment line
+    directly above them that the transport block wrote. Nothing else moves."""
     import re
-    pattern = re.compile(r'\s*(?:export\s+)?AXON_[A-Z_]*\s*=')
+    assignment = re.compile(r'\s*(?:export\s+)?AXON_[A-Z_]*\s*=')
+    comment = re.compile(r'\s*#')
+    mentions = re.compile(r'\baxon\b', re.IGNORECASE)
     lines = text.splitlines()
-    kept = [line for line in lines if not pattern.match(line)]
+    drop = {i for i, line in enumerate(lines) if assignment.match(line)}
+    for i in sorted(drop):
+        above = i - 1
+        while (above >= 0 and above not in drop and comment.match(lines[above])
+               and mentions.search(lines[above])):
+            drop.add(above)
+            above -= 1
+    kept = [line for i, line in enumerate(lines) if i not in drop]
     trailing = '\n' if text.endswith('\n') and kept else ''
-    return '\n'.join(kept)+trailing, len(lines)-len(kept)
+    return '\n'.join(kept)+trailing, len(drop)
 
 
 def toml_split_name(name):
