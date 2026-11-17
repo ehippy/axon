@@ -972,6 +972,22 @@ class UninstallTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE((archived/'config-axon'/'host-credential').stat().st_mode),0o600)
         self.assertFalse(config.exists())
 
+    def test_an_archive_says_what_it_came_from(self):
+        config=self.home/'.config'/'axon'; config.mkdir(parents=True)
+        (config/'host-credential').write_text('c'*43)
+        state=Path(self.env['AXON_ACTIVITY_HOME']); state.mkdir(parents=True)
+        (state/'outbox.sqlite3').write_text('journal')
+        with patch.dict(os.environ,self.env):
+            saved=manage.archive_host(self.home,self.root/'archive',stamp='STAMP')
+        archived=Path(saved['path'])
+        text=(archived/'MANIFEST').read_text()
+        self.assertIn('STAMP',text)
+        self.assertIn('config-axon <-',text)
+        self.assertIn('outbox.sqlite3 <-',text)
+        self.assertIn('not archived',text)
+        self.assertEqual(stat.S_IMODE((archived/'MANIFEST').stat().st_mode),0o600,
+                         'it sits next to a host credential')
+
     def test_companion_jobs_are_matched_by_command_not_by_label(self):
         import plistlib
         agents=self.home/'Library'/'LaunchAgents'; agents.mkdir(parents=True)

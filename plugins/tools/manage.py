@@ -912,25 +912,55 @@ def archive_host(home, destination, stamp=None):
     home = Path(home).expanduser()
     label = read_machine_label(machine_label_path(home)) or platform.node()
     label = ''.join(c if c.isalnum() or c in '-_' else '-' for c in str(label)) or 'host'
-    target = destination/f'axon-{label}-{stamp or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")}'
+    stamp = stamp or datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    target = destination/f'axon-{label}-{stamp}'
     target.mkdir(parents=True)
     target.chmod(0o700)
     state = state_dir(home)
-    copied = []
+    copied, sources = [], {}
     config = home/'.config'/'axon'
     if config.exists():
         shutil.copytree(config, target/'config-axon')
         copied.append('config-axon')
+        sources['config-axon'] = config
     for path in sorted(state.glob('*.sqlite3'))+sorted(state.glob('*.json')):
         shutil.copy2(path, target/path.name)
         copied.append(path.name)
+        sources[path.name] = path
     backup = state/'config-backups'
     if backup.exists():
         shutil.copytree(backup, target/'config-backups', symlinks=True)
         copied.append('config-backups')
+        sources['config-backups'] = backup
+    write_manifest(target, home, label, stamp, sources)
     for path in [target, *target.rglob('*')]:
         path.chmod(0o700 if path.is_dir() else 0o600)
     return {'path': str(target), 'copied': copied}
+
+
+def write_manifest(target, home, label, stamp, sources):
+    """Say what an archive is, beside the archive.
+
+    A directory of sqlite files and a host credential is unusable a year later without
+    knowing where it came from and what it deliberately leaves out.
+    """
+    lines = ['Axon host archive',
+             'created: ' + str(stamp or datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')),
+             'host label: ' + str(label),
+             'home: ' + str(Path(home).expanduser()),
+             '',
+             'copied, as destination <- source:']
+    lines += [f'  {name} <- {path}' for name, path in sorted(sources.items())] or ['  (nothing)']
+    lines += ['',
+              'not archived: the payload under ~/.local/share/axon, which is a git checkout of',
+              'reinstallable code, and the registrations removed from ~/.claude, ~/.codex,',
+              "~/.hermes and friends -- those edits stay in place; their pre-edit copies are",
+              'under config-backups/.',
+              '',
+              'Any time, to see what an uninstall would do, run without --apply: ',
+              '  python3 <checkout>/plugins/tools/manage.py uninstall',
+              'and read the report. It touches nothing that this archive does not name.']
+    (Path(target)/'MANIFEST').write_text('\n'.join(lines)+'\n', encoding='utf-8')
 
 
 def stale_references(home, agent, live):

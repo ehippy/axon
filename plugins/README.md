@@ -127,7 +127,9 @@ what it would remove. `--apply` backs up every rewritten file to
 `--purge` deletes `~/.local/share/axon`, `~/.local/state/axon` and `~/.config/axon`, and
 refuses to guess what that means for the data: pass `--archive DIR` (copies the host
 credential, `*.sqlite3`, `sync-status.json` and the pre-uninstall backups into a `0700`
-directory named for the host label, files `0600`) or `--discard-data`. It also refuses
+directory named for the host label, files `0600`, and writes a `MANIFEST` there naming
+each copy and the path it came from — a directory of sqlite files tells you nothing a
+year later without it) or `--discard-data`. It also refuses
 when `~/.local/share/axon/server` exists, because that host is the journal other hosts
 report to; stop the server deliberately, then pass `--i-am-the-server`. Anything that
 exists again immediately is listed under `reappeared` and repeated in `manual_steps`: a
@@ -139,7 +141,10 @@ ticks won't be caught there; `reappeared` is what catches it. That is how a deco
 misses a host: a daemon that started before
 the removal, such as a Hermes gateway, keeps executing the plugin it loaded and rewrites
 the journal on its own schedule, including over the HTTP inbox path rather than only MQTT.
-Deleting files cannot evict loaded code, so restart the named process. `uninstall pi`
+Deleting files cannot evict loaded code, so restart the named process. A config file that
+still names the payload but is never read any more — an old `hooks.json.before-labels`
+backup, say — is listed under `stale_references` and left alone: a host's own backups are
+not ours to delete. `uninstall pi`
 limits the first step to one agent. Exit code 2 means at least one agent was left
 installed (a malformed config is reported, not repaired). The Codex path parses TOML, so
 it needs Python 3.11+; other agents install on 3.10+. Reload running agent sessions
