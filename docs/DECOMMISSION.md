@@ -119,6 +119,13 @@ Restart what that names — `launchctl kickstart -k gui/$(id -u)/ai.hermes.gatew
 Hermes gateway, or reload the agent's own service. Until then the host reports cleanly
 while a daemon keeps executing the plugin it loaded.
 
+`kickstart -k` leaves the job stopped for about 30 seconds with `last exit code = 75:
+EX_TEMPFAIL`; that is launchd's throttle interval, not a failed restart. The Hermes
+gateway tears down in under a second and comes back with plugin discovery intact.
+Verify the eviction rather than trusting it: delete `~/.local/state/axon` and watch it
+for two housekeeping ticks (90s is enough). On this host the gateway recreated it every
+~25s before the restart and has not touched it since.
+
 Then, in the same sitting, delete `run_after_50-axon-agent-hooks.sh` from chezmoi and
 commit. Until that script is gone, `com.dotfiles.chezmoi-fresh` (hourly, `RunAtLoad`)
 runs `chezmoi apply`, which calls `manage.py sync --apply`, which reinstalls every
@@ -283,6 +290,11 @@ Four things worth knowing before doing another host:
   removed. `launchctl list` shows no Axon job, and the host looks clean, while a daemon
   runs the code. `manage.py uninstall` now reports `holders` (pids from `lsof -w`) for
   exactly this; restart whatever it names.
+- Restarting it on 2026-11-17 08:47 closed the host for good: the new gateway logged zero
+  Axon lines across 62 discovered plugins, `/health` returned ok, and `~/.local/state/axon`
+  stayed deleted. Note that `holders` reported nothing even though the gateway was the
+  writer — it opens its databases between ticks and closes them. `reappeared` is the check
+  that catches this class of process; `lsof` only proves something is holding a file now.
 
 ## Phase 7 — Findings to keep (write these down)
 1. **It was a write-only system by arithmetic, not by neglect.** 552 sessions / 7 d,
