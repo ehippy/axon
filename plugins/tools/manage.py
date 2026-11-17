@@ -462,6 +462,7 @@ def status(home=Path.home()):
 # `/.local/share/axon/plugins/…/hooks/run.py`, and a path is ours only if it is a
 # symlink into our payload. Anything else in a host config is left byte-for-byte.
 
+PAYLOAD_MARKER = '/.local/share/axon/'
 AXON_ENV_PREFIX = 'AXON_'
 OPT_IN_FLAG = 'auto-report'
 # Written by the chezmoi run_after script; while it exists, that script treats the host
@@ -511,6 +512,30 @@ def agent_links(home, agent):
     else:
         links = [home/f'.{agent}'/'skills'/'axon-activity']
     return payload, links
+
+
+def axon_statusline(value):
+    """Claude's statusLine runs a payload binary when the resources panel set it."""
+    return isinstance(value, dict) and \
+        PAYLOAD_MARKER in str(value.get('command', '')).replace('\\', '/')
+
+
+def codex_leftovers(home):
+    """Codex files and trust-rule lines that name Axon but were never installed by us.
+
+    A hand-written hook script and a sandbox rule granting Axon's reporter an allow
+    decision outlive the hooks file, and neither is a symlink or a hook entry.
+    """
+    hooks_dir, rules_dir = home/'.codex'/'hooks', home/'.codex'/'rules'
+    files = sorted(p for p in hooks_dir.iterdir() if 'axon' in p.name.lower()) \
+        if hooks_dir.is_dir() else []
+    rules = []
+    for path in sorted(rules_dir.glob('*.rules')) if rules_dir.is_dir() else []:
+        lines = path.read_text().splitlines()
+        kept = [l for l in lines if PAYLOAD_MARKER not in l.replace('\\', '/')]
+        if len(kept) != len(lines):
+            rules.append((path, '\n'.join(kept)+'\n' if kept else '', len(lines)-len(kept)))
+    return files, rules
 
 
 def stripped_hooks(hooks):
@@ -657,7 +682,8 @@ def uninstall(agent, home, apply=False, hermes_command='hermes', run=subprocess.
     payload, links = agent_links(home, agent)
     plan = {'agent': agent, 'apply': apply, 'settings': None, 'hooks_removed': 0,
             'env_removed': [], 'tables_removed': [], 'env_lines_removed': 0,
-            'links_removed': [], 'settings_removed': None, 'writes': [], 'commands': []}
+            'links_removed': [], 'settings_removed': None, 'writes': [], 'commands': [],
+            'statusline_removed': False, 'files_removed': [], 'rules_lines_removed': 0}
     pending = []
     if agent in ('claude', 'codex'):
         settings = home/f'.{agent}'/('hooks.json' if agent == 'codex' else 'settings.json')
@@ -685,6 +711,10 @@ def uninstall(agent, home, apply=False, hermes_command='hermes', run=subprocess.
             proposed['env'] = env
             if not env:
                 proposed.pop('env')
+        if proposed is not None and axon_statusline(proposed.get('statusLine')):
+            # A statusline command naming our payload fails loudly once it is deleted.
+            proposed.pop('statusLine')
+            plan['statusline_removed'] = True
         if proposed == current:
             proposed = None
         elif not any(proposed['hooks'].values()) and axon_owned_extras(proposed):
@@ -704,6 +734,11 @@ def uninstall(agent, home, apply=False, hermes_command='hermes', run=subprocess.
                 plan['tables_removed'] = gone
                 if text != original:
                     pending.append((config, text))
+            files, rules = codex_leftovers(home)
+            plan['files_removed'] = [str(f) for f in files]
+            for path, text, dropped in rules:
+                plan['rules_lines_removed'] += dropped
+                pending.append((path, text))
     elif agent == 'hermes':
         dotenv = home/'.hermes'/'.env'
         if dotenv.exists():
@@ -738,6 +773,11 @@ def uninstall(agent, home, apply=False, hermes_command='hermes', run=subprocess.
             path.chmod(mode)
     for name in plan['links_removed']:
         Path(name).unlink()
+    for name in plan['files_removed']:
+        path = Path(name)
+        if path.is_file():
+            shutil.copy2(path, backup/path.name)
+            path.unlink()
     if agent == 'hermes':
         search_path = os.environ.get('PATH', '')+os.pathsep+os.pathsep.join(
             str(home/d) for d in EXTRA_BIN_DIRS)
@@ -943,7 +983,9 @@ def decommission(home=Path.home(), apply=False, purge=False, archive=None, disca
     report['cleared'] = sorted(a for a, r in report['agents'].items()
                                if isinstance(r, dict) and any(
                                    r.get(k) for k in ('hooks_removed', 'env_removed', 'tables_removed',
-                                                      'env_lines_removed', 'links_removed', 'settings_removed')))
+                                                      'env_lines_removed', 'links_removed', 'settings_removed',
+                                                      'statusline_removed', 'files_removed',
+                                                      'rules_lines_removed')))
     report['manual_steps'] = []
     if not purge:
         report['manual_steps'].append(

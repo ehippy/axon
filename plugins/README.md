@@ -107,12 +107,15 @@ what it would remove. `--apply` backs up every rewritten file to
 `~/.local/state/axon/config-backups/pre-uninstall-<stamp>` first. It then, in order:
 
 1. deletes `~/.config/axon/auto-report`, so a concurrent chezmoi apply cannot reinstall;
-2. unregisters each agent — Claude hooks plus `env.AXON_*` and the usage directory in
-   `CLAUDE_CODE_PLUGIN_DIRS`; Codex hooks, the `[shell_environment_policy.set]` transport
-   block and, when the hooks file held nothing else, the file itself plus the Codex trust
-   hashes that named it; Hermes `AXON_*` lines (every other line stays) and the plugin
-   symlink in each profile, asking `hermes plugins disable` first when the binary is found;
-   Pi's extension and skill symlinks; OpenCode's plugin and skill symlinks;
+2. unregisters each agent — Claude hooks plus `env.AXON_*`, the usage directory in
+   `CLAUDE_CODE_PLUGIN_DIRS`, and a `statusLine` command that runs a payload binary (it
+   would otherwise fail on every render); Codex hooks, the `[shell_environment_policy.set]`
+   transport block and, when the hooks file held nothing else, the file itself plus the Codex trust
+   hashes that named it, any `~/.codex/hooks/*axon*` script a host wrote by hand, and
+   `~/.codex/rules/*.rules` lines that name the payload; Hermes `AXON_*` lines (every other
+   line stays) and the plugin symlink in each profile, asking `hermes plugins disable` first
+   when the binary is found; Pi's extension and skill symlinks; OpenCode's plugin and skill
+   symlinks;
 3. removes the `install-timer` unit, booting it out first (`org.axon.sync` on macOS,
    `axon-sync.timer` on Linux) so the next tick cannot reinstall what was just cleaned;
 4. removes companion jobs it did not install but can prove are Axon's — a launchd agent

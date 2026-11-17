@@ -825,6 +825,47 @@ class UninstallTests(unittest.TestCase):
                                and all(str(k).startswith('AXON_') for k in value))
         self.assertEqual(gone,(text,[]))
 
+    def test_a_statusline_that_runs_our_payload_goes_and_a_hosts_own_stays(self):
+        with patch.dict(os.environ,self.env):
+            self.seed_claude()
+            (self.home/'.claude'/'settings.json').write_text(json.dumps({
+                'hooks':{'Stop':[{'hooks':[{'type':'command','command':'/opt/other/hook.py'}]}]},
+                'statusLine':{'type':'command',
+                              'command':str(self.home/'.local/share/axon/resources/current/venv/bin/axon-resources')
+                                       +' claude-statusline'}},indent=2))
+            report=manage.uninstall('claude',self.home,apply=True)
+            self.assertTrue(report['statusline_removed'])
+            self.assertNotIn('statusLine',json.loads((self.home/'.claude'/'settings.json').read_text()))
+            (self.home/'.claude'/'settings.json').write_text(json.dumps({
+                'hooks':{},'statusLine':{'type':'command','command':'git branch --show-current'}},indent=2))
+            again=manage.uninstall('claude',self.home,apply=True)
+            self.assertFalse(again['statusline_removed'])
+            self.assertEqual(json.loads((self.home/'.claude'/'settings.json').read_text())['statusLine'],
+                             {'type':'command','command':'git branch --show-current'})
+
+    def test_hand_written_codex_hook_and_trust_rules_are_found_by_content(self):
+        hooks=self.home/'.codex'/'hooks.json'
+        (self.home/'.codex'/'hooks').mkdir(parents=True)
+        (self.home/'.codex'/'rules').mkdir(parents=True)
+        (self.home/'.codex'/'hooks'/'codex_axon.py').write_text('# Codex lifecycle -> Axon MQTT\n')
+        (self.home/'.codex'/'hooks'/'glass_mirror.py').write_text('# mine\n')
+        (self.home/'.codex'/'rules'/'default.rules').write_text(
+            'prefix_rule(pattern=["python3","/Users/u/.local/share/axon/plugins/codex/hooks/run.py"],'
+            'decision="allow")\n'
+            'prefix_rule(pattern=["npm","test"],decision="allow")\n')
+        with patch.dict(os.environ,self.env):
+            manage.install('codex',self.home,apply=True)
+            report=manage.uninstall('codex',self.home,apply=True)
+            self.assertEqual([Path(f).name for f in report['files_removed']],['codex_axon.py'])
+            self.assertEqual(report['rules_lines_removed'],1)
+            self.assertFalse((self.home/'.codex'/'hooks'/'codex_axon.py').exists())
+            self.assertEqual((self.home/'.codex'/'hooks'/'glass_mirror.py').read_text(),'# mine\n')
+            self.assertEqual((self.home/'.codex'/'rules'/'default.rules').read_text(),
+                             'prefix_rule(pattern=["npm","test"],decision="allow")\n')
+            # the deleted script is recoverable from the run's own backup
+            self.assertEqual((Path(report['backup'])/'codex_axon.py').read_text(),
+                             '# Codex lifecycle -> Axon MQTT\n')
+
     def test_symlinks_into_the_payload_go_and_foreign_files_never_do(self):
         (self.home/'.hermes'/'profiles'/'lucy'/'plugins').mkdir(parents=True)
         (self.home/'.pi'/'agent'/'extensions').mkdir(parents=True)
